@@ -14,6 +14,47 @@ from .bad_decode import bad_decode
 from .kv_hybrid import KVHybridCache
 
 
+def _approx_entropy_logits(logits: torch.Tensor, top_k: int = 64, eps: float = 1e-9) -> float:
+    vocab = logits.size(-1)
+    k = min(max(4, top_k), vocab)
+    values, _ = torch.topk(logits.float(), k=k, dim=-1)
+    lse_top = torch.logsumexp(values, dim=-1, keepdim=True)
+    if vocab > k:
+        kth = values[..., -1:]
+        tail_mass = (vocab - k) * torch.exp(kth - lse_top)
+        lse_total = lse_top + torch.log1p(tail_mass)
+        probs = torch.exp(values - lse_total)
+        p_top = probs.sum(dim=-1, keepdim=True)
+        p_tail = torch.clamp(1.0 - p_top, min=eps)
+        ent_top = -(probs * torch.log(torch.clamp(probs, min=eps))).sum(dim=-1)
+        ent_tail = -p_tail.squeeze(-1) * torch.log(p_tail.squeeze(-1) / max(1, vocab - k))
+        ent = ent_top + ent_tail
+    else:
+        probs = torch.softmax(values, dim=-1)
+        ent = -(probs * torch.log(torch.clamp(probs, min=eps))).sum(dim=-1)
+    return float(ent.mean().item())
+
+
+def _approx_entropy_tensor(logits: torch.Tensor, top_k: int = 64, eps: float = 1e-9) -> torch.Tensor:
+    vocab = logits.size(-1)
+    k = min(max(4, top_k), vocab)
+    values, _ = torch.topk(logits, k=k, dim=-1)
+    lse_top = torch.logsumexp(values, dim=-1, keepdim=True)
+    if vocab > k:
+        kth = values[..., -1:]
+        tail_mass = (vocab - k) * torch.exp(kth - lse_top)
+        lse_total = lse_top + torch.log1p(tail_mass)
+        probs = torch.exp(values - lse_total)
+        p_top = probs.sum(dim=-1, keepdim=True)
+        p_tail = torch.clamp(1.0 - p_top, min=eps)
+        ent_top = -(probs * torch.log(torch.clamp(probs, min=eps))).sum(dim=-1)
+        ent_tail = -p_tail.squeeze(-1) * torch.log(p_tail.squeeze(-1) / max(1, vocab - k))
+        ent = ent_top + ent_tail
+    else:
+        probs = torch.softmax(values, dim=-1)
+        ent = -(probs * torch.log(torch.clamp(probs, min=eps))).sum(dim=-1)
+    return ent.mean()
+
 @dataclass
 class VortexXConfig:
     hidden_size: int
@@ -23,10 +64,17 @@ class VortexXConfig:
     window_size: int
     latent_slots: int
     lava_top_k: int
+    lava_clusters: int
+    lava_cluster_top: int
+    lava_read_every: int
+    lava_write_every: int
+    lava_write_on_surprise: bool
+    lava_surprise_threshold: float
     local_mixer_kernel: int
     ssm_state_size: int
     gated_mlp_ratio: int
     draft_layers: int
+    mtp_k: int
     dtype: str | None = None
     device: str | None = None
 
@@ -41,7 +89,7 @@ class CoreTransformer(nn.Module):
         self.device = torch.device(config.device) if config.device else torch.device("cpu")
         self.dtype = torch.bfloat16 if config.dtype == "bf16" else torch.float16 if config.dtype == "fp16" else torch.float32
         self.escape_mode = "exact"
-        sub_size = tokenizer.sub_codebook.size if tokenizer.sub_codebook else 0
+        sub_size = tokenizer.sub_size_total
         self.byte_token_start = tokenizer.patch_codebook.size + tokenizer.macro_codebook.size + sub_size
         self.embed = nn.Embedding(config.vocab_size, config.hidden_size)
         self.blocks = nn.ModuleList(
@@ -52,6 +100,12 @@ class CoreTransformer(nn.Module):
                         window_size=config.window_size,
                         latent_slots=config.latent_slots,
                         lava_top_k=config.lava_top_k,
+                        lava_clusters=config.lava_clusters,
+                        lava_cluster_top=config.lava_cluster_top,
+                        lava_read_every=config.lava_read_every,
+                        lava_write_every=config.lava_write_every,
+                        lava_write_on_surprise=config.lava_write_on_surprise,
+                        lava_surprise_threshold=config.lava_surprise_threshold,
                         local_mixer_kernel=config.local_mixer_kernel,
                         ssm_state_size=config.ssm_state_size,
                         gated_mlp_ratio=config.gated_mlp_ratio,
@@ -63,7 +117,13 @@ class CoreTransformer(nn.Module):
         )
         self.norm = nn.LayerNorm(config.hidden_size)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size)
+        self.mtp_k = int(getattr(config, "mtp_k", 0))
+        self.mtp_head = nn.Linear(config.hidden_size, config.vocab_size * self.mtp_k) if self.mtp_k > 0 else None
         self.kv_cache = KVHybridCache(window_size=config.window_size, kv_quant_bits=8, latent_slots=32)
+        self.depth_gating = {}
+        self._depth_last = None
+        self._depth_tokens = 0
+        self._depth_total = 0
 
     @staticmethod
     def from_settings(settings: dict) -> "CoreTransformer":
@@ -80,24 +140,47 @@ class CoreTransformer(nn.Module):
 
         patch_size = tokenizer.patch_codebook.size
         macro_size = tokenizer.macro_codebook.size
-        sub_size = tokenizer.sub_codebook.size if tokenizer.sub_codebook else 0
+        sub_size = tokenizer.sub_size_total
         vocab_size = max(int(core.get("vocab_size", 1024)), patch_size + macro_size + sub_size + 256)
         layers = int(core.get("layers", 4))
         draft_layers = max(1, layers // 2)
+
+        precision = core.get("precision")
+        dtype_override = None
+        if isinstance(precision, str):
+            precision = precision.lower()
+            if precision in {"bf16", "bfloat16"}:
+                dtype_override = "bf16"
+            elif precision in {"fp16", "float16"}:
+                dtype_override = "fp16"
+            elif precision in {"fp32", "float32"}:
+                dtype_override = "fp32"
+
+        def _vx(key: str, default):
+            if key in vx_cfg:
+                return vx_cfg.get(key, default)
+            return core.get(key, default)
 
         cfg = VortexXConfig(
             hidden_size=int(core.get("hidden_size", 256)),
             layers=layers,
             heads=int(core.get("heads", 4)),
             vocab_size=vocab_size,
-            window_size=int(vx_cfg.get("window_size", 128)),
-            latent_slots=int(vx_cfg.get("latent_slots", 64)),
-            lava_top_k=int(vx_cfg.get("lava_top_k", 4)),
-            local_mixer_kernel=int(vx_cfg.get("local_mixer_kernel", 5)),
-            ssm_state_size=int(vx_cfg.get("ssm_state_size", 128)),
-            gated_mlp_ratio=int(vx_cfg.get("gated_mlp_ratio", 4)),
+            window_size=int(_vx("window_size", vx_cfg.get("local_window", core.get("local_window", 128)))),
+            latent_slots=int(_vx("latent_slots", vx_cfg.get("lava_slots", core.get("lava_slots", 64)))),
+            lava_top_k=int(_vx("lava_top_k", 4)),
+            lava_clusters=int(_vx("lava_clusters", 0)),
+            lava_cluster_top=int(_vx("lava_cluster_top", 1)),
+            lava_read_every=int(_vx("lava_read_every", 1)),
+            lava_write_every=int(_vx("lava_write_every", 1)),
+            lava_write_on_surprise=bool(_vx("lava_write_on_surprise", False)),
+            lava_surprise_threshold=float(_vx("lava_surprise_threshold", 0.0)),
+            local_mixer_kernel=int(_vx("local_mixer_kernel", 5)),
+            ssm_state_size=int(_vx("ssm_state_size", vx_cfg.get("ssm", {}).get("state_dim", core.get("ssm", {}).get("state_dim", 128)))),
+            gated_mlp_ratio=int(vx_cfg.get("gated_mlp_ratio", core.get("mlp_ratio", 4))),
             draft_layers=int(vx_cfg.get("draft_layers", draft_layers)),
-            dtype=device_info.dtype,
+            mtp_k=int(core.get("mtp_k", 0)),
+            dtype=dtype_override or device_info.dtype,
             device=device_info.device,
         )
         model = CoreTransformer(cfg, tokenizer=tokenizer)
@@ -105,7 +188,11 @@ class CoreTransformer(nn.Module):
         model.bad_block_size = int(bad_cfg.get("block_size", decode_cfg.get("draft_block", 8)))
         model.bad_entropy = float(bad_cfg.get("entropy_threshold", decode_cfg.get("entropy_threshold", 3.5)))
         model.decode_cfg = decode_cfg
+        model.depth_gating = settings.get("depth_gating", {})
         model.to(device_info.device, dtype=model.dtype if device_info.device.startswith("cuda") else None)
+        lava_state_path = vx_cfg.get("lava_state_path")
+        if lava_state_path and bool(vx_cfg.get("lava_state_autoload", False)):
+            model.load_memory_state(lava_state_path)
         # Sync device/dtype with actual parameters for downstream helpers
         param = next(model.parameters(), None)
         if param is not None:
@@ -117,18 +204,68 @@ class CoreTransformer(nn.Module):
             model.forward = torch.compile(model.forward)  # type: ignore[method-assign]
         if core.get("compile_step") and hasattr(torch, "compile"):
             model.step = torch.compile(model.step)  # type: ignore[method-assign]
+        if core.get("compile_local_mixer_step") and hasattr(torch, "compile"):
+            for block in model.blocks:
+                block.local.step = torch.compile(block.local.step)  # type: ignore[method-assign]
         return model
 
     def forward(self, input_ids: torch.Tensor, num_layers: int | None = None) -> torch.Tensor:
+        return self.forward_with_aux(input_ids, num_layers=num_layers)[0]
+
+    def forward_with_aux(
+        self,
+        input_ids: torch.Tensor,
+        num_layers: int | None = None,
+        labels: torch.Tensor | None = None,
+        return_mtp: bool = False,
+        return_aux: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         if input_ids.device != self.device:
             input_ids = input_ids.to(self.device)
+        mtp_logits = None
+        aux_loss = None
         with autocast_context(enabled=self.device.type == "cuda", dtype=self.config.dtype):
             x = self.embed(input_ids)
             depth = num_layers or self.config.layers
             for block in self.blocks[:depth]:
                 x = block(x)
             x = self.norm(x)
-            return self.lm_head(x)
+            logits = self.lm_head(x)
+            if self.mtp_k > 0 and (return_mtp or (self.training and labels is not None) or return_aux):
+                mtp_logits = self.mtp_head(x).view(x.shape[0], x.shape[1], self.mtp_k, -1)
+            if labels is not None and self.training and self.mtp_k > 0 and mtp_logits is not None:
+                losses = []
+                for offset in range(1, self.mtp_k + 1):
+                    if labels.size(1) <= offset:
+                        break
+                    targets = labels[:, offset:]
+                    preds = mtp_logits[:, :-offset, offset - 1, :]
+                    loss = torch.nn.functional.cross_entropy(
+                        preds.reshape(-1, preds.size(-1)),
+                        targets.reshape(-1),
+                        ignore_index=-100,
+                    )
+                    losses.append(loss)
+                if losses:
+                    aux_loss = sum(losses) / len(losses)
+            depth_cfg = self.depth_gating if isinstance(self.depth_gating, dict) else {}
+            if labels is not None and self.training and depth_cfg.get("enabled"):
+                weight = float(depth_cfg.get("compute_cost_weight", 0.0))
+                if weight > 0:
+                    min_depth = int(depth_cfg.get("min_depth", 1))
+                    max_depth = int(depth_cfg.get("max_depth", self.config.layers))
+                    max_depth = max(1, min(max_depth, self.config.layers))
+                    min_depth = max(1, min(min_depth, max_depth))
+                    ent = _approx_entropy_tensor(logits, top_k=int(depth_cfg.get("entropy_top_k", 64)))
+                    threshold = float(depth_cfg.get("entropy_threshold", 3.5))
+                    smooth = float(depth_cfg.get("smoothness", 1.0))
+                    prob = torch.sigmoid((ent - threshold) / max(1e-3, smooth))
+                    depth_est = min_depth + (max_depth - min_depth) * prob
+                    cost = depth_est / max_depth
+                    aux_loss = (aux_loss + weight * cost) if aux_loss is not None else (weight * cost)
+            if return_mtp or return_aux:
+                return logits, mtp_logits, aux_loss
+            return logits, None, None
 
     def full_next_logits(self, ids: List[int]) -> torch.Tensor:
         input_ids = torch.tensor([ids], dtype=torch.long, device=self.device)
@@ -191,18 +328,78 @@ class CoreTransformer(nn.Module):
         for idx, block in enumerate(self.blocks):
             block.lava.load_state(path.with_suffix(f".layer{idx}.pt"))
 
-    def step(self, token_id: int, state: List[VBlockState], num_layers: int | None = None, write_memory: bool = True) -> tuple[torch.Tensor, List[VBlockState]]:
+    def step(
+        self,
+        token_id: int,
+        state: List[VBlockState],
+        num_layers: int | None = None,
+        write_memory: bool = True,
+        return_mtp: bool = False,
+        return_depth: bool = False,
+    ):
         input_ids = torch.tensor([[token_id]], dtype=torch.long, device=self.device)
         with autocast_context(enabled=self.device.type == "cuda", dtype=self.config.dtype):
             x = self.embed(input_ids).squeeze(1)
-            depth = num_layers or self.config.layers
             new_state: List[VBlockState] = []
-            for idx, block in enumerate(self.blocks[:depth]):
-                x, layer_state = block.step(x, state[idx], write_memory=write_memory)
-                new_state.append(layer_state)
-            x = self.norm(x)
-            logits = self.lm_head(x)
-        return logits, new_state + state[depth:]
+            depth_used = num_layers or self.config.layers
+            depth_cfg = self.depth_gating if num_layers is None else {}
+            if depth_cfg.get("enabled"):
+                min_depth = int(depth_cfg.get("min_depth", 1))
+                max_depth = int(depth_cfg.get("max_depth", self.config.layers))
+                max_depth = min(max_depth, self.config.layers)
+                min_depth = max(1, min(min_depth, max_depth))
+                for idx, block in enumerate(self.blocks[:min_depth]):
+                    x, layer_state = block.step(x, state[idx], write_memory=write_memory)
+                    new_state.append(layer_state)
+                logits_temp = self.lm_head(self.norm(x))
+                ent = _approx_entropy_logits(logits_temp, top_k=int(depth_cfg.get("entropy_top_k", 64)))
+                threshold = float(depth_cfg.get("entropy_threshold", 3.5))
+                hysteresis = float(depth_cfg.get("hysteresis", 0.0))
+                if self._depth_last is None:
+                    self._depth_last = min_depth
+                if ent > threshold + hysteresis:
+                    depth_used = max_depth
+                elif ent < threshold - hysteresis:
+                    depth_used = min_depth
+                else:
+                    depth_used = int(self._depth_last)
+                depth_used = int(min(max(depth_used, min_depth), max_depth))
+                self._depth_last = depth_used
+                if depth_used > min_depth:
+                    for idx, block in enumerate(self.blocks[min_depth:depth_used], start=min_depth):
+                        x, layer_state = block.step(x, state[idx], write_memory=write_memory)
+                        new_state.append(layer_state)
+                logits = self.lm_head(self.norm(x))
+            else:
+                depth_used = num_layers or self.config.layers
+                for idx, block in enumerate(self.blocks[:depth_used]):
+                    x, layer_state = block.step(x, state[idx], write_memory=write_memory)
+                    new_state.append(layer_state)
+                x = self.norm(x)
+                logits = self.lm_head(x)
+            if depth_cfg.get("enabled"):
+                self._depth_tokens += 1
+                self._depth_total += depth_used
+            mtp_logits = None
+            if return_mtp and self.mtp_k > 0 and self.mtp_head is not None:
+                mtp_logits = self.mtp_head(x).view(x.shape[0], self.mtp_k, -1)
+        outputs = [logits, new_state + state[depth_used:]]
+        if return_mtp:
+            outputs.append(mtp_logits)
+        if return_depth:
+            outputs.append(depth_used)
+        if len(outputs) == 2:
+            return outputs[0], outputs[1]
+        return tuple(outputs)
+
+    def reset_depth_stats(self) -> None:
+        self._depth_tokens = 0
+        self._depth_total = 0
+        self._depth_last = None
+
+    def depth_stats(self) -> dict:
+        avg_depth = (self._depth_total / self._depth_tokens) if self._depth_tokens else 0.0
+        return {"avg_depth_used": avg_depth, "tokens": self._depth_tokens}
 
     def generate(self, prompt: str, max_new_tokens: int = 32, **kwargs) -> str:
         bad_cfg = {
@@ -210,6 +407,33 @@ class CoreTransformer(nn.Module):
             "entropy_threshold": getattr(self, "bad_entropy", 3.5),
         }
         bad_cfg.update(kwargs)
+        decode_defaults = getattr(self, "decode_cfg", {}) or {}
+        for key in [
+            "temperature",
+            "top_p",
+            "repetition_penalty",
+            "no_repeat_ngram",
+            "adaptive_granularity",
+            "entropy_top_k",
+            "penalty_window",
+            "top_p_min_k",
+            "top_p_max_k",
+            "exact_copy_mode",
+            "escape_restrict",
+            "use_mtp",
+        ]:
+            if key not in bad_cfg and key in decode_defaults:
+                bad_cfg[key] = decode_defaults[key]
+        if "entropy_top_k" not in bad_cfg and "entropy_topk" in decode_defaults:
+            bad_cfg["entropy_top_k"] = decode_defaults["entropy_topk"]
+        if "penalty_window" not in bad_cfg and "repetition_window" in decode_defaults:
+            bad_cfg["penalty_window"] = decode_defaults["repetition_window"]
+        if "top_p_min_k" not in bad_cfg and "topk_start" in decode_defaults:
+            bad_cfg["top_p_min_k"] = decode_defaults["topk_start"]
+        if "top_p_max_k" not in bad_cfg and "topk_max" in decode_defaults:
+            bad_cfg["top_p_max_k"] = decode_defaults["topk_max"]
+        if "no_repeat_ngram" not in bad_cfg and "no_repeat_ngram_n" in decode_defaults:
+            bad_cfg["no_repeat_ngram"] = decode_defaults["no_repeat_ngram_n"]
         with torch.inference_mode():
             with autocast_context(enabled=self.device.type == "cuda", dtype=self.config.dtype):
                 text, _stats = bad_decode(
@@ -227,5 +451,8 @@ class CoreTransformer(nn.Module):
                     penalty_window=bad_cfg.get("penalty_window", 512),
                     top_p_min_k=bad_cfg.get("top_p_min_k", 128),
                     top_p_max_k=bad_cfg.get("top_p_max_k", 512),
+                    exact_copy_mode=bad_cfg.get("exact_copy_mode", False),
+                    escape_restrict=bad_cfg.get("escape_restrict", False),
+                    use_mtp=bad_cfg.get("use_mtp", True),
                 )
         return text

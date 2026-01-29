@@ -18,7 +18,7 @@ def _to_tensor(tile: np.ndarray, device: str = "cpu", pin_memory: bool = False, 
     if not tile.flags["C_CONTIGUOUS"]:
         tile = np.ascontiguousarray(tile)
     tensor = torch.from_numpy(tile)
-    if pin_memory and device.startswith("cuda"):
+    if pin_memory:
         tensor = tensor.pin_memory()
     return tensor.to(device, non_blocking=non_blocking)
 

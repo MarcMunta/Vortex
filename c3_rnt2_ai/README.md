@@ -48,20 +48,26 @@ python -m c3rnt2 agent-demo
 ```bash
 python -m c3rnt2 eval
 ```
-Generación rápida (BAD decode + stats):
+Generaci?n r?pida (BAD decode + stats):
 ```bash
 python scripts/bench_generate.py --profile dev_small
 ```
+Salida reciente en `data/bench/latest.txt`.
 
-## Configuración
-`config/settings.yaml` define perfiles (`dev_small`, `core_only`, `c3_paged`, `agent`) con parámetros para VORTEX, BAD y self-train.
+## Configuraci?n
+`config/settings.yaml` define perfiles (`dev_small`, `core_only`, `c3_paged`, `agent`) con par?metros para VORTEX, BAD y self-train.
 
-Flags útiles:
-- `core.compile_step`: compila `CoreTransformer.step` (experimental, requiere `torch.compile`).
-- `bad.entropy_top_k`: top-k usado para aproximar entropía en BAD.
-- `bad.penalty_window`: ventana de repetición para penalty.
-- `bad.top_p_min_k` / `bad.top_p_max_k`: límites de top-k adaptativo para top_p.
-- `c3.prefetch_depth`: profundidad del prefetch en PagedWeights.
+Flags ?tiles:
+- `core.mtp_k`: activa Multi-Token Prediction (MTP).
+- `core.compile_step` / `core.compile_local_mixer_step`: compila rutas cr?ticas (experimental).
+- `vortex_model.lava_clusters` / `vortex_model.lava_cluster_top`: ANN coarse->fine en LAVA.
+- `vortex_model.lava_read_every` / `vortex_model.lava_write_every` / `vortex_model.lava_write_on_surprise`: duty-cycling LAVA.
+- `bad.entropy_top_k`: top-k para entrop?a aproximada.
+- `bad.penalty_window`: ventana de repetici?n.
+- `bad.top_p_min_k` / `bad.top_p_max_k`: l?mites top-k adaptativo para top_p.
+- `decode.exact_copy_mode` / `decode.escape_restrict`: control de ESC/bytes.
+- `depth_gating.*`: router de profundidad (min/max + hysteresis).
+- `c3.pinned_memory` / `c3.prefetch_depth`: transferencia as?ncrona.
 
 ## Notas
 - Este MVP prioriza arquitectura, métricas y exactitud. Rendimiento se optimiza en fases siguientes.

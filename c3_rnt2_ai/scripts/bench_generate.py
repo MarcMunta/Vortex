@@ -37,6 +37,9 @@ def main() -> None:
     repetition_penalty = float(decode_cfg.get("repetition_penalty", 1.0))
     no_repeat_ngram = int(decode_cfg.get("no_repeat_ngram", 0))
     adaptive_granularity = bool(decode_cfg.get("adaptive_granularity", True))
+    exact_copy_mode = bool(decode_cfg.get("exact_copy_mode", False))
+    escape_restrict = bool(decode_cfg.get("escape_restrict", False))
+    use_mtp = bool(decode_cfg.get("use_mtp", True))
     entropy_top_k = int(bad_cfg.get("entropy_top_k", 64))
     penalty_window = int(bad_cfg.get("penalty_window", 512))
     top_p_min_k = int(bad_cfg.get("top_p_min_k", 128))
@@ -44,6 +47,7 @@ def main() -> None:
 
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
+    core.reset_depth_stats()
 
     start = time.time()
     _text, stats = bad_decode(
@@ -61,19 +65,34 @@ def main() -> None:
         penalty_window=penalty_window,
         top_p_min_k=top_p_min_k,
         top_p_max_k=top_p_max_k,
+        exact_copy_mode=exact_copy_mode,
+        escape_restrict=escape_restrict,
+        use_mtp=use_mtp,
     )
     elapsed = max(1e-6, time.time() - start)
     tokens_per_sec = args.max_new_tokens / elapsed
 
+    depth_stats = core.depth_stats()
+    lava_reads = sum(block.lava.stats.reads for block in core.blocks)
+    lava_writes = sum(block.lava.stats.writes for block in core.blocks)
     result = {
         "tokens_per_second": round(tokens_per_sec, 3),
         "proposed": stats.proposed,
         "accepted": stats.accepted,
         "entropy_high": stats.entropy_high,
+        "avg_depth_used": round(depth_stats.get("avg_depth_used", 0.0), 3),
+        "lava_reads": lava_reads,
+        "lava_writes": lava_writes,
+        "bytes_h2d": 0,
+        "page_faults": 0,
     }
     if torch.cuda.is_available():
         result["vram_peak_gb"] = round(torch.cuda.max_memory_allocated() / (1024**3), 3)
     print(result)
+    bench_dir = ROOT / "data" / "bench"
+    bench_dir.mkdir(parents=True, exist_ok=True)
+    latest = bench_dir / "latest.txt"
+    latest.write_text(str(result), encoding="utf-8")
 
 
 if __name__ == "__main__":

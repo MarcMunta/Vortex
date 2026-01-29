@@ -16,6 +16,7 @@ class PagedWeightsStats:
     bytes_transferred: int = 0
     compressed_bytes: int = 0
     decompressed_bytes: int = 0
+    bytes_h2d: int = 0
 
 
 class PagedWeights:
@@ -36,14 +37,14 @@ class PagedWeights:
         self.non_blocking = device.startswith("cuda")
         self.stats = PagedWeightsStats()
         self.prefetcher = Prefetcher(
-            self._load_tile,
+            self._load_tile_payload,
             depth=prefetch_depth,
             device=device,
             pin_memory=self.pin_memory,
             async_mode=self.non_blocking,
         )
 
-    def _load_tile(self, tile_id: int):
+    def _load_tile_payload(self, tile_id: int):
         tile = self.tile_store[tile_id]
         codec = None
         shape = None
@@ -53,11 +54,9 @@ class PagedWeights:
             codec = tile.get("codec")
             shape = tuple(tile.get("shape")) if tile.get("shape") else None
             size_bytes = int(tile.get("nbytes") or (len(payload) if payload is not None else 0))
-            self.stats.bytes_transferred += size_bytes
-            self.stats.compressed_bytes += size_bytes
             tensor = decompress_to_tensor(
                 payload,
-                device=self.device,
+                device="cpu" if self.device.startswith("cuda") else self.device,
                 codec=codec,
                 shape=shape,
                 pin_memory=self.pin_memory,
@@ -65,11 +64,32 @@ class PagedWeights:
             )
         else:
             size_bytes = int(tile.nbytes)
-            self.stats.bytes_transferred += size_bytes
-            self.stats.compressed_bytes += size_bytes
-            tensor = decompress_to_tensor(tile, device=self.device, pin_memory=self.pin_memory, non_blocking=self.non_blocking)
+            tensor = decompress_to_tensor(
+                tile,
+                device="cpu" if self.device.startswith("cuda") else self.device,
+                pin_memory=self.pin_memory,
+                non_blocking=self.non_blocking,
+            )
+        return {
+            "tile_id": tile_id,
+            "tensor": tensor,
+            "size_bytes": size_bytes,
+            "compressed_bytes": size_bytes,
+        }
+
+    def _cache_payload(self, payload: dict) -> object:
+        tile_id = payload["tile_id"]
+        tensor = payload["tensor"]
+        size_bytes = int(payload["size_bytes"])
+        compressed_bytes = int(payload["compressed_bytes"])
+        self.stats.bytes_transferred += size_bytes
+        self.stats.compressed_bytes += compressed_bytes
         if hasattr(tensor, "numel"):
-            self.stats.decompressed_bytes += int(tensor.numel() * tensor.element_size())
+            decompressed = int(tensor.numel() * tensor.element_size())
+            self.stats.decompressed_bytes += decompressed
+            if tensor.device.type == "cuda":
+                self.stats.bytes_h2d += decompressed
+                self.cache.record_transfer(compressed_bytes, decompressed)
         self.cache.put((tile_id,), tensor, size_bytes)
         return tensor
 
@@ -81,9 +101,18 @@ class PagedWeights:
                 result.append(cached)
             else:
                 self.stats.page_faults += 1
-                result.append(self._load_tile(tile_id))
+                payload = self._load_tile_payload(tile_id)
+                tensor = payload["tensor"]
+                if self.device.startswith("cuda") and hasattr(tensor, "device") and tensor.device.type == "cpu":
+                    tensor = tensor.to(self.device, non_blocking=True)
+                    payload["tensor"] = tensor
+                result.append(self._cache_payload(payload))
         return result
 
     def prefetch(self, tile_ids: Iterable[int]) -> None:
         self.prefetcher.schedule(tile_ids)
-        self.prefetcher.run()
+        loaded = self.prefetcher.run()
+        for payload in loaded:
+            if isinstance(payload, dict) and "tile_id" in payload:
+                if self.cache.get((payload["tile_id"],)) is None:
+                    self._cache_payload(payload)

@@ -131,6 +131,8 @@ def train(
     macro_min_len: int = 2,
     sub_block_size: int = 0,
     sub_codebook_size: int = 0,
+    sub_block_sizes: List[int] | None = None,
+    sub_codebook_sizes: List[int] | None = None,
 ) -> None:
     blocks = list(iter_blocks(corpus_dir, block_size))
     if not blocks:
@@ -142,12 +144,26 @@ def train(
     if vortex_output is not None:
         macro = build_macro_codebook(corpus_dir, block_size, codebook, macro_size, macro_min_len)
         sub = None
-        if sub_block_size and sub_block_size < block_size:
+        sub_codebooks = None
+        if sub_block_sizes:
+            sub_codebooks = []
+            for idx, sb in enumerate(sub_block_sizes):
+                if sb and sb < block_size:
+                    sub_blocks = list(iter_blocks(corpus_dir, sb))
+                    if not sub_blocks:
+                        continue
+                    size = None
+                    if sub_codebook_sizes and idx < len(sub_codebook_sizes):
+                        size = int(sub_codebook_sizes[idx])
+                    if not size:
+                        size = sub_codebook_size or max(128, codebook_size // 4)
+                    sub_codebooks.append(RNT2Codebook.from_corpus(blocks=sub_blocks, block_size=sb, size=size))
+        elif sub_block_size and sub_block_size < block_size:
             sub_blocks = list(iter_blocks(corpus_dir, sub_block_size))
             if sub_blocks:
                 size = sub_codebook_size or max(128, codebook_size // 4)
                 sub = RNT2Codebook.from_corpus(blocks=sub_blocks, block_size=sub_block_size, size=size)
-        vortex = VortexTokModel(patch_codebook=codebook, macro_codebook=macro, sub_codebook=sub)
+        vortex = VortexTokModel(patch_codebook=codebook, macro_codebook=macro, sub_codebook=sub, sub_codebooks=sub_codebooks)
         vortex.save(vortex_output)
     print({
         "blocks": len(blocks),
@@ -169,7 +185,11 @@ def main():
     parser.add_argument("--macro-min-len", type=int, default=2)
     parser.add_argument("--sub-block-size", type=int, default=16)
     parser.add_argument("--sub-codebook-size", type=int, default=256)
+    parser.add_argument("--sub-block-sizes", type=str, default=None)
+    parser.add_argument("--sub-codebook-sizes", type=str, default=None)
     args = parser.parse_args()
+    sub_block_sizes = [int(x) for x in args.sub_block_sizes.split(",")] if args.sub_block_sizes else None
+    sub_codebook_sizes = [int(x) for x in args.sub_codebook_sizes.split(",")] if args.sub_codebook_sizes else None
     train(
         args.codebook_size,
         args.block_size,
@@ -180,6 +200,8 @@ def main():
         macro_min_len=args.macro_min_len,
         sub_block_size=args.sub_block_size,
         sub_codebook_size=args.sub_codebook_size,
+        sub_block_sizes=sub_block_sizes,
+        sub_codebook_sizes=sub_codebook_sizes,
     )
 
 

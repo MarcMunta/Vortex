@@ -12,16 +12,34 @@ profiles:
       layers: 4
       heads: 4
       vocab_size: 1024
+      mtp_k: 0
+      compile_step: false
+      compile_local_mixer_step: false
     vortex_model:
       window_size: 128
       latent_slots: 64
       lava_top_k: 4
+      lava_clusters: 0
+      lava_cluster_top: 1
+      lava_read_every: 1
+      lava_write_every: 1
+      lava_write_on_surprise: false
+      lava_surprise_threshold: 0.0
+      lava_state_path: data/memory/lava_state.pt
+      lava_state_autoload: false
       local_mixer_kernel: 5
       ssm_state_size: 128
       gated_mlp_ratio: 4
     bad:
       block_size: 8
       entropy_threshold: 3.5
+      entropy_top_k: 64
+      penalty_window: 512
+      top_p_min_k: 128
+      top_p_max_k: 512
+      exact_copy_mode: false
+      escape_restrict: false
+      use_mtp: true
     kv:
       window_size: 128
       kv_quant_bits: 8
@@ -31,6 +49,16 @@ profiles:
       cache_vram_budget_mb: 2048
       prefetch_depth: 2
       compression: zstd
+      pinned_memory: true
+    depth_gating:
+      enabled: false
+      min_depth: 2
+      max_depth: 4
+      hysteresis: 0.2
+      entropy_threshold: 3.5
+      entropy_top_k: 64
+      compute_cost_weight: 0.0
+      smoothness: 1.0
     router:
       top_k: 2
       stability_threshold: 0.1
@@ -58,20 +86,47 @@ profiles:
       layers: 6
       heads: 8
       vocab_size: 2048
+      mtp_k: 0
+      compile_step: false
+      compile_local_mixer_step: false
     vortex_model:
       window_size: 256
       latent_slots: 128
       lava_top_k: 4
+      lava_clusters: 0
+      lava_cluster_top: 1
+      lava_read_every: 1
+      lava_write_every: 1
+      lava_write_on_surprise: false
+      lava_surprise_threshold: 0.0
+      lava_state_path: data/memory/lava_state.pt
+      lava_state_autoload: false
       local_mixer_kernel: 7
       ssm_state_size: 256
       gated_mlp_ratio: 4
     bad:
       block_size: 8
       entropy_threshold: 3.5
+      entropy_top_k: 64
+      penalty_window: 512
+      top_p_min_k: 128
+      top_p_max_k: 512
+      exact_copy_mode: false
+      escape_restrict: false
+      use_mtp: true
     kv:
       window_size: 256
       kv_quant_bits: 8
       latent_slots: 64
+    depth_gating:
+      enabled: false
+      min_depth: 2
+      max_depth: 6
+      hysteresis: 0.2
+      entropy_threshold: 3.5
+      entropy_top_k: 64
+      compute_cost_weight: 0.0
+      smoothness: 1.0
   c3_paged:
     tokenizer:
       rnt2_model_path: data/runs/rnt2_dev.pt
@@ -85,16 +140,34 @@ profiles:
       layers: 6
       heads: 8
       vocab_size: 2048
+      mtp_k: 0
+      compile_step: false
+      compile_local_mixer_step: false
     vortex_model:
       window_size: 256
       latent_slots: 128
       lava_top_k: 4
+      lava_clusters: 0
+      lava_cluster_top: 1
+      lava_read_every: 1
+      lava_write_every: 1
+      lava_write_on_surprise: false
+      lava_surprise_threshold: 0.0
+      lava_state_path: data/memory/lava_state.pt
+      lava_state_autoload: false
       local_mixer_kernel: 7
       ssm_state_size: 256
       gated_mlp_ratio: 4
     bad:
       block_size: 8
       entropy_threshold: 3.5
+      entropy_top_k: 64
+      penalty_window: 512
+      top_p_min_k: 128
+      top_p_max_k: 512
+      exact_copy_mode: false
+      escape_restrict: false
+      use_mtp: true
     kv:
       window_size: 256
       kv_quant_bits: 8
@@ -104,6 +177,16 @@ profiles:
       cache_vram_budget_mb: 4096
       prefetch_depth: 4
       compression: zstd
+      pinned_memory: true
+    depth_gating:
+      enabled: false
+      min_depth: 2
+      max_depth: 6
+      hysteresis: 0.2
+      entropy_threshold: 3.5
+      entropy_top_k: 64
+      compute_cost_weight: 0.0
+      smoothness: 1.0
     router:
       top_k: 4
       stability_threshold: 0.15
@@ -128,20 +211,47 @@ profiles:
       layers: 4
       heads: 4
       vocab_size: 1024
+      mtp_k: 0
+      compile_step: false
+      compile_local_mixer_step: false
     vortex_model:
       window_size: 128
       latent_slots: 64
       lava_top_k: 4
+      lava_clusters: 0
+      lava_cluster_top: 1
+      lava_read_every: 1
+      lava_write_every: 1
+      lava_write_on_surprise: false
+      lava_surprise_threshold: 0.0
+      lava_state_path: data/memory/lava_state.pt
+      lava_state_autoload: false
       local_mixer_kernel: 5
       ssm_state_size: 128
       gated_mlp_ratio: 4
     bad:
       block_size: 8
       entropy_threshold: 3.5
+      entropy_top_k: 64
+      penalty_window: 512
+      top_p_min_k: 128
+      top_p_max_k: 512
+      exact_copy_mode: false
+      escape_restrict: false
+      use_mtp: true
     kv:
       window_size: 128
       kv_quant_bits: 8
       latent_slots: 32
+    depth_gating:
+      enabled: false
+      min_depth: 2
+      max_depth: 4
+      hysteresis: 0.2
+      entropy_threshold: 3.5
+      entropy_top_k: 64
+      compute_cost_weight: 0.0
+      smoothness: 1.0
     agent:
       web_allowlist: ["github.com", "docs.python.org", "pytorch.org"]
       tools_enabled: ["run_tests", "search_web", "edit_repo", "open_docs"]
@@ -171,15 +281,26 @@ profiles:
       arch: vortex_x
       precision: bf16
       compile: true
+      compile_step: false
+      compile_local_mixer_step: false
       hidden_size: 768
       layers: 16
       heads: 12
       mlp_ratio: 4
       dropout: 0.0
+      mtp_k: 4
 
       local_window: 1024
       lava_slots: 256
       lava_top_k: 8
+      lava_clusters: 64
+      lava_cluster_top: 2
+      lava_read_every: 1
+      lava_write_every: 1
+      lava_write_on_surprise: false
+      lava_surprise_threshold: 0.0
+      lava_state_path: data/memory/lava_state.pt
+      lava_state_autoload: false
       lava_addr_dim: 128
 
       ssm:
@@ -199,6 +320,7 @@ profiles:
       cache_vram_budget_mb: 10000
       prefetch_depth: 4
       compression: zstd
+      pinned_memory: true
 
     router:
       top_k: 4
@@ -212,8 +334,25 @@ profiles:
       verify: true
       temperature: 0.7
       top_p: 0.95
+      exact_copy_mode: false
+      escape_restrict: false
+      use_mtp: true
       max_new_tokens: 512
       adaptive_granularity: true
+      entropy_top_k: 64
+      penalty_window: 512
+      top_p_min_k: 128
+      top_p_max_k: 512
+
+    depth_gating:
+      enabled: true
+      min_depth: 8
+      max_depth: 16
+      hysteresis: 0.2
+      entropy_threshold: 3.5
+      entropy_top_k: 64
+      compute_cost_weight: 0.0
+      smoothness: 1.0
 
     agent:
       web_allowlist:

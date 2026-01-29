@@ -11,6 +11,8 @@ class CacheMetrics:
     misses: int = 0
     evictions: int = 0
     bytes_in: int = 0
+    bytes_h2d: int = 0
+    bytes_compressed: int = 0
 
     @property
     def hit_rate(self) -> float:
@@ -59,8 +61,13 @@ class CacheManager:
         entry = CacheEntry(value=value, size_bytes=size_bytes, stability=stability)
         self._entries[key] = entry
         self.current_bytes += size_bytes
+        self.metrics.bytes_in += int(size_bytes)
         self._touch(key, entry)
         self._evict_if_needed()
+
+    def record_transfer(self, bytes_compressed: int, bytes_h2d: int) -> None:
+        self.metrics.bytes_compressed += int(bytes_compressed)
+        self.metrics.bytes_h2d += int(bytes_h2d)
 
     def _evict_if_needed(self) -> None:
         while self.current_bytes > self.capacity_bytes and self._entries:
@@ -84,4 +91,6 @@ class CacheManager:
             "hits": float(self.metrics.hits),
             "misses": float(self.metrics.misses),
             "evictions": float(self.metrics.evictions),
+            "bytes_h2d": float(self.metrics.bytes_h2d),
+            "bytes_compressed": float(self.metrics.bytes_compressed),
         }

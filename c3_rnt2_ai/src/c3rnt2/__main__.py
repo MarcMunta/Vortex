@@ -27,6 +27,8 @@ def _parse_interval(interval: str) -> int:
 
 
 def cmd_tokenizer_train(args: argparse.Namespace) -> None:
+    sub_block_sizes = [int(x) for x in args.sub_block_sizes.split(",")] if args.sub_block_sizes else None
+    sub_codebook_sizes = [int(x) for x in args.sub_codebook_sizes.split(",")] if args.sub_codebook_sizes else None
     rnt2_train.train(
         args.codebook_size,
         args.block_size,
@@ -35,6 +37,10 @@ def cmd_tokenizer_train(args: argparse.Namespace) -> None:
         vortex_output=Path(args.vortex_output),
         macro_size=args.macro_size,
         macro_min_len=args.macro_min_len,
+        sub_block_size=args.sub_block_size,
+        sub_codebook_size=args.sub_codebook_size,
+        sub_block_sizes=sub_block_sizes,
+        sub_codebook_sizes=sub_codebook_sizes,
     )
 
 
@@ -70,6 +76,9 @@ def cmd_chat(args: argparse.Namespace) -> None:
             repetition_penalty=args.repetition_penalty if args.repetition_penalty is not None else float(decode_cfg.get("repetition_penalty", 1.0)),
             no_repeat_ngram=args.no_repeat_ngram if args.no_repeat_ngram is not None else int(decode_cfg.get("no_repeat_ngram", 0)),
             adaptive_granularity=args.adaptive_granularity or bool(decode_cfg.get("adaptive_granularity", False)),
+            exact_copy_mode=bool(decode_cfg.get("exact_copy_mode", False)),
+            escape_restrict=bool(decode_cfg.get("escape_restrict", False)),
+            use_mtp=bool(decode_cfg.get("use_mtp", True)),
         )
         print(response)
 
@@ -117,6 +126,10 @@ def main() -> None:
     tok.add_argument("--codebook-size", type=int, default=1024)
     tok.add_argument("--macro-size", type=int, default=256)
     tok.add_argument("--macro-min-len", type=int, default=2)
+    tok.add_argument("--sub-block-size", type=int, default=16)
+    tok.add_argument("--sub-codebook-size", type=int, default=256)
+    tok.add_argument("--sub-block-sizes", type=str, default=None)
+    tok.add_argument("--sub-codebook-sizes", type=str, default=None)
     tok.set_defaults(func=cmd_tokenizer_train)
 
     ev = sub.add_parser("eval")

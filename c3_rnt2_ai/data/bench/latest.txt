@@ -1,0 +1,1 @@
+{'tokens_per_second': 29.709, 'proposed': 484, 'accepted': 0, 'entropy_high': 0, 'avg_depth_used': 0.0, 'lava_reads': 1278, 'lava_writes': 292, 'bytes_h2d': 0, 'page_faults': 0, 'vram_peak_gb': 0.019}

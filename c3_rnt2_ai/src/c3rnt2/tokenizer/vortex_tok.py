@@ -78,6 +78,19 @@ class VortexTokModel:
     patch_codebook: RNT2Codebook
     macro_codebook: VortexMacroCodebook
     sub_codebook: Optional[RNT2Codebook] = None
+    sub_codebooks: Optional[List[RNT2Codebook]] = None
+
+    @property
+    def sub_codebooks_list(self) -> List[RNT2Codebook]:
+        if self.sub_codebooks:
+            return sorted(self.sub_codebooks, key=lambda cb: cb.block_size, reverse=True)
+        if self.sub_codebook is not None:
+            return [self.sub_codebook]
+        return []
+
+    @property
+    def sub_size_total(self) -> int:
+        return sum(codebook.size for codebook in self.sub_codebooks_list)
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
@@ -88,6 +101,8 @@ class VortexTokModel:
             "macro_sequences": self.macro_codebook.sequences,
             "sub_block_size": self.sub_codebook.block_size if self.sub_codebook else None,
             "sub_entries": self.sub_codebook.entries if self.sub_codebook else None,
+            "sub_block_sizes": [cb.block_size for cb in self.sub_codebooks_list] if self.sub_codebooks_list else None,
+            "sub_entries_list": [cb.entries for cb in self.sub_codebooks_list] if self.sub_codebooks_list else None,
         }
         if torch:
             torch.save(payload, path)
@@ -111,10 +126,17 @@ class VortexTokModel:
         macro = VortexMacroCodebook(sequences=list(payload.get("macro_sequences", [])))
         sub_entries = payload.get("sub_entries")
         sub_block_size = payload.get("sub_block_size")
+        sub_blocks = payload.get("sub_block_sizes")
+        sub_entries_list = payload.get("sub_entries_list")
         sub = None
-        if sub_entries and sub_block_size:
+        sub_codebooks = None
+        if sub_blocks and sub_entries_list:
+            sub_codebooks = []
+            for block_size, entries in zip(sub_blocks, sub_entries_list):
+                sub_codebooks.append(RNT2Codebook(block_size=int(block_size), entries=list(entries)))
+        elif sub_entries and sub_block_size:
             sub = RNT2Codebook(block_size=int(sub_block_size), entries=list(sub_entries))
-        return VortexTokModel(patch_codebook=patch, macro_codebook=macro, sub_codebook=sub)
+        return VortexTokModel(patch_codebook=patch, macro_codebook=macro, sub_codebook=sub, sub_codebooks=sub_codebooks)
 
 
 def _split_blocks(data: bytes, block_size: int) -> List[bytes]:
@@ -146,19 +168,30 @@ def encode(text: str, model: VortexTokModel) -> VortexStream:
             i += 1
         else:
             # fallback: try sub-blocks if available
-            sub = model.sub_codebook
-            if sub is not None and sub.block_size > 0:
+            sub_codebooks = model.sub_codebooks_list
+            if sub_codebooks:
                 sub_tokens: List[VortexToken] = []
                 ok = True
                 block = blocks[i]
-                for j in range(0, len(block), sub.block_size):
-                    chunk = block[j : j + sub.block_size]
-                    padded = chunk.ljust(sub.block_size, b"\x00")
-                    code = sub.find(padded)
-                    if code is None:
-                        ok = False
+                offset = 0
+                for sub in sub_codebooks:
+                    if sub.block_size <= 0 or sub.block_size > len(block):
+                        offset += sub.size
+                        continue
+                    temp_tokens: List[VortexToken] = []
+                    ok = True
+                    for j in range(0, len(block), sub.block_size):
+                        chunk = block[j : j + sub.block_size]
+                        padded = chunk.ljust(sub.block_size, b"\x00")
+                        code = sub.find(padded)
+                        if code is None:
+                            ok = False
+                            break
+                        temp_tokens.append(VortexToken(kind="SUBPATCH", value=offset + code))
+                    if ok and temp_tokens:
+                        sub_tokens.extend(temp_tokens)
                         break
-                    sub_tokens.append(VortexToken(kind="SUBPATCH", value=code))
+                    offset += sub.size
                 if ok and sub_tokens:
                     tokens.extend(sub_tokens)
                     i += 1
@@ -178,9 +211,17 @@ def decode(stream: VortexStream, model: VortexTokModel) -> str:
             for pid in model.macro_codebook.lookup(int(token.value)):
                 out.extend(model.patch_codebook.lookup(int(pid)))
         elif token.kind == "SUBPATCH":
-            if model.sub_codebook is None:
+            sub_codebooks = model.sub_codebooks_list
+            if not sub_codebooks:
                 raise ValueError("SUBPATCH token without sub_codebook")
-            out.extend(model.sub_codebook.lookup(int(token.value)))
+            offset = int(token.value)
+            for sub in sub_codebooks:
+                if offset < sub.size:
+                    out.extend(sub.lookup(offset))
+                    break
+                offset -= sub.size
+            else:
+                raise ValueError("SUBPATCH id out of range")
         elif token.kind == "ESC":
             out.extend(bytes(token.value))
         else:
@@ -208,7 +249,7 @@ def encode_to_ids(text: str, model: VortexTokModel) -> Tuple[List[int], int]:
     ids: List[int] = []
     patch_size = model.patch_codebook.size
     macro_size = model.macro_codebook.size
-    sub_size = model.sub_codebook.size if model.sub_codebook else 0
+    sub_size = model.sub_size_total
     for token in stream.tokens:
         if token.kind == "PATCH":
             ids.append(int(token.value))
@@ -225,7 +266,8 @@ def encode_to_ids(text: str, model: VortexTokModel) -> Tuple[List[int], int]:
 def decode_from_ids(ids: List[int], model: VortexTokModel, total_len: Optional[int] = None) -> str:
     patch_size = model.patch_codebook.size
     macro_size = model.macro_codebook.size
-    sub_size = model.sub_codebook.size if model.sub_codebook else 0
+    sub_codebooks = model.sub_codebooks_list
+    sub_size = model.sub_size_total
     out = bytearray()
     for token_id in ids:
         if token_id < patch_size:
@@ -235,9 +277,16 @@ def decode_from_ids(ids: List[int], model: VortexTokModel, total_len: Optional[i
             for pid in seq:
                 out.extend(model.patch_codebook.lookup(pid))
         elif token_id < patch_size + macro_size + sub_size:
-            if model.sub_codebook is None:
+            if not sub_codebooks:
                 raise ValueError("SUBPATCH id without sub_codebook")
-            out.extend(model.sub_codebook.lookup(token_id - patch_size - macro_size))
+            offset = token_id - patch_size - macro_size
+            for sub in sub_codebooks:
+                if offset < sub.size:
+                    out.extend(sub.lookup(offset))
+                    break
+                offset -= sub.size
+            else:
+                raise ValueError("SUBPATCH id out of range")
         else:
             out.append(token_id - patch_size - macro_size - sub_size)
     if total_len is not None:

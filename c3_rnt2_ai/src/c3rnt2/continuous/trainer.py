@@ -94,9 +94,16 @@ class ContinualTrainer:
                 for block in model.blocks:
                     block.lava.reset_stats()
                 optimizer.zero_grad(set_to_none=True)
+                mtp_weight = float(self.settings.get("continuous", {}).get("mtp_loss_weight", 0.1))
                 with autocast_context(enabled=model.device.type == "cuda", dtype=model.config.dtype):
-                    logits = model.forward(input_ids)
+                    logits, _mtp_logits, aux_loss = model.forward_with_aux(
+                        input_ids,
+                        labels=target_ids,
+                        return_aux=True,
+                    )
                     loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), target_ids.view(-1), ignore_index=-100)
+                    if aux_loss is not None:
+                        loss = loss + mtp_weight * aux_loss
                     mem_cost = sum(block.lava.stats.reads + block.lava.stats.writes for block in model.blocks)
                     loss = loss + 1e-6 * mem_cost
                 if use_scaler:

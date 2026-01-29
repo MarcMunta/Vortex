@@ -183,6 +183,14 @@ def _sample_logits(
     return int(torch.multinomial(probs, num_samples=1).item())
 
 
+def _should_restrict_escape(escape_restrict: bool, exact_copy_mode: bool, escape_mode: str) -> bool:
+    if exact_copy_mode:
+        return True
+    if not escape_restrict:
+        return False
+    return escape_mode in {"exact", "exact-copy"}
+
+
 def bad_decode(
     model,
     prompt: str,
@@ -198,6 +206,9 @@ def bad_decode(
     penalty_window: int = 512,
     top_p_min_k: int = 128,
     top_p_max_k: int = 512,
+    exact_copy_mode: bool = False,
+    escape_restrict: bool = False,
+    use_mtp: bool = True,
 ) -> Tuple[str, BADStats]:
     ids, total_len = model.encode_prompt(prompt)
     stats = BADStats()
@@ -207,6 +218,10 @@ def bad_decode(
     for tok in ids:
         rep_tracker.add(tok)
         ngram_tracker.add(tok)
+
+    use_mtp = bool(use_mtp) and getattr(model, "mtp_k", 0) > 0
+    escape_mode = getattr(model, "escape_mode", "")
+    restrict_escape = _should_restrict_escape(escape_restrict, exact_copy_mode, escape_mode)
 
     with torch.inference_mode():
         with autocast_context(enabled=model.device.type == "cuda", dtype=model.config.dtype):
@@ -218,6 +233,7 @@ def bad_decode(
                 return_logits=True,
                 write_memory=False,
             )
+            last_mtp_logits = None
 
             remaining = max_new_tokens
             while remaining > 0:
@@ -225,7 +241,23 @@ def bad_decode(
                 draft_tokens: List[int] = []
                 draft_rep = rep_tracker.clone()
                 draft_ngram = _DraftNgramTracker(ngram_tracker)
-                for _ in range(draft_block):
+                if use_mtp and last_mtp_logits is not None:
+                    mtp_count = min(draft_block, last_mtp_logits.size(1))
+                    for i in range(mtp_count):
+                        next_tok = _sample_logits(
+                            last_mtp_logits[:, i, :],
+                            temperature,
+                            top_p,
+                            repetition_penalty,
+                            draft_rep,
+                            draft_ngram,
+                            top_p_min_k=top_p_min_k,
+                            top_p_max_k=top_p_max_k,
+                        )
+                        draft_tokens.append(next_tok)
+                        draft_rep.add(next_tok)
+                        draft_ngram.add(next_tok)
+                for _ in range(len(draft_tokens), draft_block):
                     if last_logits_draft is None:
                         last_logits_draft, state_draft = model.step(
                             generated[-1], state_draft, num_layers=model.config.draft_layers, write_memory=False
@@ -249,10 +281,16 @@ def bad_decode(
                 accepted = 0
                 for tok in draft_tokens:
                     if last_logits_full is None:
-                        last_logits_full, state_full = model.step(generated[-1], state_full, write_memory=True)
-                    ent = _approx_entropy(last_logits_full, top_k=entropy_top_k)
-                    escape_mode = getattr(model, "escape_mode", "")
-                    if adaptive_granularity and ent > entropy_threshold and escape_mode in {"exact", "exact-copy", "escape"}:
+                        if use_mtp:
+                            last_logits_full, state_full, last_mtp_logits = model.step(
+                                generated[-1], state_full, write_memory=True, return_mtp=True
+                            )
+                        else:
+                            last_logits_full, state_full = model.step(generated[-1], state_full, write_memory=True)
+                    ent = None
+                    if adaptive_granularity and restrict_escape:
+                        ent = _approx_entropy(last_logits_full, top_k=entropy_top_k)
+                    if adaptive_granularity and restrict_escape and ent is not None and ent > entropy_threshold:
                         stats.entropy_high += 1
                         start = getattr(model, "byte_token_start", 0)
                         byte_slice = last_logits_full[:, start : start + 256]
@@ -287,13 +325,21 @@ def bad_decode(
                         stats.accepted += 1
                         rep_tracker.add(tok)
                         ngram_tracker.add(tok)
-                        last_logits_full, state_full = model.step(tok, state_full, write_memory=True)
+                        if use_mtp:
+                            last_logits_full, state_full, last_mtp_logits = model.step(tok, state_full, write_memory=True, return_mtp=True)
+                        else:
+                            last_logits_full, state_full = model.step(tok, state_full, write_memory=True)
                     else:
                         generated.append(next_tok)
                         stats.rejected += 1
                         rep_tracker.add(next_tok)
                         ngram_tracker.add(next_tok)
-                        last_logits_full, state_full = model.step(next_tok, state_full, write_memory=True)
+                        if use_mtp:
+                            last_logits_full, state_full, last_mtp_logits = model.step(
+                                next_tok, state_full, write_memory=True, return_mtp=True
+                            )
+                        else:
+                            last_logits_full, state_full = model.step(next_tok, state_full, write_memory=True)
                         break
                 remaining -= max(1, accepted)
 

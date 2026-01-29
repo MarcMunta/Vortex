@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Deque, Iterable, List, Optional
 
 try:
@@ -28,9 +29,25 @@ class Prefetcher:
         self.async_mode = async_mode if async_mode is not None else device.startswith("cuda")
         self.stream = None
         self._events: Deque[object] = deque()
+        self._executor = None
         if torch is not None and device.startswith("cuda"):
             if self.async_mode:
                 self.stream = torch.cuda.Stream()
+                self._executor = ThreadPoolExecutor(max_workers=max(1, depth))
+
+    def _maybe_to_device(self, obj: object) -> object:
+        if torch is None or not self.device.startswith("cuda"):
+            return obj
+        if isinstance(obj, torch.Tensor):
+            if obj.device.type == "cpu":
+                return obj.to(self.device, non_blocking=True)
+            return obj
+        if isinstance(obj, dict) and "tensor" in obj:
+            tensor = obj.get("tensor")
+            if isinstance(tensor, torch.Tensor) and tensor.device.type == "cpu":
+                obj["tensor"] = tensor.to(self.device, non_blocking=True)
+            return obj
+        return obj
 
     def schedule(self, tile_ids: Iterable[int]) -> None:
         for tile_id in tile_ids:
@@ -40,13 +57,30 @@ class Prefetcher:
 
     def run(self) -> List[object]:
         loaded = []
+        if self._executor is not None:
+            futures = [self._executor.submit(self.loader, tile_id) for tile_id in list(self.queue)]
+            self.queue.clear()
+            for fut in futures:
+                obj = fut.result()
+                if self.stream is not None:
+                    with torch.cuda.stream(self.stream):
+                        obj = self._maybe_to_device(obj)
+                        loaded.append(obj)
+                        if torch is not None:
+                            event = torch.cuda.Event()
+                            event.record(self.stream)
+                            self._events.append(event)
+                else:
+                    loaded.append(obj)
+            return loaded
         while self.queue:
             tile_id = self.queue.popleft()
             if self.stream is not None:
                 with torch.cuda.stream(self.stream):
                     obj = self.loader(tile_id)
+                    obj = self._maybe_to_device(obj)
                     loaded.append(obj)
-                    if torch is not None and isinstance(obj, torch.Tensor):
+                    if torch is not None:
                         event = torch.cuda.Event()
                         event.record(self.stream)
                         self._events.append(event)
