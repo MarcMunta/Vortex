@@ -62,3 +62,17 @@ class LocalMixer(nn.Module):
                 new_buf = new_buf.detach()
             state = LocalMixerState(buffer=new_buf)
         return out, state
+
+    def step_block(self, x: torch.Tensor, state: LocalMixerState) -> tuple[torch.Tensor, LocalMixerState]:
+        # x: [B, K, H]
+        if x.dim() != 3:
+            raise ValueError("LocalMixer.step_block expects [B, K, H]")
+        if self.kernel_size <= 1:
+            y = self.conv(x.transpose(1, 2)).transpose(1, 2)
+            return y, state
+        seq = torch.cat([state.buffer, x], dim=1)
+        y = self.conv(seq.transpose(1, 2)).transpose(1, 2)
+        new_buf = seq[:, -self.kernel_size + 1 :, :]
+        if not self.training:
+            new_buf = new_buf.detach()
+        return y, LocalMixerState(buffer=new_buf)

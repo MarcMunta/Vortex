@@ -68,3 +68,30 @@ class SSMTrack(nn.Module):
         if not self.training:
             hidden = hidden.detach()
         return self.out_proj(out.squeeze(1)), SSMState(hidden=hidden)
+
+    def step_block(self, x: torch.Tensor, state: SSMState) -> tuple[torch.Tensor, SSMState]:
+        # x: [B, K, H]
+        if x.dim() != 3:
+            raise ValueError("SSMTrack.step_block expects [B, K, H]")
+        orig_dtype = x.dtype
+        x_in = x
+        h_in = state.hidden
+        if orig_dtype == torch.bfloat16:
+            x_in = x_in.float()
+            h_in = h_in.float()
+        try:
+            out, hidden = self.gru(x_in, h_in)
+        except RuntimeError as exc:
+            if "CUDNN_STATUS_NOT_SUPPORTED" in str(exc):
+                prev = torch.backends.cudnn.enabled
+                torch.backends.cudnn.enabled = False
+                out, hidden = self.gru(x_in, h_in)
+                torch.backends.cudnn.enabled = prev
+            else:
+                raise
+        if orig_dtype == torch.bfloat16:
+            out = out.to(orig_dtype)
+            hidden = hidden.to(orig_dtype)
+        if not self.training:
+            hidden = hidden.detach()
+        return self.out_proj(out), SSMState(hidden=hidden)

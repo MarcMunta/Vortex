@@ -49,6 +49,10 @@ def main() -> None:
         torch.cuda.reset_peak_memory_stats()
     core.reset_depth_stats()
 
+    tok_start = time.time()
+    _ids, _total = core.encode_prompt(args.prompt)
+    time_tokenizer_ms = (time.time() - tok_start) * 1000.0
+
     start = time.time()
     _text, stats = bad_decode(
         core,
@@ -77,6 +81,7 @@ def main() -> None:
     lava_writes = sum(block.lava.stats.writes for block in core.blocks)
     result = {
         "tokens_per_second": round(tokens_per_sec, 3),
+        "time_tokenizer_ms": round(time_tokenizer_ms, 3),
         "proposed": stats.proposed,
         "accepted": stats.accepted,
         "entropy_high": stats.entropy_high,
@@ -85,7 +90,19 @@ def main() -> None:
         "lava_writes": lava_writes,
         "bytes_h2d": 0,
         "page_faults": 0,
+        "prefetch_hits": 0,
+        "bytes_compressed_read": 0,
+        "cuda_graphs": bool(settings.get("core", {}).get("cuda_graphs", False)),
+        "lava_clusters": int(settings.get("vortex_model", {}).get("lava_clusters", 0)),
+        "lava_ann_mode": settings.get("vortex_model", {}).get("lava_ann_mode", "flat"),
     }
+    lm_head = getattr(core, "lm_head", None)
+    if lm_head is not None and hasattr(lm_head, "stats"):
+        stats_dict = lm_head.stats()
+        result["bytes_h2d"] = stats_dict.get("bytes_h2d", 0)
+        result["page_faults"] = stats_dict.get("page_faults", 0)
+        result["prefetch_hits"] = stats_dict.get("prefetch_hits", 0)
+        result["bytes_compressed_read"] = stats_dict.get("bytes_compressed_read", 0)
     if torch.cuda.is_available():
         result["vram_peak_gb"] = round(torch.cuda.max_memory_allocated() / (1024**3), 3)
     print(result)

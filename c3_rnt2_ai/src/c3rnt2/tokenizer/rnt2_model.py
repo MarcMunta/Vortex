@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List
 
@@ -18,6 +18,10 @@ except Exception:  # pragma: no cover - optional
 class RNT2Codebook:
     block_size: int
     entries: List[bytes]
+    _index: dict[bytes, int] = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._rebuild_index()
 
     @property
     def size(self) -> int:
@@ -27,10 +31,14 @@ class RNT2Codebook:
         return self.entries[code]
 
     def find(self, block: bytes) -> int | None:
-        try:
-            return self.entries.index(block)
-        except ValueError:
-            return None
+        return self._index.get(block)
+
+    def _rebuild_index(self) -> None:
+        index: dict[bytes, int] = {}
+        for idx, entry in enumerate(self.entries):
+            if entry not in index:
+                index[entry] = idx
+        self._index = index
 
     @staticmethod
     def from_builtin(block_size: int = 64, size: int = 1024) -> "RNT2Codebook":

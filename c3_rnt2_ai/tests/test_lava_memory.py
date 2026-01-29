@@ -16,3 +16,11 @@ def test_lava_memory_cache_shapes_and_finite():
     mem.write_step(torch.randn(4, 32))
     out2 = mem.read_step(x)
     assert torch.isfinite(out2).all()
+
+
+def test_lava_ivf_shapes_no_nan():
+    mem = LAVAMemory(hidden_size=32, latent_slots=16, top_k=4, lava_clusters=4, lava_cluster_top=2, ann_mode="ivf")
+    x = torch.randn(2, 3, 32)
+    out = mem.read_block(x)
+    assert out.shape == x.shape
+    assert torch.isfinite(out).all()

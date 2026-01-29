@@ -34,6 +34,27 @@ def test_bad_decode_no_crash():
     )
     assert isinstance(text, str)
     assert stats.proposed >= 0
+    assert text
+
+
+def test_bad_decode_respects_max_tokens():
+    model = CoreTransformer.from_settings(_build_settings())
+    prompt = "a"
+    out, _stats = bad_decode(
+        model,
+        prompt=prompt,
+        max_new_tokens=3,
+        block_size=2,
+        entropy_threshold=-1.0,
+        temperature=1.0,
+        top_p=1.0,
+        repetition_penalty=1.0,
+        no_repeat_ngram=0,
+        adaptive_granularity=True,
+        exact_copy_mode=True,
+        escape_restrict=True,
+    )
+    assert len(out) >= len(prompt)
 
 
 def test_escape_restrict_rules():

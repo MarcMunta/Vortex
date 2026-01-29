@@ -10,6 +10,35 @@ from torch import nn
 from ..device import detect_device, autocast_context
 from ..tokenizer.vortex_tok import VortexTokModel, load_or_create, encode_to_ids, decode_from_ids
 from .vblock import VBlock, VBlockConfig, VBlockState
+from .lava_memory import LAVAMemory
+from .draft_model import DraftModel, DraftConfig
+
+
+def _maybe_enable_paged_lm_head(model: "CoreTransformer", settings: dict) -> None:
+    runtime_cfg = settings.get("runtime", {}) or {}
+    c3_cfg = settings.get("c3", {}) or {}
+    if not bool(runtime_cfg.get("paged_lm_head", False)):
+        return
+    try:
+        from ..nn.paged_linear import PagedLinear
+    except Exception:
+        return
+    tile_out = int(runtime_cfg.get("paged_tile_out", c3_cfg.get("tile_size", 128)))
+    tile_in = int(runtime_cfg.get("paged_tile_in", model.config.hidden_size))
+    cache_budget_mb = int(runtime_cfg.get("cache_vram_budget_mb", c3_cfg.get("cache_vram_budget_mb", 2048)))
+    prefetch_depth = int(runtime_cfg.get("prefetch_depth", c3_cfg.get("prefetch_depth", 2)))
+    compression = runtime_cfg.get("compression", c3_cfg.get("compression"))
+    pin_memory = bool(runtime_cfg.get("pinned_memory", c3_cfg.get("pinned_memory", True)))
+    model.lm_head = PagedLinear.from_linear(
+        model.lm_head,
+        tile_out=tile_out,
+        tile_in=tile_in,
+        cache_budget_bytes=cache_budget_mb * 1024 * 1024,
+        compression=compression,
+        device=str(model.device),
+        prefetch_depth=prefetch_depth,
+        pin_memory=pin_memory,
+    )
 from .bad_decode import bad_decode
 from .kv_hybrid import KVHybridCache
 
@@ -66,15 +95,21 @@ class VortexXConfig:
     lava_top_k: int
     lava_clusters: int
     lava_cluster_top: int
+    lava_ann_mode: str
+    lava_cluster_ema: float
+    lava_cluster_reassign_threshold: float
     lava_read_every: int
     lava_write_every: int
     lava_write_on_surprise: bool
     lava_surprise_threshold: float
+    lava_shared_groups: int
     local_mixer_kernel: int
     ssm_state_size: int
     gated_mlp_ratio: int
     draft_layers: int
+    draft_hidden: int
     mtp_k: int
+    cuda_graphs: bool
     dtype: str | None = None
     device: str | None = None
 
@@ -95,29 +130,38 @@ class CoreTransformer(nn.Module):
         sub_size = tokenizer.sub_size_total
         self.byte_token_start = tokenizer.patch_codebook.size + tokenizer.macro_codebook.size + sub_size
         self.embed = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.blocks = nn.ModuleList(
-            [
-                VBlock(
-                    VBlockConfig(
-                        hidden_size=config.hidden_size,
-                        window_size=config.window_size,
-                        latent_slots=config.latent_slots,
-                        lava_top_k=config.lava_top_k,
-                        lava_clusters=config.lava_clusters,
-                        lava_cluster_top=config.lava_cluster_top,
-                        lava_read_every=config.lava_read_every,
-                        lava_write_every=config.lava_write_every,
-                        lava_write_on_surprise=config.lava_write_on_surprise,
-                        lava_surprise_threshold=config.lava_surprise_threshold,
-                        local_mixer_kernel=config.local_mixer_kernel,
-                        ssm_state_size=config.ssm_state_size,
-                        gated_mlp_ratio=config.gated_mlp_ratio,
-                        dtype=config.dtype,
-                    )
+        self.blocks = nn.ModuleList()
+        shared_lavas: list[LAVAMemory] = []
+        group_size = max(1, int(getattr(config, "lava_shared_groups", 1)))
+        for layer_idx in range(config.layers):
+            block = VBlock(
+                VBlockConfig(
+                    hidden_size=config.hidden_size,
+                    window_size=config.window_size,
+                    latent_slots=config.latent_slots,
+                    lava_top_k=config.lava_top_k,
+                    lava_clusters=config.lava_clusters,
+                    lava_cluster_top=config.lava_cluster_top,
+                    lava_ann_mode=config.lava_ann_mode,
+                    lava_cluster_ema=config.lava_cluster_ema,
+                    lava_cluster_reassign_threshold=config.lava_cluster_reassign_threshold,
+                    lava_read_every=config.lava_read_every,
+                    lava_write_every=config.lava_write_every,
+                    lava_write_on_surprise=config.lava_write_on_surprise,
+                    lava_surprise_threshold=config.lava_surprise_threshold,
+                    local_mixer_kernel=config.local_mixer_kernel,
+                    ssm_state_size=config.ssm_state_size,
+                    gated_mlp_ratio=config.gated_mlp_ratio,
+                    dtype=config.dtype,
                 )
-                for _ in range(config.layers)
-            ]
-        )
+            )
+            if group_size > 1:
+                group_id = layer_idx // group_size
+                if group_id < len(shared_lavas):
+                    block.lava = shared_lavas[group_id]
+                else:
+                    shared_lavas.append(block.lava)
+            self.blocks.append(block)
         self.norm = nn.LayerNorm(config.hidden_size)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size)
         self.mtp_k = int(getattr(config, "mtp_k", 0))
@@ -127,6 +171,7 @@ class CoreTransformer(nn.Module):
         self._depth_last: int | None = None
         self._depth_tokens = 0
         self._depth_total = 0
+        self.draft_model: DraftModel | None = None
 
     @staticmethod
     def from_settings(settings: dict) -> "CoreTransformer":
@@ -164,6 +209,7 @@ class CoreTransformer(nn.Module):
                 return vx_cfg.get(key, default)
             return core.get(key, default)
 
+        lava_ann_mode = str(_vx("lava_ann_mode", vx_cfg.get("lava_ann_mode", "ivf" if int(_vx("lava_clusters", 0)) > 0 else "flat")))
         cfg = VortexXConfig(
             hidden_size=int(core.get("hidden_size", 256)),
             layers=layers,
@@ -174,15 +220,21 @@ class CoreTransformer(nn.Module):
             lava_top_k=int(_vx("lava_top_k", 4)),
             lava_clusters=int(_vx("lava_clusters", 0)),
             lava_cluster_top=int(_vx("lava_cluster_top", 1)),
+            lava_ann_mode=lava_ann_mode,
+            lava_cluster_ema=float(_vx("lava_cluster_ema", 0.1)),
+            lava_cluster_reassign_threshold=float(_vx("lava_cluster_reassign_threshold", 0.0)),
             lava_read_every=int(_vx("lava_read_every", 1)),
             lava_write_every=int(_vx("lava_write_every", 1)),
             lava_write_on_surprise=bool(_vx("lava_write_on_surprise", False)),
             lava_surprise_threshold=float(_vx("lava_surprise_threshold", 0.0)),
+            lava_shared_groups=int(_vx("lava_shared_groups", 1)),
             local_mixer_kernel=int(_vx("local_mixer_kernel", 5)),
             ssm_state_size=int(_vx("ssm_state_size", vx_cfg.get("ssm", {}).get("state_dim", core.get("ssm", {}).get("state_dim", 128)))),
             gated_mlp_ratio=int(vx_cfg.get("gated_mlp_ratio", core.get("mlp_ratio", 4))),
             draft_layers=int(vx_cfg.get("draft_layers", draft_layers)),
+            draft_hidden=int(vx_cfg.get("draft_hidden", core.get("draft_hidden", core.get("hidden_size", 256)))),
             mtp_k=int(core.get("mtp_k", 0)),
+            cuda_graphs=bool(core.get("cuda_graphs", vx_cfg.get("cuda_graphs", False))),
             dtype=dtype_override or device_info.dtype,
             device=device_info.device,
         )
@@ -196,6 +248,49 @@ class CoreTransformer(nn.Module):
         lava_state_path = vx_cfg.get("lava_state_path")
         if lava_state_path and bool(vx_cfg.get("lava_state_autoload", False)):
             model.load_memory_state(lava_state_path)
+        _maybe_enable_paged_lm_head(model, settings)
+        draft_cfg = decode_cfg.get("draft_model", {}) or vx_cfg.get("draft_model", {})
+        if draft_cfg.get("enabled"):
+            draft_layers = int(draft_cfg.get("draft_layers", cfg.draft_layers))
+            draft_hidden = int(draft_cfg.get("draft_hidden", cfg.draft_hidden))
+            share_embed = bool(draft_cfg.get("share_embeddings", True))
+            share_head = bool(draft_cfg.get("share_lm_head", True))
+            draft_config = DraftConfig(
+                hidden_size=draft_hidden,
+                layers=draft_layers,
+                vocab_size=cfg.vocab_size,
+                window_size=cfg.window_size,
+                latent_slots=int(draft_cfg.get("latent_slots", cfg.latent_slots)),
+                lava_top_k=int(draft_cfg.get("lava_top_k", cfg.lava_top_k)),
+                lava_clusters=int(draft_cfg.get("lava_clusters", cfg.lava_clusters)),
+                lava_cluster_top=int(draft_cfg.get("lava_cluster_top", cfg.lava_cluster_top)),
+                lava_ann_mode=str(draft_cfg.get("lava_ann_mode", cfg.lava_ann_mode)),
+                lava_cluster_ema=float(draft_cfg.get("lava_cluster_ema", cfg.lava_cluster_ema)),
+                lava_cluster_reassign_threshold=float(draft_cfg.get("lava_cluster_reassign_threshold", cfg.lava_cluster_reassign_threshold)),
+                lava_read_every=int(draft_cfg.get("lava_read_every", cfg.lava_read_every)),
+                lava_write_every=int(draft_cfg.get("lava_write_every", cfg.lava_write_every)),
+                lava_write_on_surprise=bool(draft_cfg.get("lava_write_on_surprise", cfg.lava_write_on_surprise)),
+                lava_surprise_threshold=float(draft_cfg.get("lava_surprise_threshold", cfg.lava_surprise_threshold)),
+                local_mixer_kernel=int(draft_cfg.get("local_mixer_kernel", cfg.local_mixer_kernel)),
+                ssm_state_size=int(draft_cfg.get("ssm_state_size", cfg.ssm_state_size)),
+                gated_mlp_ratio=int(draft_cfg.get("gated_mlp_ratio", cfg.gated_mlp_ratio)),
+                dtype=cfg.dtype,
+                device=device_info.device,
+            )
+            draft_model = DraftModel(
+                draft_config,
+                shared_embed=model.embed if share_embed else None,
+                shared_lm_head=model.lm_head if share_head else None,
+                base_hidden=cfg.hidden_size,
+            )
+            draft_model.to(device_info.device, dtype=model.dtype if device_info.device.startswith("cuda") else None)
+            draft_path = draft_cfg.get("path")
+            if draft_path:
+                try:
+                    draft_model.load_state_dict(torch.load(draft_path, map_location="cpu"), strict=False)
+                except Exception:
+                    pass
+            model.draft_model = draft_model
         # Sync device/dtype with actual parameters for downstream helpers
         param = next(model.parameters(), None)
         if param is not None:
@@ -319,6 +414,8 @@ class CoreTransformer(nn.Module):
     def reset_state(self) -> None:
         for block in self.blocks:
             block.lava.reset_state()
+        if self.draft_model is not None:
+            self.draft_model.reset_state()
 
     def save_memory_state(self, path: str | Path) -> None:
         path = Path(path)
@@ -434,6 +531,53 @@ class CoreTransformer(nn.Module):
             outputs.append(mtp_logits)
         if return_depth:
             outputs.append(depth_used)
+        if len(outputs) == 2:
+            return outputs[0], outputs[1]  # type: ignore[return-value]
+        return tuple(outputs)
+
+    def step_block(
+        self,
+        token_ids: torch.Tensor,
+        state: List[VBlockState],
+        num_layers: int | None = None,
+        write_memory: bool = True,
+        return_mtp: bool = False,
+    ) -> tuple[torch.Tensor, List[VBlockState]] | tuple[torch.Tensor, List[VBlockState], torch.Tensor | None]:
+        if token_ids.dim() == 1:
+            token_ids = token_ids.unsqueeze(0)
+        if token_ids.device != self.device:
+            token_ids = token_ids.to(self.device)
+        depth_cfg = self.depth_gating if num_layers is None else {}
+        if depth_cfg.get("enabled"):
+            logits_list: list[torch.Tensor] = []
+            new_state = state
+            for t in range(token_ids.size(1)):
+                tok = int(token_ids[0, t].item())
+                if return_mtp:
+                    logits_t, new_state, mtp_logits = self.step(tok, new_state, num_layers=num_layers, write_memory=write_memory, return_mtp=True)
+                else:
+                    logits_t, new_state = self.step(tok, new_state, num_layers=num_layers, write_memory=write_memory)
+                    mtp_logits = None
+                logits_list.append(logits_t)
+            logits_seq = torch.stack(logits_list, dim=1)
+            if return_mtp:
+                return logits_seq, new_state, mtp_logits
+            return logits_seq, new_state
+        with autocast_context(enabled=self.device.type == "cuda", dtype=self.config.dtype):
+            x = self.embed(token_ids)
+            new_state: List[VBlockState] = []
+            depth_used = num_layers or self.config.layers
+            for idx, block in enumerate(self.blocks[:depth_used]):
+                x, layer_state = block.step_block(x, state[idx], write_memory=write_memory)
+                new_state.append(layer_state)
+            x = self.norm(x)
+            logits = self.lm_head(x)
+            mtp_logits = None
+            if return_mtp and self.mtp_k > 0 and self.mtp_head is not None:
+                mtp_logits = self.mtp_head(x).view(x.shape[0], x.shape[1], self.mtp_k, -1)
+        outputs: list[object] = [logits, new_state + state[depth_used:]]
+        if return_mtp:
+            outputs.append(mtp_logits)
         if len(outputs) == 2:
             return outputs[0], outputs[1]  # type: ignore[return-value]
         return tuple(outputs)

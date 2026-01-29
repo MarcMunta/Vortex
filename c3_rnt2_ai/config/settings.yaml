@@ -363,6 +363,32 @@ profiles:
       tools_enabled: ["run_tests", "search_web", "open_docs", "propose_patch"]
       rate_limit_per_min: 30
 
+  rtx4080_16gb_vortexx_next:
+    base_profile: rtx4080_16gb_vortexx
+    core:
+      cuda_graphs: true
+    vortex_model:
+      lava_ann_mode: ivf
+      lava_cluster_ema: 0.1
+      lava_cluster_reassign_threshold: 0.05
+      lava_shared_groups: 4
+      lava_write_every: 2
+    decode:
+      draft_model:
+        enabled: true
+        draft_layers: 6
+        draft_hidden: 512
+        share_embeddings: true
+        share_lm_head: true
+    runtime:
+      paged_lm_head: true
+      paged_tile_out: 256
+      paged_tile_in: 768
+      cache_vram_budget_mb: 4096
+      prefetch_depth: 4
+      compression: zstd
+      pinned_memory: true
+
   safe_selftrain_4080:
     base_profile: rtx4080_16gb_vortexx
 

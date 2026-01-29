@@ -18,6 +18,9 @@ class VBlockConfig:
     lava_top_k: int
     lava_clusters: int
     lava_cluster_top: int
+    lava_ann_mode: str
+    lava_cluster_ema: float
+    lava_cluster_reassign_threshold: float
     lava_read_every: int
     lava_write_every: int
     lava_write_on_surprise: bool
@@ -69,6 +72,9 @@ class VBlock(nn.Module):
             dtype=config.dtype,
             lava_clusters=config.lava_clusters,
             lava_cluster_top=config.lava_cluster_top,
+            ann_mode=config.lava_ann_mode,
+            cluster_ema=config.lava_cluster_ema,
+            cluster_reassign_threshold=config.lava_cluster_reassign_threshold,
             read_every=config.lava_read_every,
             write_every=config.lava_write_every,
             write_on_surprise=config.lava_write_on_surprise,
@@ -100,15 +106,35 @@ class VBlock(nn.Module):
         ssm_out, ssm_state = self.ssm.step(self.norm2(x), state.ssm)
         x = x + ssm_out
         surprise = None
-        if state.prev is not None:
+        if write_memory and self.lava.write_on_surprise and state.prev is not None:
             delta = x - state.prev
-            surprise = float(delta.norm(dim=-1).mean().item())
+            surprise = delta.norm(dim=-1)
         if self.lava.should_read():
             mem = self.lava.read_step(self.norm3(x))
             x = x + mem
-        if write_memory and self.lava.should_write(surprise):
-            self.lava.write_step(x)
+        if write_memory and self.lava.should_write():
+            self.lava.write_step(x, surprise=surprise)
         x = x + self.mlp(self.norm4(x))
         new_prev = x.detach() if not self.training else x
         self.lava.step_advance()
+        return x, VBlockState(local=local_state, ssm=ssm_state, prev=new_prev)
+
+    def step_block(self, x: torch.Tensor, state: VBlockState, write_memory: bool = True) -> tuple[torch.Tensor, VBlockState]:
+        # x: [B, K, H]
+        local_out, local_state = self.local.step_block(self.norm1(x), state.local)
+        x = x + local_out
+        ssm_out, ssm_state = self.ssm.step_block(self.norm2(x), state.ssm)
+        x = x + ssm_out
+        surprise = None
+        if write_memory and self.lava.write_on_surprise and state.prev is not None:
+            prevs = torch.cat([state.prev.unsqueeze(1), x[:, :-1, :]], dim=1)
+            delta = x - prevs
+            surprise = delta.norm(dim=-1)
+        mem = self.lava.read_block(self.norm3(x))
+        x = x + mem
+        if write_memory and self.lava.should_write():
+            self.lava.write_block(x, surprise=surprise)
+        x = x + self.mlp(self.norm4(x))
+        new_prev = x[:, -1, :].detach() if not self.training else x[:, -1, :]
+        self.lava.step_advance_block(x.size(1))
         return x, VBlockState(local=local_state, ssm=ssm_state, prev=new_prev)

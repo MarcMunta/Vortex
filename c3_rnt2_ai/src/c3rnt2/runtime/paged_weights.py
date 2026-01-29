@@ -17,6 +17,7 @@ class PagedWeightsStats:
     compressed_bytes: int = 0
     decompressed_bytes: int = 0
     bytes_h2d: int = 0
+    prefetch_hits: int = 0
 
 
 class PagedWeights:
@@ -36,6 +37,7 @@ class PagedWeights:
         self.pin_memory = pin_memory if pin_memory is not None else device.startswith("cuda")
         self.non_blocking = device.startswith("cuda")
         self.stats = PagedWeightsStats()
+        self._prefetched: set[int] = set()
         self.prefetcher = Prefetcher(
             self._load_tile_payload,
             depth=prefetch_depth,
@@ -98,6 +100,9 @@ class PagedWeights:
         for tile_id in tile_ids:
             cached = self.cache.get((tile_id,))
             if cached is not None:
+                if tile_id in self._prefetched:
+                    self.stats.prefetch_hits += 1
+                    self._prefetched.discard(tile_id)
                 result.append(cached)
             else:
                 self.stats.page_faults += 1
@@ -116,3 +121,4 @@ class PagedWeights:
             if isinstance(payload, dict) and "tile_id" in payload:
                 if self.cache.get((payload["tile_id"],)) is None:
                     self._cache_payload(payload)
+                    self._prefetched.add(int(payload["tile_id"]))
