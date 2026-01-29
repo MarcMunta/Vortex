@@ -35,7 +35,13 @@ class PagedWeights:
         self.pin_memory = pin_memory if pin_memory is not None else device.startswith("cuda")
         self.non_blocking = device.startswith("cuda")
         self.stats = PagedWeightsStats()
-        self.prefetcher = Prefetcher(self._load_tile, depth=prefetch_depth, device=device)
+        self.prefetcher = Prefetcher(
+            self._load_tile,
+            depth=prefetch_depth,
+            device=device,
+            pin_memory=self.pin_memory,
+            async_mode=self.non_blocking,
+        )
 
     def _load_tile(self, tile_id: int):
         tile = self.tile_store[tile_id]

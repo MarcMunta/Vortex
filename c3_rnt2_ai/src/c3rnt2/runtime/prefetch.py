@@ -12,14 +12,25 @@ except Exception:  # pragma: no cover
 class Prefetcher:
     """Simple CPU->GPU prefetch scheduler (sync MVP)."""
 
-    def __init__(self, loader: Callable[[int], object], depth: int = 2, device: str = "cpu"):
+    def __init__(
+        self,
+        loader: Callable[[int], object],
+        depth: int = 2,
+        device: str = "cpu",
+        pin_memory: Optional[bool] = None,
+        async_mode: Optional[bool] = None,
+    ):
         self.loader = loader
         self.depth = depth
         self.queue: Deque[int] = deque()
         self.device = device
+        self.pin_memory = pin_memory if pin_memory is not None else device.startswith("cuda")
+        self.async_mode = async_mode if async_mode is not None else device.startswith("cuda")
         self.stream = None
+        self._events: Deque[object] = deque()
         if torch is not None and device.startswith("cuda"):
-            self.stream = torch.cuda.Stream()
+            if self.async_mode:
+                self.stream = torch.cuda.Stream()
 
     def schedule(self, tile_ids: Iterable[int]) -> None:
         for tile_id in tile_ids:
@@ -33,7 +44,21 @@ class Prefetcher:
             tile_id = self.queue.popleft()
             if self.stream is not None:
                 with torch.cuda.stream(self.stream):
-                    loaded.append(self.loader(tile_id))
+                    obj = self.loader(tile_id)
+                    loaded.append(obj)
+                    if torch is not None and isinstance(obj, torch.Tensor):
+                        event = torch.cuda.Event()
+                        event.record(self.stream)
+                        self._events.append(event)
             else:
                 loaded.append(self.loader(tile_id))
         return loaded
+
+    def synchronize(self) -> None:
+        if self.stream is None or not self._events:
+            return
+        last = self._events.pop()
+        try:
+            last.synchronize()
+        finally:
+            self._events.clear()

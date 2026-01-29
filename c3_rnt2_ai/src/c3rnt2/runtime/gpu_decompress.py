@@ -15,7 +15,9 @@ except Exception:  # pragma: no cover
 def _to_tensor(tile: np.ndarray, device: str = "cpu", pin_memory: bool = False, non_blocking: bool = False):
     if torch is None:
         raise RuntimeError("PyTorch not available")
-    tensor = torch.from_numpy(tile.copy())
+    if not tile.flags["C_CONTIGUOUS"]:
+        tile = np.ascontiguousarray(tile)
+    tensor = torch.from_numpy(tile)
     if pin_memory and device.startswith("cuda"):
         tensor = tensor.pin_memory()
     return tensor.to(device, non_blocking=non_blocking)

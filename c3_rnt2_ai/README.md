@@ -1,13 +1,13 @@
 # VORTEX-X (C3 + RNT-2 + LAVA + BAD)
 
-Este repo implementa un prototipo modular para una ìIA 120B-likeî local combinando:
-- **C3**: pesos paginados y comprimidos con cachÈ coherente.
-- **VORTEX-Tok**: tokenizaciÛn reversible de tasa variable (macro/patch/ESC).
+Este repo implementa un prototipo modular para una ‚ÄúIA 120B-like‚Äù local combinando:
+- **C3**: pesos paginados y comprimidos con cach√© coherente.
+- **VORTEX-Tok**: tokenizaci√≥n reversible de tasa variable (macro/patch/ESC).
 - **V-Blocks**: LocalMixer + SSM + LAVA Memory + GatedMLP.
 - **BAD**: Blockwise Adaptive Decoding (draft+verify).
 - **Agente**: herramientas, memoria persistente, auto-entrenamiento y auto-mejora segura.
 
-## InstalaciÛn
+## Instalaci√≥n
 ```bash
 python -m venv .venv
 . .venv/bin/activate  # en Windows: .venv\Scripts\activate
@@ -36,7 +36,7 @@ python -m c3rnt2 tokenizer-train --corpus data/corpora
 Usa V-Blocks (LocalMixer + SSM + LAVA + GatedMLP). El contexto largo depende de LAVA + SSM, no de KV infinito.
 
 ## C3 Runtime
-El runtime usa tiles comprimidos y cachÈ con LRU + estabilidad. En el MVP, la descompresiÛn ocurre en CPU/torch.
+El runtime usa tiles comprimidos y cach√© con LRU + estabilidad. En el MVP, la descompresi√≥n ocurre en CPU/torch.
 
 ## Agente y Auto-mejora
 El demo crea un repo mini, abre docs (best effort), edita un bug y ejecuta tests.
@@ -48,10 +48,21 @@ python -m c3rnt2 agent-demo
 ```bash
 python -m c3rnt2 eval
 ```
+Generaci√≥n r√°pida (BAD decode + stats):
+```bash
+python scripts/bench_generate.py --profile dev_small
+```
 
-## ConfiguraciÛn
-`config/settings.yaml` define perfiles (`dev_small`, `core_only`, `c3_paged`, `agent`) con par·metros para VORTEX, BAD y self-train.
+## Configuraci√≥n
+`config/settings.yaml` define perfiles (`dev_small`, `core_only`, `c3_paged`, `agent`) con par√°metros para VORTEX, BAD y self-train.
+
+Flags √∫tiles:
+- `core.compile_step`: compila `CoreTransformer.step` (experimental, requiere `torch.compile`).
+- `bad.entropy_top_k`: top-k usado para aproximar entrop√≠a en BAD.
+- `bad.penalty_window`: ventana de repetici√≥n para penalty.
+- `bad.top_p_min_k` / `bad.top_p_max_k`: l√≠mites de top-k adaptativo para top_p.
+- `c3.prefetch_depth`: profundidad del prefetch en PagedWeights.
 
 ## Notas
-- Este MVP prioriza arquitectura, mÈtricas y exactitud. Rendimiento se optimiza en fases siguientes.
-- El repo est· diseÒado para enchufar un backend HF m·s grande en el futuro.
+- Este MVP prioriza arquitectura, m√©tricas y exactitud. Rendimiento se optimiza en fases siguientes.
+- El repo est√° dise√±ado para enchufar un backend HF m√°s grande en el futuro.

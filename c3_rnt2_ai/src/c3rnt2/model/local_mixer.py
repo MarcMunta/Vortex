@@ -48,9 +48,14 @@ class LocalMixer(nn.Module):
             window = x.unsqueeze(2)
         else:
             window = torch.cat([state.buffer, x.unsqueeze(1)], dim=1)
-        # depthwise conv over [B, H, K]
-        out = F.conv1d(window.transpose(1, 2), self.conv.weight, self.conv.bias, groups=self.conv.groups)
-        out = out.squeeze(-1)
+        if self.kernel_size > 1:
+            window_bhk = window.transpose(1, 2)
+        else:
+            window_bhk = window
+        weight = self.conv.weight.squeeze(1)
+        out = (window_bhk * weight.unsqueeze(0)).sum(dim=2)
+        if self.conv.bias is not None:
+            out = out + self.conv.bias
         if self.kernel_size > 1:
             new_buf = window[:, 1:, :]
             if not self.training:

@@ -33,12 +33,32 @@ class LAVAMemory(nn.Module):
 
         self.register_buffer("addresses", torch.randn(latent_slots, hidden_size) * 0.02)
         self.register_buffer("contents", torch.randn(latent_slots, hidden_size) * 0.02)
+        self.register_buffer("addresses_norm", torch.empty(latent_slots, hidden_size))
+        self.register_buffer("addresses_norm_t", torch.empty(hidden_size, latent_slots))
         self.addr_proj = nn.Linear(hidden_size, hidden_size, bias=False)
         self.read_proj = nn.Linear(hidden_size, hidden_size, bias=False)
 
         self.register_buffer("age", torch.zeros(latent_slots))
         self.register_buffer("importance", torch.zeros(latent_slots))
         self.stats = LavaStats()
+        self._refresh_address_cache()
+
+    def _refresh_address_cache(self) -> None:
+        with torch.no_grad():
+            eps = 1e-8
+            norm = torch.linalg.vector_norm(self.addresses, dim=-1, keepdim=True).clamp_min(eps)
+            addr_norm = self.addresses / norm
+            self.addresses_norm.copy_(addr_norm)
+            self.addresses_norm_t.copy_(addr_norm.transpose(0, 1))
+
+    def _update_address_cache_row(self, slot: int) -> None:
+        with torch.no_grad():
+            eps = 1e-8
+            row = self.addresses[slot]
+            denom = torch.linalg.vector_norm(row, dim=-1).clamp_min(eps)
+            row_norm = row / denom
+            self.addresses_norm[slot].copy_(row_norm)
+            self.addresses_norm_t[:, slot].copy_(row_norm)
 
     def reset_state(self) -> None:
         with torch.no_grad():
@@ -47,6 +67,7 @@ class LAVAMemory(nn.Module):
             self.age.zero_()
             self.importance.zero_()
             self.stats = LavaStats()
+        self._refresh_address_cache()
 
     def reset_stats(self) -> None:
         self.stats = LavaStats()
@@ -73,6 +94,7 @@ class LAVAMemory(nn.Module):
             self.contents.copy_(payload_t["contents"].to(self.contents.device))
             self.age.copy_(payload_t["age"].to(self.age.device))
             self.importance.copy_(payload_t["importance"].to(self.importance.device))
+        self._refresh_address_cache()
         return True
 
     def read(self, x: torch.Tensor) -> torch.Tensor:
@@ -80,9 +102,10 @@ class LAVAMemory(nn.Module):
             return self.read_step(x)
         with autocast_context(enabled=x.is_cuda, dtype=self.dtype):
             q = self.addr_proj(x)
-            q_norm = torch.nn.functional.normalize(q, dim=-1)
-            k_norm = torch.nn.functional.normalize(self.addresses, dim=-1)
-            scores = torch.matmul(q_norm, k_norm.t())
+            q_norm = torch.nn.functional.normalize(q, dim=-1, eps=1e-6)
+            batch, seq, hidden = q_norm.shape
+            q_flat = q_norm.reshape(batch * seq, hidden)
+            scores = torch.matmul(q_flat, self.addresses_norm_t).view(batch, seq, self.latent_slots)
             top_k = min(self.top_k, self.latent_slots)
             vals, idx = torch.topk(scores, k=top_k, dim=-1)
             attn = torch.softmax(vals, dim=-1)
@@ -105,14 +128,14 @@ class LAVAMemory(nn.Module):
             self.age.add_(1.0)
             self.age[slot] = 0.0
             self.stats.writes += 1
+            self._update_address_cache_row(slot)
 
     def read_step(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B, H]
         with autocast_context(enabled=x.is_cuda, dtype=self.dtype):
             q = self.addr_proj(x)
-            q_norm = torch.nn.functional.normalize(q, dim=-1)
-            k_norm = torch.nn.functional.normalize(self.addresses, dim=-1)
-            scores = torch.matmul(q_norm, k_norm.t())
+            q_norm = torch.nn.functional.normalize(q, dim=-1, eps=1e-6)
+            scores = torch.matmul(q_norm, self.addresses_norm_t)
             top_k = min(self.top_k, self.latent_slots)
             vals, idx = torch.topk(scores, k=top_k, dim=-1)
             attn = torch.softmax(vals, dim=-1)
@@ -132,3 +155,4 @@ class LAVAMemory(nn.Module):
             self.age.add_(1.0)
             self.age[slot] = 0.0
             self.stats.writes += 1
+            self._update_address_cache_row(slot)

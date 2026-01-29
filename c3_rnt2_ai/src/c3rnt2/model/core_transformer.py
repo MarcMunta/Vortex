@@ -115,6 +115,8 @@ class CoreTransformer(nn.Module):
             model.device = torch.device(device_info.device)
         if core.get("compile") and hasattr(torch, "compile"):
             model.forward = torch.compile(model.forward)  # type: ignore[method-assign]
+        if core.get("compile_step") and hasattr(torch, "compile"):
+            model.step = torch.compile(model.step)  # type: ignore[method-assign]
         return model
 
     def forward(self, input_ids: torch.Tensor, num_layers: int | None = None) -> torch.Tensor:
@@ -221,5 +223,9 @@ class CoreTransformer(nn.Module):
                     repetition_penalty=bad_cfg.get("repetition_penalty", 1.0),
                     no_repeat_ngram=bad_cfg.get("no_repeat_ngram", 0),
                     adaptive_granularity=bad_cfg.get("adaptive_granularity", True),
+                    entropy_top_k=bad_cfg.get("entropy_top_k", 64),
+                    penalty_window=bad_cfg.get("penalty_window", 512),
+                    top_p_min_k=bad_cfg.get("top_p_min_k", 128),
+                    top_p_max_k=bad_cfg.get("top_p_max_k", 512),
                 )
         return text

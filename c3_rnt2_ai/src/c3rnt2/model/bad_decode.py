@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import Deque, Dict, List, Tuple
 
 import torch
 
 from ..device import autocast_context
+
 
 @dataclass
 class BADStats:
@@ -15,56 +17,169 @@ class BADStats:
     entropy_high: int = 0
 
 
-def _entropy(logits: torch.Tensor) -> float:
-    probs = torch.softmax(logits, dim=-1)
-    ent = -(probs * torch.log(probs + 1e-9)).sum(dim=-1)
+class _RepetitionTracker:
+    def __init__(self, window_size: int):
+        self.window_size = window_size
+        self.queue: Deque[int] = deque()
+        self.counts: Dict[int, int] = {}
+
+    def add(self, token: int) -> None:
+        if self.window_size <= 0:
+            return
+        self.queue.append(token)
+        self.counts[token] = self.counts.get(token, 0) + 1
+        if len(self.queue) > self.window_size:
+            old = self.queue.popleft()
+            remaining = self.counts.get(old, 0) - 1
+            if remaining <= 0:
+                self.counts.pop(old, None)
+            else:
+                self.counts[old] = remaining
+
+    def ids(self) -> List[int]:
+        return list(self.counts.keys())
+
+    def clone(self) -> "_RepetitionTracker":
+        dup = _RepetitionTracker(self.window_size)
+        dup.queue = deque(self.queue)
+        dup.counts = dict(self.counts)
+        return dup
+
+
+class _NgramTracker:
+    def __init__(self, n: int):
+        self.n = n
+        self.map: Dict[Tuple[int, ...], set[int]] = {}
+        self.recent: Deque[int] = deque(maxlen=max(0, n - 1))
+
+    def add(self, token: int) -> None:
+        if self.n <= 0:
+            return
+        if len(self.recent) == self.n - 1:
+            prefix = tuple(self.recent)
+            self.map.setdefault(prefix, set()).add(token)
+        self.recent.append(token)
+
+    def banned(self) -> set[int]:
+        if self.n <= 0 or len(self.recent) < self.n - 1:
+            return set()
+        return self.map.get(tuple(self.recent), set())
+
+
+class _DraftNgramTracker:
+    def __init__(self, base: _NgramTracker):
+        self.base = base
+        self.n = base.n
+        self.recent: Deque[int] = deque(base.recent, maxlen=base.recent.maxlen)
+        self.added: Dict[Tuple[int, ...], set[int]] = {}
+
+    def add(self, token: int) -> None:
+        if self.n <= 0:
+            return
+        if len(self.recent) == self.n - 1:
+            prefix = tuple(self.recent)
+            self.added.setdefault(prefix, set()).add(token)
+        self.recent.append(token)
+
+    def banned(self) -> set[int]:
+        if self.n <= 0 or len(self.recent) < self.n - 1:
+            return set()
+        prefix = tuple(self.recent)
+        banned = set()
+        base_set = self.base.map.get(prefix)
+        if base_set:
+            banned.update(base_set)
+        added_set = self.added.get(prefix)
+        if added_set:
+            banned.update(added_set)
+        return banned
+
+
+def _approx_entropy(logits: torch.Tensor, top_k: int = 64, eps: float = 1e-9) -> float:
+    vocab = logits.size(-1)
+    k = min(max(4, top_k), vocab)
+    values, _ = torch.topk(logits.float(), k=k, dim=-1)
+    lse_top = torch.logsumexp(values, dim=-1, keepdim=True)
+    if vocab > k:
+        kth = values[..., -1:]
+        tail_mass = (vocab - k) * torch.exp(kth - lse_top)
+        lse_total = lse_top + torch.log1p(tail_mass)
+        probs = torch.exp(values - lse_total)
+        p_top = probs.sum(dim=-1, keepdim=True)
+        p_tail = torch.clamp(1.0 - p_top, min=eps)
+        ent_top = -(probs * torch.log(torch.clamp(probs, min=eps))).sum(dim=-1)
+        ent_tail = -p_tail.squeeze(-1) * torch.log(p_tail.squeeze(-1) / max(1, vocab - k))
+        ent = ent_top + ent_tail
+    else:
+        probs = torch.softmax(values, dim=-1)
+        ent = -(probs * torch.log(torch.clamp(probs, min=eps))).sum(dim=-1)
     return float(ent.mean().item())
 
 
-def _apply_repetition_penalty(logits: torch.Tensor, generated: List[int], penalty: float) -> torch.Tensor:
-    if penalty <= 1.0:
-        return logits
-    logits = logits.clone()
-    for token_id in set(generated):
-        val = logits[0, token_id]
-        if val > 0:
-            logits[0, token_id] = val / penalty
-        else:
-            logits[0, token_id] = val * penalty
-    return logits
+def _apply_repetition_penalty(logits: torch.Tensor, token_ids: List[int], penalty: float) -> None:
+    if penalty <= 1.0 or not token_ids:
+        return
+    idx = torch.tensor(token_ids, device=logits.device, dtype=torch.long)
+    vals = logits[0, idx]
+    adjusted = torch.where(vals > 0, vals / penalty, vals * penalty)
+    logits[0, idx] = adjusted
 
 
-def _no_repeat_ngram_mask(generated: List[int], no_repeat_ngram: int) -> set[int]:
-    if no_repeat_ngram <= 0 or len(generated) < no_repeat_ngram - 1:
-        return set()
-    n = no_repeat_ngram
-    ngrams = {}
-    for i in range(len(generated) - n + 1):
-        prev = tuple(generated[i : i + n - 1])
-        nxt = generated[i + n - 1]
-        ngrams.setdefault(prev, set()).add(nxt)
-    prefix = tuple(generated[-(n - 1) :])
-    return ngrams.get(prefix, set())
+def _filter_ids(token_ids: List[int], offset: int, vocab_size: int) -> List[int]:
+    end = offset + vocab_size
+    if offset == 0:
+        return [tok for tok in token_ids if 0 <= tok < end]
+    return [tok - offset for tok in token_ids if offset <= tok < end]
 
 
-def _sample_logits(logits: torch.Tensor, temperature: float, top_p: float, generated: List[int], repetition_penalty: float, no_repeat_ngram: int) -> int:
+def _sample_logits(
+    logits: torch.Tensor,
+    temperature: float,
+    top_p: float,
+    repetition_penalty: float,
+    rep_tracker: _RepetitionTracker,
+    ngram_tracker,
+    vocab_offset: int = 0,
+    top_p_min_k: int = 128,
+    top_p_max_k: int = 512,
+) -> int:
     if temperature <= 0:
         return int(torch.argmax(logits, dim=-1).item())
-    logits = logits / max(1e-6, temperature)
-    logits = _apply_repetition_penalty(logits, generated, repetition_penalty)
-    banned = _no_repeat_ngram_mask(generated, no_repeat_ngram)
+    work = logits.float().clone()
+    work = work / max(1e-6, temperature)
+    vocab = work.size(-1)
+    token_ids = _filter_ids(rep_tracker.ids(), vocab_offset, vocab)
+    _apply_repetition_penalty(work, token_ids, repetition_penalty)
+    banned = ngram_tracker.banned() if ngram_tracker is not None else set()
     if banned:
-        logits[0, list(banned)] = -float("inf")
-    probs = torch.softmax(logits, dim=-1)
+        banned_ids = _filter_ids(list(banned), vocab_offset, vocab)
+        if banned_ids:
+            work[0, torch.tensor(banned_ids, device=work.device)] = -float("inf")
+    if not torch.isfinite(work).any():
+        return int(torch.argmax(logits, dim=-1).item())
     if top_p < 1.0:
-        sorted_probs, sorted_idx = torch.sort(probs, descending=True)
-        cum = torch.cumsum(sorted_probs, dim=-1)
-        mask = cum > top_p
-        if mask.any():
-            cutoff = mask.float().argmax().item()
-            sorted_probs[cutoff + 1 :] = 0.0
-        probs = torch.zeros_like(probs).scatter_(1, sorted_idx, sorted_probs)
-        probs = probs / probs.sum(dim=-1, keepdim=True)
+        k = min(max(8, top_p_min_k), vocab)
+        max_k = min(max(8, top_p_max_k), vocab)
+        while True:
+            values, indices = torch.topk(work, k=k, dim=-1)
+            lse_top = torch.logsumexp(values, dim=-1, keepdim=True)
+            if k >= vocab:
+                top_mass = torch.ones_like(lse_top)
+            else:
+                kth = values[..., -1:]
+                tail_mass = (vocab - k) * torch.exp(kth - lse_top)
+                top_mass = torch.exp(lse_top - (lse_top + torch.log1p(tail_mass)))
+            if float(top_mass.item()) >= top_p or k >= max_k or k >= vocab:
+                probs = torch.softmax(values, dim=-1)
+                cum = torch.cumsum(probs, dim=-1)
+                cutoff = int(torch.argmax((cum > top_p).float(), dim=-1).item())
+                values = values.clone()
+                values[:, cutoff + 1 :] = -float("inf")
+                probs = torch.softmax(values, dim=-1)
+                sample_idx = torch.multinomial(probs, num_samples=1)
+                return int(indices.gather(1, sample_idx).item())
+            k = min(k * 2, max_k, vocab)
+    probs = torch.softmax(work, dim=-1)
     return int(torch.multinomial(probs, num_samples=1).item())
 
 
@@ -79,10 +194,20 @@ def bad_decode(
     repetition_penalty: float = 1.0,
     no_repeat_ngram: int = 0,
     adaptive_granularity: bool = True,
+    entropy_top_k: int = 64,
+    penalty_window: int = 512,
+    top_p_min_k: int = 128,
+    top_p_max_k: int = 512,
 ) -> Tuple[str, BADStats]:
     ids, total_len = model.encode_prompt(prompt)
     stats = BADStats()
     generated = list(ids)
+    rep_tracker = _RepetitionTracker(penalty_window)
+    ngram_tracker = _NgramTracker(no_repeat_ngram)
+    for tok in ids:
+        rep_tracker.add(tok)
+        ngram_tracker.add(tok)
+
     with torch.inference_mode():
         with autocast_context(enabled=model.device.type == "cuda", dtype=model.config.dtype):
             model.reset_state()
@@ -98,13 +223,26 @@ def bad_decode(
             while remaining > 0:
                 draft_block = min(block_size, remaining)
                 draft_tokens: List[int] = []
+                draft_rep = rep_tracker.clone()
+                draft_ngram = _DraftNgramTracker(ngram_tracker)
                 for _ in range(draft_block):
                     if last_logits_draft is None:
                         last_logits_draft, state_draft = model.step(
                             generated[-1], state_draft, num_layers=model.config.draft_layers, write_memory=False
                         )
-                    next_tok = _sample_logits(last_logits_draft, temperature, top_p, generated + draft_tokens, repetition_penalty, no_repeat_ngram)
+                    next_tok = _sample_logits(
+                        last_logits_draft,
+                        temperature,
+                        top_p,
+                        repetition_penalty,
+                        draft_rep,
+                        draft_ngram,
+                        top_p_min_k=top_p_min_k,
+                        top_p_max_k=top_p_max_k,
+                    )
                     draft_tokens.append(next_tok)
+                    draft_rep.add(next_tok)
+                    draft_ngram.add(next_tok)
                     last_logits_draft, state_draft = model.step(next_tok, state_draft, num_layers=model.config.draft_layers, write_memory=False)
                 stats.proposed += len(draft_tokens)
 
@@ -112,23 +250,49 @@ def bad_decode(
                 for tok in draft_tokens:
                     if last_logits_full is None:
                         last_logits_full, state_full = model.step(generated[-1], state_full, write_memory=True)
-                    ent = _entropy(last_logits_full)
+                    ent = _approx_entropy(last_logits_full, top_k=entropy_top_k)
                     escape_mode = getattr(model, "escape_mode", "")
                     if adaptive_granularity and ent > entropy_threshold and escape_mode in {"exact", "exact-copy", "escape"}:
                         stats.entropy_high += 1
                         start = getattr(model, "byte_token_start", 0)
                         byte_slice = last_logits_full[:, start : start + 256]
-                        next_tok = _sample_logits(byte_slice, temperature, top_p, generated, repetition_penalty, no_repeat_ngram) + start
+                        next_tok = (
+                            _sample_logits(
+                                byte_slice,
+                                temperature,
+                                top_p,
+                                repetition_penalty,
+                                rep_tracker,
+                                ngram_tracker,
+                                vocab_offset=start,
+                                top_p_min_k=top_p_min_k,
+                                top_p_max_k=top_p_max_k,
+                            )
+                            + start
+                        )
                     else:
-                        next_tok = _sample_logits(last_logits_full, temperature, top_p, generated, repetition_penalty, no_repeat_ngram)
+                        next_tok = _sample_logits(
+                            last_logits_full,
+                            temperature,
+                            top_p,
+                            repetition_penalty,
+                            rep_tracker,
+                            ngram_tracker,
+                            top_p_min_k=top_p_min_k,
+                            top_p_max_k=top_p_max_k,
+                        )
                     if next_tok == tok:
                         generated.append(tok)
                         accepted += 1
                         stats.accepted += 1
+                        rep_tracker.add(tok)
+                        ngram_tracker.add(tok)
                         last_logits_full, state_full = model.step(tok, state_full, write_memory=True)
                     else:
                         generated.append(next_tok)
                         stats.rejected += 1
+                        rep_tracker.add(next_tok)
+                        ngram_tracker.add(next_tok)
                         last_logits_full, state_full = model.step(next_tok, state_full, write_memory=True)
                         break
                 remaining -= max(1, accepted)
