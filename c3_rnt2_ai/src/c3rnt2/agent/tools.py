@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import requests
 
@@ -20,8 +20,14 @@ class ToolResult:
 
 
 class AgentTools:
-    def __init__(self, allowlist: List[str], sandbox_root: Path | None = None, cache_root: Path | None = None):
-        self.policy = WebPolicy(allowlist=allowlist)
+    def __init__(
+        self,
+        allowlist: List[str],
+        sandbox_root: Path | None = None,
+        cache_root: Path | None = None,
+        rate_limit_per_min: int = 30,
+    ):
+        self.policy = WebPolicy(allowlist=allowlist, rate_limit_per_min=rate_limit_per_min)
         self.sandbox_root = sandbox_root or Path("data") / "workspaces"
         self.cache_root = cache_root or Path("data") / "web_cache"
         self.cache_root.mkdir(parents=True, exist_ok=True)
@@ -115,3 +121,31 @@ class AgentTools:
             return ToolResult(ok=True, output=str(file_path))
         except Exception as exc:
             return ToolResult(ok=False, output=f"edit failed: {exc}")
+
+    def propose_patch(self, repo_root: Path, changes: Dict[Path, str]) -> ToolResult:
+        try:
+            from ..selfimprove.patch_ops import propose_patch
+
+            diff = propose_patch(repo_root, changes)
+            return ToolResult(ok=True, output=diff)
+        except Exception as exc:
+            return ToolResult(ok=False, output=f"propose failed: {exc}")
+
+    def validate_patch(self, repo_root: Path, diff_text: str) -> ToolResult:
+        try:
+            from ..selfimprove.patch_ops import validate_patch
+            from ..selfimprove.safety_kernel import SafetyPolicy
+
+            result = validate_patch(repo_root, diff_text, SafetyPolicy())
+            return ToolResult(ok=result.ok, output=result.message)
+        except Exception as exc:
+            return ToolResult(ok=False, output=f"validate failed: {exc}")
+
+    def apply_patch(self, repo_root: Path, diff_text: str, approve: bool = False) -> ToolResult:
+        try:
+            from ..selfimprove.patch_ops import apply_patch
+
+            result = apply_patch(repo_root, diff_text, approve=approve)
+            return ToolResult(ok=result.ok, output=result.message)
+        except Exception as exc:
+            return ToolResult(ok=False, output=f"apply failed: {exc}")

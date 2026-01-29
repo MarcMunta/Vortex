@@ -12,9 +12,19 @@ class WebPolicy:
     _last_reset: float = 0.0
     _count: int = 0
 
+    def __post_init__(self) -> None:
+        self.allowlist = [a.lower().strip() for a in self.allowlist]
+
     def allow_url(self, url: str) -> bool:
         domain = urlparse(url).netloc.lower()
-        return any(domain.endswith(a) for a in self.allowlist)
+        if not domain:
+            return False
+        # Strip userinfo and port
+        domain = domain.split("@")[-1]
+        if domain.startswith("[") and domain.endswith("]"):
+            domain = domain[1:-1]
+        domain = domain.split(":")[0]
+        return any(domain == a or domain.endswith("." + a) for a in self.allowlist)
 
     def check_rate(self) -> bool:
         now = time()
