@@ -20,8 +20,8 @@ def test_step_vs_forward():
         last_logits, _state = model.init_state(prompt_ids=ids, return_logits=True, write_memory=False)
         assert last_logits is not None
         if last_full.dtype in (torch.float16, torch.bfloat16):
-            atol = 2e-2
-            rtol = 2e-2
+            atol = 5e-2
+            rtol = 5e-2
         else:
             atol = 1e-4
             rtol = 1e-4

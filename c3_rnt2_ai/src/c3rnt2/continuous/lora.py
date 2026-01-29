@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, Sequence, List
 
 import torch
 from torch import nn
@@ -12,6 +12,27 @@ from torch import nn
 class LoRAConfig:
     rank: int = 4
     alpha: float = 1.0
+
+
+DEFAULT_TARGET_MODULES: List[str] = [
+    "lm_head",
+    "fc",
+    "proj",
+    "gate",
+    "read_proj",
+    "addr_proj",
+    "out_proj",
+    "in_proj",
+]
+
+
+def resolve_target_modules(adapter_cfg: dict, strict: bool = False) -> List[str]:
+    targets = adapter_cfg.get("target_modules") or []
+    if targets:
+        return list(targets)
+    if strict:
+        raise ValueError("target_modules must be set when strict_target_modules is enabled")
+    return list(DEFAULT_TARGET_MODULES)
 
 
 class LoRALinear(nn.Module):
@@ -35,12 +56,14 @@ class LoRALinear(nn.Module):
 
 def _matches(name: str, target_modules: Optional[Iterable[str]]) -> bool:
     if not target_modules:
-        return True
+        return False
     return any(t in name for t in target_modules)
 
 
 def inject_lora(model: nn.Module, config: LoRAConfig, target_modules: Optional[Iterable[str]] = None) -> Dict[str, LoRALinear]:
     wrapped: Dict[str, LoRALinear] = {}
+    if not target_modules:
+        return wrapped
     for name, module in list(model.named_modules()):
         if isinstance(module, nn.Linear) and _matches(name, target_modules):
             parent = model

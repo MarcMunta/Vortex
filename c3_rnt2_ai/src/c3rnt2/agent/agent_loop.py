@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import time
+import difflib
 from typing import Dict
 
 from .memory import MemoryStore
@@ -26,6 +29,13 @@ def _setup_demo_repo(base: Path) -> Path:
     return repo
 
 
+def _log_episode(base_dir: Path, payload: dict) -> None:
+    path = base_dir / "data" / "episodes" / "agent.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+
 def run_demo_agent(settings: dict) -> Dict[str, str]:
     agent_cfg = settings.get("agent", {})
     allowlist = agent_cfg.get("web_allowlist", ["docs.python.org"])
@@ -41,8 +51,19 @@ def run_demo_agent(settings: dict) -> Dict[str, str]:
     docs = tools.open_docs("https://docs.python.org/3/faq/programming.html")
 
     # Step 2: fix bug
+    before = calc.read_text(encoding="utf-8")
     fixed = "def add(a, b):\n    return a + b\n"
     edit_result = tools.edit_repo(repo / "calc.py", fixed)
+    after = fixed
+    diff = "\n".join(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile="calc.py",
+            tofile="calc.py",
+            lineterm="",
+        )
+    )
 
     # Step 3: run tests
     test_result = tools.run_tests(repo)
@@ -54,4 +75,13 @@ def run_demo_agent(settings: dict) -> Dict[str, str]:
         "tests_ok": str(test_result.ok),
         "tests_output": test_result.output[:400],
     }
+    episode = {
+        "task": "Fix calc.add bug",
+        "prompt": docs.output[:400],
+        "patch": diff,
+        "tests_ok": test_result.ok,
+        "tests_output_excerpt": test_result.output[:400],
+        "timestamp": time.time(),
+    }
+    _log_episode(Path("."), episode)
     return summary
