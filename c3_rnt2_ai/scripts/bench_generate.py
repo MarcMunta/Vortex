@@ -12,9 +12,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.append(str(SRC))
 
-from c3rnt2.config import load_settings
-from c3rnt2.model.bad_decode import bad_decode
-from c3rnt2.model.core_transformer import CoreTransformer
+from c3rnt2.config import load_settings  # type: ignore[import-not-found]
+from c3rnt2.model.bad_decode import bad_decode  # type: ignore[import-not-found]
+from c3rnt2.model.core_transformer import CoreTransformer  # type: ignore[import-not-found]
 
 
 def main() -> None:

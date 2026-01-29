@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Any, Iterable, List, Tuple, overload, Literal
 
 import torch
 from torch import nn
@@ -89,6 +89,9 @@ class CoreTransformer(nn.Module):
         self.device = torch.device(config.device) if config.device else torch.device("cpu")
         self.dtype = torch.bfloat16 if config.dtype == "bf16" else torch.float16 if config.dtype == "fp16" else torch.float32
         self.escape_mode = "exact"
+        self.bad_block_size: int = 8
+        self.bad_entropy: float = 3.5
+        self.decode_cfg: dict[str, Any] = {}
         sub_size = tokenizer.sub_size_total
         self.byte_token_start = tokenizer.patch_codebook.size + tokenizer.macro_codebook.size + sub_size
         self.embed = nn.Embedding(config.vocab_size, config.hidden_size)
@@ -118,10 +121,10 @@ class CoreTransformer(nn.Module):
         self.norm = nn.LayerNorm(config.hidden_size)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size)
         self.mtp_k = int(getattr(config, "mtp_k", 0))
-        self.mtp_head = nn.Linear(config.hidden_size, config.vocab_size * self.mtp_k) if self.mtp_k > 0 else None
+        self.mtp_head: nn.Linear | None = nn.Linear(config.hidden_size, config.vocab_size * self.mtp_k) if self.mtp_k > 0 else None
         self.kv_cache = KVHybridCache(window_size=config.window_size, kv_quant_bits=8, latent_slots=32)
-        self.depth_gating = {}
-        self._depth_last = None
+        self.depth_gating: dict[str, Any] = {}
+        self._depth_last: int | None = None
         self._depth_tokens = 0
         self._depth_total = 0
 
@@ -188,7 +191,7 @@ class CoreTransformer(nn.Module):
         model.bad_block_size = int(bad_cfg.get("block_size", decode_cfg.get("draft_block", 8)))
         model.bad_entropy = float(bad_cfg.get("entropy_threshold", decode_cfg.get("entropy_threshold", 3.5)))
         model.decode_cfg = decode_cfg
-        model.depth_gating = settings.get("depth_gating", {})
+        model.depth_gating = settings.get("depth_gating", {}) or {}
         model.to(device_info.device, dtype=model.dtype if device_info.device.startswith("cuda") else None)
         lava_state_path = vx_cfg.get("lava_state_path")
         if lava_state_path and bool(vx_cfg.get("lava_state_autoload", False)):
@@ -203,10 +206,10 @@ class CoreTransformer(nn.Module):
         if core.get("compile") and hasattr(torch, "compile"):
             model.forward = torch.compile(model.forward)  # type: ignore[method-assign]
         if core.get("compile_step") and hasattr(torch, "compile"):
-            model.step = torch.compile(model.step)  # type: ignore[method-assign]
+            model.step = torch.compile(model.step)  # type: ignore[method-assign,assignment]
         if core.get("compile_local_mixer_step") and hasattr(torch, "compile"):
             for block in model.blocks:
-                block.local.step = torch.compile(block.local.step)  # type: ignore[method-assign]
+                block.local.step = torch.compile(block.local.step)  # type: ignore[method-assign,assignment]
         return model
 
     def forward(self, input_ids: torch.Tensor, num_layers: int | None = None) -> torch.Tensor:
@@ -231,10 +234,10 @@ class CoreTransformer(nn.Module):
                 x = block(x)
             x = self.norm(x)
             logits = self.lm_head(x)
-            if self.mtp_k > 0 and (return_mtp or (self.training and labels is not None) or return_aux):
+            if self.mtp_head is not None and (return_mtp or (self.training and labels is not None) or return_aux):
                 mtp_logits = self.mtp_head(x).view(x.shape[0], x.shape[1], self.mtp_k, -1)
             if labels is not None and self.training and self.mtp_k > 0 and mtp_logits is not None:
-                losses = []
+                losses: List[torch.Tensor] = []
                 for offset in range(1, self.mtp_k + 1):
                     if labels.size(1) <= offset:
                         break
@@ -247,7 +250,7 @@ class CoreTransformer(nn.Module):
                     )
                     losses.append(loss)
                 if losses:
-                    aux_loss = sum(losses) / len(losses)
+                    aux_loss = torch.stack(losses).mean()
             depth_cfg = self.depth_gating if isinstance(self.depth_gating, dict) else {}
             if labels is not None and self.training and depth_cfg.get("enabled"):
                 weight = float(depth_cfg.get("compute_cost_weight", 0.0))
@@ -328,6 +331,50 @@ class CoreTransformer(nn.Module):
         for idx, block in enumerate(self.blocks):
             block.lava.load_state(path.with_suffix(f".layer{idx}.pt"))
 
+    @overload
+    def step(
+        self,
+        token_id: int,
+        state: List[VBlockState],
+        num_layers: int | None = None,
+        write_memory: bool = True,
+        return_mtp: Literal[False] = False,
+        return_depth: Literal[False] = False,
+    ) -> tuple[torch.Tensor, List[VBlockState]]: ...
+
+    @overload
+    def step(
+        self,
+        token_id: int,
+        state: List[VBlockState],
+        num_layers: int | None = None,
+        write_memory: bool = True,
+        return_mtp: Literal[True] = True,
+        return_depth: Literal[False] = False,
+    ) -> tuple[torch.Tensor, List[VBlockState], torch.Tensor | None]: ...
+
+    @overload
+    def step(
+        self,
+        token_id: int,
+        state: List[VBlockState],
+        num_layers: int | None = None,
+        write_memory: bool = True,
+        return_mtp: Literal[False] = False,
+        return_depth: Literal[True] = True,
+    ) -> tuple[torch.Tensor, List[VBlockState], int]: ...
+
+    @overload
+    def step(
+        self,
+        token_id: int,
+        state: List[VBlockState],
+        num_layers: int | None = None,
+        write_memory: bool = True,
+        return_mtp: Literal[True] = True,
+        return_depth: Literal[True] = True,
+    ) -> tuple[torch.Tensor, List[VBlockState], torch.Tensor | None, int]: ...
+
     def step(
         self,
         token_id: int,
@@ -355,14 +402,13 @@ class CoreTransformer(nn.Module):
                 ent = _approx_entropy_logits(logits_temp, top_k=int(depth_cfg.get("entropy_top_k", 64)))
                 threshold = float(depth_cfg.get("entropy_threshold", 3.5))
                 hysteresis = float(depth_cfg.get("hysteresis", 0.0))
-                if self._depth_last is None:
-                    self._depth_last = min_depth
+                depth_last = self._depth_last if self._depth_last is not None else min_depth
                 if ent > threshold + hysteresis:
                     depth_used = max_depth
                 elif ent < threshold - hysteresis:
                     depth_used = min_depth
                 else:
-                    depth_used = int(self._depth_last)
+                    depth_used = int(depth_last)
                 depth_used = int(min(max(depth_used, min_depth), max_depth))
                 self._depth_last = depth_used
                 if depth_used > min_depth:
@@ -383,13 +429,13 @@ class CoreTransformer(nn.Module):
             mtp_logits = None
             if return_mtp and self.mtp_k > 0 and self.mtp_head is not None:
                 mtp_logits = self.mtp_head(x).view(x.shape[0], self.mtp_k, -1)
-        outputs = [logits, new_state + state[depth_used:]]
+        outputs: list[object] = [logits, new_state + state[depth_used:]]
         if return_mtp:
             outputs.append(mtp_logits)
         if return_depth:
             outputs.append(depth_used)
         if len(outputs) == 2:
-            return outputs[0], outputs[1]
+            return outputs[0], outputs[1]  # type: ignore[return-value]
         return tuple(outputs)
 
     def reset_depth_stats(self) -> None:
@@ -434,25 +480,39 @@ class CoreTransformer(nn.Module):
             bad_cfg["top_p_max_k"] = decode_defaults["topk_max"]
         if "no_repeat_ngram" not in bad_cfg and "no_repeat_ngram_n" in decode_defaults:
             bad_cfg["no_repeat_ngram"] = decode_defaults["no_repeat_ngram_n"]
+        block_size = int(bad_cfg["block_size"])
+        entropy_threshold = float(bad_cfg["entropy_threshold"])
+        temperature = float(bad_cfg.get("temperature", 1.0))
+        top_p = float(bad_cfg.get("top_p", 1.0))
+        repetition_penalty = float(bad_cfg.get("repetition_penalty", 1.0))
+        no_repeat_ngram = int(bad_cfg.get("no_repeat_ngram", 0))
+        adaptive_granularity = bool(bad_cfg.get("adaptive_granularity", True))
+        entropy_top_k = int(bad_cfg.get("entropy_top_k", 64))
+        penalty_window = int(bad_cfg.get("penalty_window", 512))
+        top_p_min_k = int(bad_cfg.get("top_p_min_k", 128))
+        top_p_max_k = int(bad_cfg.get("top_p_max_k", 512))
+        exact_copy_mode = bool(bad_cfg.get("exact_copy_mode", False))
+        escape_restrict = bool(bad_cfg.get("escape_restrict", False))
+        use_mtp = bool(bad_cfg.get("use_mtp", True))
         with torch.inference_mode():
             with autocast_context(enabled=self.device.type == "cuda", dtype=self.config.dtype):
                 text, _stats = bad_decode(
                     self,
                     prompt=prompt,
                     max_new_tokens=max_new_tokens,
-                    block_size=bad_cfg["block_size"],
-                    entropy_threshold=bad_cfg["entropy_threshold"],
-                    temperature=bad_cfg.get("temperature", 1.0),
-                    top_p=bad_cfg.get("top_p", 1.0),
-                    repetition_penalty=bad_cfg.get("repetition_penalty", 1.0),
-                    no_repeat_ngram=bad_cfg.get("no_repeat_ngram", 0),
-                    adaptive_granularity=bad_cfg.get("adaptive_granularity", True),
-                    entropy_top_k=bad_cfg.get("entropy_top_k", 64),
-                    penalty_window=bad_cfg.get("penalty_window", 512),
-                    top_p_min_k=bad_cfg.get("top_p_min_k", 128),
-                    top_p_max_k=bad_cfg.get("top_p_max_k", 512),
-                    exact_copy_mode=bad_cfg.get("exact_copy_mode", False),
-                    escape_restrict=bad_cfg.get("escape_restrict", False),
-                    use_mtp=bad_cfg.get("use_mtp", True),
+                    block_size=block_size,
+                    entropy_threshold=entropy_threshold,
+                    temperature=temperature,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    no_repeat_ngram=no_repeat_ngram,
+                    adaptive_granularity=adaptive_granularity,
+                    entropy_top_k=entropy_top_k,
+                    penalty_window=penalty_window,
+                    top_p_min_k=top_p_min_k,
+                    top_p_max_k=top_p_max_k,
+                    exact_copy_mode=exact_copy_mode,
+                    escape_restrict=escape_restrict,
+                    use_mtp=use_mtp,
                 )
         return text

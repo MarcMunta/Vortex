@@ -68,7 +68,7 @@ def demo_tokenizer(text: Optional[str] = None, profile: Optional[str] = None):
     model_path = Path(tok_cfg.get("rnt2_model_path", "data/runs/rnt2_dev.pt"))
     block_size = int(tok_cfg.get("block_size", 64))
 
-    sample = text or "Hola ?? mundo — código: for i in range(3): print(i) {\"k\": 1}"
+    sample = text or "Hola ?? mundo â€” cÃ³digo: for i in range(3): print(i) {\"k\": 1}"
     if not model_path.exists():
         logger.info("RNT-2 model not found, creating default codebook: %s", model_path)
         codebook = RNT2Codebook.from_builtin(block_size=block_size)
@@ -123,4 +123,4 @@ def demo_agent(profile: Optional[str] = None):
 
 
 if __name__ == "__main__":
-    app()
+    app()

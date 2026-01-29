@@ -19,6 +19,21 @@ class LavaStats:
 class LAVAMemory(nn.Module):
     """Latent-Addressed Vector Attention with fixed slots."""
 
+    addresses: torch.Tensor
+    contents: torch.Tensor
+    addresses_norm: torch.Tensor
+    addresses_norm_t: torch.Tensor
+    age: torch.Tensor
+    importance: torch.Tensor
+    cluster_centroids: torch.Tensor
+    cluster_centroids_norm: torch.Tensor
+    cluster_centroids_norm_t: torch.Tensor
+    cluster_assignments: torch.Tensor
+    addr_proj: nn.Linear
+    read_proj: nn.Linear
+    stats: LavaStats
+    _step: int
+
     def __init__(
         self,
         hidden_size: int,
@@ -44,15 +59,6 @@ class LAVAMemory(nn.Module):
         self.write_on_surprise = bool(write_on_surprise)
         self.surprise_threshold = float(surprise_threshold)
         self._step = 0
-
-        self.addresses: torch.Tensor
-        self.contents: torch.Tensor
-        self.age: torch.Tensor
-        self.importance: torch.Tensor
-        self.cluster_centroids: torch.Tensor
-        self.cluster_centroids_norm: torch.Tensor
-        self.cluster_centroids_norm_t: torch.Tensor
-        self.cluster_assignments: torch.Tensor
 
         self.register_buffer("addresses", torch.randn(latent_slots, hidden_size) * 0.02)
         self.register_buffer("contents", torch.randn(latent_slots, hidden_size) * 0.02)

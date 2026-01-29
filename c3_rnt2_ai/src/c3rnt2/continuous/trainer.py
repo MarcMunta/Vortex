@@ -129,7 +129,8 @@ class ContinualTrainer:
                 promote=improved,
                 meta={"loss": new_loss, "base_loss": base_loss, "samples": len(samples)},
             )
-            return TrainResult(run_id=run_id, promoted=improved, loss=new_loss, samples=len(samples))
+            loss_out = new_loss if new_loss is not None else loss_val
+            return TrainResult(run_id=run_id, promoted=improved, loss=float(loss_out), samples=len(samples))
         except Exception:
             rollback(self.base_dir)
             raise

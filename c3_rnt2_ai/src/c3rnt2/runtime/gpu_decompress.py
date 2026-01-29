@@ -7,9 +7,11 @@ import numpy as np
 from ..compression.entropy_coder import decompress
 
 try:
-    import torch
+    import torch as _torch
 except Exception:  # pragma: no cover
-    torch = None
+    _torch = None
+
+torch: Any = _torch
 
 
 def _to_tensor(tile: np.ndarray, device: str = "cpu", pin_memory: bool = False, non_blocking: bool = False):
@@ -31,7 +33,7 @@ def decompress_to_tensor(
     pin_memory: bool = False,
     non_blocking: bool = False,
 ):
-    \"\"\"Decompress tile payload if needed and move to device.\"\"\"
+    """Decompress tile payload if needed and move to device."""
     if isinstance(tile, np.ndarray):
         return _to_tensor(tile, device=device, pin_memory=pin_memory, non_blocking=non_blocking)
     if isinstance(tile, (bytes, bytearray)):
