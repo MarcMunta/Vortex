@@ -10,6 +10,7 @@ from pathlib import Path
 from .config import load_settings, resolve_profile, validate_profile
 from .doctor import check_deps, run_deep_checks
 from .model.core_transformer import CoreTransformer, save_checkpoint
+from .model_loader import load_inference_model
 from .training import eval as eval_mod
 from .tokenizer import rnt2_train
 from .agent.agent_loop import run_demo_agent
@@ -74,18 +75,19 @@ def cmd_eval(_args: argparse.Namespace) -> None:
 
 def cmd_chat(args: argparse.Namespace) -> None:
     settings = _load_and_validate(args.profile)
-    model = CoreTransformer.from_settings(settings)
-    # Load current adapter if available
-    state = load_registry(Path("."))
-    if state.current_run_id:
-        adapter_path = Path("data") / "registry" / "adapters" / f"{state.current_run_id}.pt"
-        if adapter_path.exists():
-            adapter_cfg = settings.get("continuous", {}).get("adapters", {})
-            lora_cfg = LoRAConfig(rank=int(adapter_cfg.get("rank", 4)), alpha=float(adapter_cfg.get("alpha", 1.0)))
-            strict = bool(adapter_cfg.get("strict_target_modules", False))
-            target_modules = resolve_target_modules(adapter_cfg, strict=strict)
-            inject_lora(model, lora_cfg, target_modules=target_modules)
-            load_lora_state(model, adapter_path)
+    model = load_inference_model(settings)
+    # Load current adapter if available (core backend only)
+    if hasattr(model, "blocks"):
+        state = load_registry(Path("."))
+        if state.current_run_id:
+            adapter_path = Path("data") / "registry" / "adapters" / f"{state.current_run_id}.pt"
+            if adapter_path.exists():
+                adapter_cfg = settings.get("continuous", {}).get("adapters", {})
+                lora_cfg = LoRAConfig(rank=int(adapter_cfg.get("rank", 4)), alpha=float(adapter_cfg.get("alpha", 1.0)))
+                strict = bool(adapter_cfg.get("strict_target_modules", False))
+                target_modules = resolve_target_modules(adapter_cfg, strict=strict)
+                inject_lora(model, lora_cfg, target_modules=target_modules)
+                load_lora_state(model, adapter_path)
     info = detect_device()
     print({"device": info.device, "vram_gb": info.vram_gb, "dtype": info.dtype})
     decode_cfg = settings.get("decode", {})

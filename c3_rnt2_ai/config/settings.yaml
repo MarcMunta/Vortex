@@ -126,6 +126,17 @@ profiles:
     selfimprove:
       max_patch_kb: 64
       sandbox_root: data/workspaces
+  qwen8b_base:
+    base_profile: dev_small
+    core:
+      backend: hf
+      hf_model: "Qwen/Qwen2.5-8B-Instruct"
+      dtype: bf16
+    decode:
+      max_new_tokens: 128
+    runtime:
+      paged_lm_head: false
+
   core_only:
     tokenizer:
       rnt2_model_path: data/runs/rnt2_dev.pt

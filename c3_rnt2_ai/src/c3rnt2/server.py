@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import json
 import threading
 import time
@@ -8,12 +7,15 @@ from pathlib import Path
 from typing import Any, Dict, Iterable
 
 from .model.core_transformer import CoreTransformer
+from .model_loader import load_inference_model
 from .model.bad_decode import _sample_logits, _sample_logits_topk, _RepetitionTracker, _NgramTracker
-
 from .continuous.lora import LoRAConfig, inject_lora, load_lora_state, resolve_target_modules
 from .continuous.registry import load_registry
 
+
 def _maybe_load_adapter(model: CoreTransformer, settings: dict, base_dir: Path) -> None:
+    if not hasattr(model, "blocks"):
+        return
     state = load_registry(base_dir)
     if state.current_run_id:
         adapter_path = base_dir / "data" / "registry" / "adapters" / f"{state.current_run_id}.pt"
@@ -24,7 +26,6 @@ def _maybe_load_adapter(model: CoreTransformer, settings: dict, base_dir: Path) 
             target_modules = resolve_target_modules(adapter_cfg, strict=strict)
             inject_lora(model, lora_cfg, target_modules=target_modules)
             load_lora_state(model, adapter_path)
-
 
 
 def _build_prompt(messages: list[dict[str, Any]]) -> str:
@@ -134,7 +135,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         raise RuntimeError(f"FastAPI not available: {exc}")
 
     app = FastAPI()
-    model = CoreTransformer.from_settings(settings)
+    model = load_inference_model(settings)
     _maybe_load_adapter(model, settings, base_dir)
     model_lock = threading.Lock()
     app.state.model = model
@@ -157,7 +158,14 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
 
         if not stream:
             with model_lock:
-                text = model.generate(prompt, max_new_tokens=decode_args["max_new_tokens"], temperature=decode_args["temperature"], top_p=decode_args["top_p"], repetition_penalty=decode_args["repetition_penalty"], no_repeat_ngram=decode_args["no_repeat_ngram"])
+                text = model.generate(
+                    prompt,
+                    max_new_tokens=decode_args["max_new_tokens"],
+                    temperature=decode_args["temperature"],
+                    top_p=decode_args["top_p"],
+                    repetition_penalty=decode_args["repetition_penalty"],
+                    no_repeat_ngram=decode_args["no_repeat_ngram"],
+                )
             data = {
                 "id": resp_id,
                 "object": "chat.completion",
@@ -183,15 +191,26 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             }
             yield f"data: {json.dumps(header)}\n\n"
             with model_lock:
-                for delta in _stream_generate(model, prompt, **decode_args):
-                    chunk = {
-                        "id": resp_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": "vortex-x",
-                        "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
-                    }
-                    yield f"data: {json.dumps(chunk)}\n\n"
+                if hasattr(model, "stream_generate"):
+                    for delta in model.stream_generate(prompt, **decode_args):
+                        chunk = {
+                            "id": resp_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": "vortex-x",
+                            "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                        }
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                else:
+                    for delta in _stream_generate(model, prompt, **decode_args):
+                        chunk = {
+                            "id": resp_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": "vortex-x",
+                            "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                        }
+                        yield f"data: {json.dumps(chunk)}\n\n"
             done = {
                 "id": resp_id,
                 "object": "chat.completion.chunk",
@@ -217,11 +236,10 @@ def run_server(settings: dict, base_dir: Path, host: str = "0.0.0.0", port: int 
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
-
 def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> None:
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    model = CoreTransformer.from_settings(settings)
+    model = load_inference_model(settings)
     _maybe_load_adapter(model, settings, base_dir)
     model_lock = threading.Lock()
 
@@ -257,7 +275,14 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
 
             if not stream:
                 with model_lock:
-                    text = model.generate(prompt, max_new_tokens=decode_args["max_new_tokens"], temperature=decode_args["temperature"], top_p=decode_args["top_p"], repetition_penalty=decode_args["repetition_penalty"], no_repeat_ngram=decode_args["no_repeat_ngram"])
+                    text = model.generate(
+                        prompt,
+                        max_new_tokens=decode_args["max_new_tokens"],
+                        temperature=decode_args["temperature"],
+                        top_p=decode_args["top_p"],
+                        repetition_penalty=decode_args["repetition_penalty"],
+                        no_repeat_ngram=decode_args["no_repeat_ngram"],
+                    )
                 data = {
                     "id": resp_id,
                     "object": "chat.completion",
@@ -293,16 +318,28 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
             self.wfile.write(f"data: {json.dumps(header)}\n\n".encode("utf-8"))
             self.wfile.flush()
             with model_lock:
-                for delta in _stream_generate(model, prompt, **decode_args):
-                    chunk = {
-                        "id": resp_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": "vortex-x",
-                        "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
-                    }
-                    self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
-                    self.wfile.flush()
+                if hasattr(model, "stream_generate"):
+                    for delta in model.stream_generate(prompt, **decode_args):
+                        chunk = {
+                            "id": resp_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": "vortex-x",
+                            "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                        }
+                        self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+                else:
+                    for delta in _stream_generate(model, prompt, **decode_args):
+                        chunk = {
+                            "id": resp_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": "vortex-x",
+                            "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                        }
+                        self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                        self.wfile.flush()
             done = {
                 "id": resp_id,
                 "object": "chat.completion.chunk",
@@ -317,4 +354,3 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
     server = ThreadingHTTPServer((host, port), Handler)
     print({"ok": True, "mode": "basic", "host": host, "port": port})
     server.serve_forever()
-

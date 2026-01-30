@@ -11,6 +11,7 @@ import torch
 from .config import validate_profile
 from .device import detect_device
 from .model.core_transformer import CoreTransformer
+from .model_loader import load_inference_model
 
 
 def check_deps(modules: list[str]) -> dict[str, str]:
@@ -43,7 +44,7 @@ def run_deep_checks(settings: dict, base_dir: Path) -> dict[str, Any]:
             local_settings["core"] = core_cfg
 
     try:
-        model = CoreTransformer.from_settings(local_settings)
+        model = load_inference_model(local_settings)
     except Exception as exc:
         msg = str(exc).lower()
         if "triton" in msg or "inductor" in msg:
@@ -53,7 +54,7 @@ def run_deep_checks(settings: dict, base_dir: Path) -> dict[str, Any]:
                 core["compile_step"] = False
                 core["compile_local_mixer_step"] = False
                 local_settings["core"] = core
-                model = CoreTransformer.from_settings(local_settings)
+                model = load_inference_model(local_settings)
             else:
                 raise
         else:
@@ -65,20 +66,27 @@ def run_deep_checks(settings: dict, base_dir: Path) -> dict[str, Any]:
     input_ids = torch.tensor([ids], dtype=torch.long, device=model.device)
     start = time.time()
     with torch.inference_mode():
-        _ = model.forward(input_ids)
-        state = model.init_state(prompt_ids=ids)
-        _ = model.step(ids[-1], state)
-        block_ids = torch.tensor([ids[: max(1, min(2, len(ids)))]], dtype=torch.long, device=model.device)
-        _ = model.step_block(block_ids, state)
-        last_tok = ids[-1]
-        gen_state = state
-        gen_tokens = 16
-        gen_start = time.time()
-        for _ in range(gen_tokens):
-            logits, gen_state = model.step(last_tok, gen_state)
-            last_tok = int(torch.argmax(logits, dim=-1).item())
-        gen_elapsed = max(1e-6, time.time() - gen_start)
-        tokens_per_sec = gen_tokens / gen_elapsed
+        if hasattr(model, "step_block"):
+            _ = model.forward(input_ids)
+            state = model.init_state(prompt_ids=ids)
+            _ = model.step(ids[-1], state)
+            block_ids = torch.tensor([ids[: max(1, min(2, len(ids)))]], dtype=torch.long, device=model.device)
+            _ = model.step_block(block_ids, state)
+            last_tok = ids[-1]
+            gen_state = state
+            gen_tokens = 16
+            gen_start = time.time()
+            for _ in range(gen_tokens):
+                logits, gen_state = model.step(last_tok, gen_state)
+                last_tok = int(torch.argmax(logits, dim=-1).item())
+            gen_elapsed = max(1e-6, time.time() - gen_start)
+            tokens_per_sec = gen_tokens / gen_elapsed
+        else:
+            gen_tokens = 16
+            gen_start = time.time()
+            _ = model.generate(prompt, max_new_tokens=gen_tokens)
+            gen_elapsed = max(1e-6, time.time() - gen_start)
+            tokens_per_sec = gen_tokens / gen_elapsed
     elapsed = time.time() - start
     vram_peak_gb = None
     if info.cuda_available:

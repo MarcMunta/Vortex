@@ -7,7 +7,7 @@ Este repo implementa un prototipo modular para una “IA 120B-like” local comb
 - **BAD**: Blockwise Adaptive Decoding (draft+verify).
 - **Agente**: herramientas, memoria persistente, auto-entrenamiento y auto-mejora segura.
 
-## Instalaci�n
+## Instalacin
 ```bash
 python -m venv .venv
 . .venv/bin/activate  # en Windows: .venv\Scripts\activate
@@ -35,6 +35,13 @@ python -m c3rnt2 self-train --once
 python -m c3rnt2 self-improve
 python -m c3rnt2 apply-patch --diff data/selfimprove/runs/<id>/proposed.diff --approve
 python -m c3rnt2 bench --profile rtx4080_16gb_vortexx_next --max-new-tokens 512
+
+Perfil HF (Qwen-8B):
+
+python -m c3rnt2 chat --profile qwen8b_base
+python -m c3rnt2 serve --profile qwen8b_base
+
+Requiere: pip install transformers
 ```
 
 ## Tokenizador VORTEX-Tok

@@ -73,6 +73,7 @@ def normalize_settings(settings: dict) -> dict:
 
     vx = normalized.get("vortex_model", {}) or {}
     core = normalized.get("core", {}) or {}
+    core.setdefault("backend", "vortex")
     if "tf32" not in core and core.get("allow_tf32") is not None:
         core["tf32"] = core.get("allow_tf32")
     normalized["core"] = core
@@ -116,6 +117,7 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
     base_dir = Path(base_dir or ".").resolve()
     tok = settings.get("tokenizer", {}) or {}
     core = settings.get("core", {}) or {}
+    backend = str(core.get("backend", "vortex")).lower()
     runtime = settings.get("runtime", {}) or {}
     decode = settings.get("decode", {}) or {}
     bad = settings.get("bad", {}) or {}
@@ -123,9 +125,13 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
 
     if not tok.get("vortex_tok_path"):
         missing.append("tokenizer.vortex_tok_path")
-    for key in ("hidden_size", "layers", "heads"):
-        if key not in core:
-            missing.append(f"core.{key}")
+    if backend == "hf":
+        if not core.get("hf_model"):
+            missing.append("core.hf_model")
+    else:
+        for key in ("hidden_size", "layers", "heads"):
+            if key not in core:
+                missing.append(f"core.{key}")
 
     if "cache_vram_budget_mb" not in runtime:
         missing.append("runtime.cache_vram_budget_mb")
