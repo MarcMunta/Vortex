@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import json
 import threading
 import time
@@ -11,6 +12,19 @@ from .model.bad_decode import _sample_logits, _sample_logits_topk, _RepetitionTr
 
 from .continuous.lora import LoRAConfig, inject_lora, load_lora_state, resolve_target_modules
 from .continuous.registry import load_registry
+
+def _maybe_load_adapter(model: CoreTransformer, settings: dict, base_dir: Path) -> None:
+    state = load_registry(base_dir)
+    if state.current_run_id:
+        adapter_path = base_dir / "data" / "registry" / "adapters" / f"{state.current_run_id}.pt"
+        if adapter_path.exists():
+            adapter_cfg = settings.get("continuous", {}).get("adapters", {})
+            lora_cfg = LoRAConfig(rank=int(adapter_cfg.get("rank", 4)), alpha=float(adapter_cfg.get("alpha", 1.0)))
+            strict = bool(adapter_cfg.get("strict_target_modules", False))
+            target_modules = resolve_target_modules(adapter_cfg, strict=strict)
+            inject_lora(model, lora_cfg, target_modules=target_modules)
+            load_lora_state(model, adapter_path)
+
 
 
 def _build_prompt(messages: list[dict[str, Any]]) -> str:
@@ -121,16 +135,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
 
     app = FastAPI()
     model = CoreTransformer.from_settings(settings)
-    state = load_registry(base_dir)
-    if state.current_run_id:
-        adapter_path = base_dir / "data" / "registry" / "adapters" / f"{state.current_run_id}.pt"
-        if adapter_path.exists():
-            adapter_cfg = settings.get("continuous", {}).get("adapters", {})
-            lora_cfg = LoRAConfig(rank=int(adapter_cfg.get("rank", 4)), alpha=float(adapter_cfg.get("alpha", 1.0)))
-            strict = bool(adapter_cfg.get("strict_target_modules", False))
-            target_modules = resolve_target_modules(adapter_cfg, strict=strict)
-            inject_lora(model, lora_cfg, target_modules=target_modules)
-            load_lora_state(model, adapter_path)
+    _maybe_load_adapter(model, settings, base_dir)
     model_lock = threading.Lock()
     app.state.model = model
     app.state.settings = settings
@@ -204,9 +209,112 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
 
 def run_server(settings: dict, base_dir: Path, host: str = "0.0.0.0", port: int = 8000) -> None:
     try:
-        import uvicorn
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(f"uvicorn not available: {exc}")
-    app = create_app(settings, base_dir=base_dir)
+        import uvicorn  # type: ignore
+        app = create_app(settings, base_dir=base_dir)
+    except Exception:
+        _run_basic_server(settings, base_dir, host, port)
+        return
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+
+def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> None:
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    model = CoreTransformer.from_settings(settings)
+    _maybe_load_adapter(model, settings, base_dir)
+    model_lock = threading.Lock()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: N802
+            return
+
+        def do_POST(self):  # noqa: N802
+            if self.path != "/v1/chat/completions":
+                self.send_response(404)
+                self.end_headers()
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                payload = json.loads(raw.decode("utf-8")) if raw else {}
+            except Exception:
+                self.send_response(400)
+                self.end_headers()
+                return
+            messages = payload.get("messages") or []
+            if not messages and payload.get("prompt"):
+                messages = [{"role": "user", "content": payload.get("prompt")}]
+            if not messages:
+                self.send_response(400)
+                self.end_headers()
+                return
+            prompt = _build_prompt(messages)
+            stream = bool(payload.get("stream", False))
+            decode_args = _resolve_decode_args(settings, payload)
+            created = int(time.time())
+            resp_id = f"chatcmpl-{created}"
+
+            if not stream:
+                with model_lock:
+                    text = model.generate(prompt, max_new_tokens=decode_args["max_new_tokens"], temperature=decode_args["temperature"], top_p=decode_args["top_p"], repetition_penalty=decode_args["repetition_penalty"], no_repeat_ngram=decode_args["no_repeat_ngram"])
+                data = {
+                    "id": resp_id,
+                    "object": "chat.completion",
+                    "created": created,
+                    "model": "vortex-x",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": text},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+                body = json.dumps(data).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            header = {
+                "id": resp_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": "vortex-x",
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            }
+            self.wfile.write(f"data: {json.dumps(header)}\n\n".encode("utf-8"))
+            self.wfile.flush()
+            with model_lock:
+                for delta in _stream_generate(model, prompt, **decode_args):
+                    chunk = {
+                        "id": resp_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": "vortex-x",
+                        "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                    }
+                    self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+            done = {
+                "id": resp_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": "vortex-x",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+            self.wfile.write(f"data: {json.dumps(done)}\n\n".encode("utf-8"))
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    print({"ok": True, "mode": "basic", "host": host, "port": port})
+    server.serve_forever()
 

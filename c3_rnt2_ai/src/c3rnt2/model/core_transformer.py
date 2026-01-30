@@ -24,8 +24,14 @@ def _maybe_enable_paged_lm_head(model: "CoreTransformer", settings: dict) -> Non
         from ..nn.paged_linear import PagedLinear
     except Exception:
         return
-    tile_out = int(runtime_cfg.get("paged_tile_out", c3_cfg.get("tile_size", 128)))
-    tile_in = int(runtime_cfg.get("paged_tile_in", model.config.hidden_size))
+    tile_out_val = runtime_cfg.get("paged_tile_out", c3_cfg.get("tile_size", 128))
+    if tile_out_val is None:
+        tile_out_val = c3_cfg.get("tile_size", 128)
+    tile_out = int(tile_out_val)
+    tile_in_val = runtime_cfg.get("paged_tile_in", c3_cfg.get("tile_in", model.config.hidden_size))
+    if tile_in_val is None:
+        tile_in_val = model.config.hidden_size
+    tile_in = int(tile_in_val)
     cache_budget_mb = int(runtime_cfg.get("cache_vram_budget_mb", c3_cfg.get("cache_vram_budget_mb", 2048)))
     prefetch_depth = int(runtime_cfg.get("prefetch_depth", c3_cfg.get("prefetch_depth", 2)))
     compression = runtime_cfg.get("compression", c3_cfg.get("compression"))
