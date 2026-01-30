@@ -85,6 +85,17 @@ class PagedLinear(nn.Module):
             accum_fp32=accum_fp32,
         )
 
+
+    def _store_compute_dtype(self) -> torch.dtype:
+        dtype_str = str(self.store.dtype).lower()
+        if "bfloat16" in dtype_str or "bf16" in dtype_str:
+            return torch.bfloat16
+        if "float16" in dtype_str or "half" in dtype_str or "fp16" in dtype_str:
+            return torch.float16
+        if "float32" in dtype_str or "fp32" in dtype_str:
+            return torch.float32
+        return torch.float32
+
     def forward_topk(self, x: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
         if k <= 0:
             raise ValueError("k must be > 0")
@@ -100,10 +111,13 @@ class PagedLinear(nn.Module):
             values, indices = torch.topk(logits, k=min(k, logits.size(-1)), dim=-1)
             return values, indices
 
-        compute_dtype = torch.float32 if self.accum_fp32 else x_flat.dtype
+        compute_dtype = torch.float32 if self.accum_fp32 else self._store_compute_dtype()
         x_compute = x_flat if x_flat.dtype == compute_dtype else x_flat.to(dtype=compute_dtype)
         out_tiles = self.store.out_tiles
         in_tiles = self.store.in_tiles
+        bias = self.bias
+        if bias is not None and bias.dtype != compute_dtype:
+            bias = bias.to(dtype=compute_dtype)
         top_vals = None
         top_idx = None
         for out_idx in range(out_tiles):
@@ -115,19 +129,16 @@ class PagedLinear(nn.Module):
             tiles = self.paged.request_tiles(tile_ids)
             out_start = out_idx * self.tile_out
             out_end = min(self.out_features, out_start + self.tile_out)
+            need_cast = hasattr(tiles[0], "dtype") and tiles[0].dtype != compute_dtype
+            if need_cast:
+                tiles = [tile.to(dtype=compute_dtype) for tile in tiles]
             if self.tile_in >= self.in_features or in_tiles == 1:
                 weight = tiles[0]
-                if weight.dtype != compute_dtype:
-                    weight = weight.to(dtype=compute_dtype)
                 out_chunk = torch.matmul(x_compute, weight.transpose(0, 1))
             else:
-                weights = tiles
-                if any(tile.dtype != compute_dtype for tile in tiles):
-                    weights = [tile if tile.dtype == compute_dtype else tile.to(dtype=compute_dtype) for tile in tiles]
-                weight_full = torch.cat(weights, dim=1)
+                weight_full = torch.cat(tiles, dim=1)
                 out_chunk = torch.matmul(x_compute, weight_full.transpose(0, 1))
-            if self.bias is not None:
-                bias = self.bias if self.bias.dtype == compute_dtype else self.bias.to(dtype=compute_dtype)
+            if bias is not None:
                 out_chunk = out_chunk + bias[out_start:out_end]
             vals, idx = torch.topk(out_chunk, k=min(k, out_chunk.size(-1)), dim=-1)
             idx = idx + out_start
@@ -160,7 +171,7 @@ class PagedLinear(nn.Module):
         if x_flat.size(-1) != self.in_features:
             raise ValueError("PagedLinear input feature mismatch")
 
-        compute_dtype = torch.float32 if self.accum_fp32 else x_flat.dtype
+        compute_dtype = torch.float32 if self.accum_fp32 else self._store_compute_dtype()
         x_compute = x_flat if x_flat.dtype == compute_dtype else x_flat.to(dtype=compute_dtype)
         out_tiles = self.store.out_tiles
         in_tiles = self.store.in_tiles
@@ -177,16 +188,14 @@ class PagedLinear(nn.Module):
             tiles = self.paged.request_tiles(tile_ids)
             out_start = out_idx * self.tile_out
             out_end = min(self.out_features, out_start + self.tile_out)
+            need_cast = hasattr(tiles[0], "dtype") and tiles[0].dtype != compute_dtype
+            if need_cast:
+                tiles = [tile.to(dtype=compute_dtype) for tile in tiles]
             if self.tile_in >= self.in_features or in_tiles == 1:
                 weight = tiles[0]
-                if weight.dtype != compute_dtype:
-                    weight = weight.to(dtype=compute_dtype)
                 out_chunk = torch.matmul(x_compute, weight.transpose(0, 1))
             else:
-                weights = tiles
-                if any(tile.dtype != compute_dtype for tile in tiles):
-                    weights = [tile if tile.dtype == compute_dtype else tile.to(dtype=compute_dtype) for tile in tiles]
-                weight_full = torch.cat(weights, dim=1)
+                weight_full = torch.cat(tiles, dim=1)
                 out_chunk = torch.matmul(x_compute, weight_full.transpose(0, 1))
             if bias is not None:
                 out_chunk = out_chunk + bias[out_start:out_end]

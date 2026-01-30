@@ -58,6 +58,12 @@ class ReplayBuffer:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_replay_quality ON replay(quality_score)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_replay_novelty ON replay(novelty_score)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_replay_created ON replay(created_ts)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS processed_events (
+                    event_id TEXT PRIMARY KEY,
+                    ts REAL
+                )
+                """)
             conn.commit()
 
     def add(self, item: ReplayItem, max_items: Optional[int] = None) -> bool:
@@ -88,6 +94,26 @@ class ReplayBuffer:
         if inserted and max_items:
             self._enforce_max_items(max_items)
         return inserted
+
+    def mark_event_processed(self, event_id: str) -> bool:
+        if not event_id:
+            return False
+        now = time.time()
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO processed_events (event_id, ts) VALUES (?, ?)",
+                (event_id, now),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def bump_success_once(self, sample_hash: str, event_id: str, delta: int = 1) -> bool:
+        if not event_id:
+            return False
+        if not self.mark_event_processed(event_id):
+            return False
+        self.update_success(sample_hash, delta=delta)
+        return True
 
     def update_success(self, digest: str, delta: int = 1) -> None:
         with sqlite3.connect(self.db_path) as conn:

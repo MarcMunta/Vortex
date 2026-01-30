@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Optional
 
 import typer
-from rich import print as rprint
+try:
+    from rich import print as rprint
+except Exception:  # pragma: no cover
+    def rprint(*args, **kwargs):
+        print(*args, **kwargs)
+
 
 from .config import load_settings, resolve_profile
 from .device import detect_device

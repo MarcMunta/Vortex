@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -177,6 +178,7 @@ def collect_samples(base_dir: Path, allowlist: List[str], settings: dict) -> Col
         if context:
             prompt = f"{prompt}\nContext:\n{context}"
         sample = Sample(prompt=prompt, response=diff, source_kind="episode")
+        event_id = hashlib.sha256(f"{task}\n{context}\n{diff}\ntests_ok".encode("utf-8")).hexdigest()
         gold_samples.append(sample)
         quality = _quality_score(diff, "episode", max_repeat_ratio)
         novelty = _novelty_score(diff, recent_vecs)
@@ -195,7 +197,8 @@ def collect_samples(base_dir: Path, allowlist: List[str], settings: dict) -> Col
             )
             if inserted:
                 novelty_scores.append(novelty)
-            replay.update_success(replay.hash_sample(sample.prompt, sample.response), delta=1)
+            digest = replay.hash_sample(sample.prompt, sample.response)
+            replay.bump_success_once(digest, event_id, delta=1)
         else:
             filtered += 1
 
@@ -226,7 +229,6 @@ def collect_samples(base_dir: Path, allowlist: List[str], settings: dict) -> Col
             )
             if inserted:
                 novelty_scores.append(novelty)
-            replay.update_success(replay.hash_sample(sample.prompt, sample.response), delta=1)
         else:
             filtered += 1
 

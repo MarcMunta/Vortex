@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Any
 
-import numpy as np
-
 try:
     import torch
 except Exception:  # pragma: no cover

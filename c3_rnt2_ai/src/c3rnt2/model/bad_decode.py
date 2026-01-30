@@ -471,6 +471,9 @@ def bad_decode(
                             break
                 else:
                     for tok in draft_tokens:
+                        ent_high = None
+                        values_full = None
+                        indices_full = None
                         if last_logits_full is None:
                             if stream_topk and hasattr(model, "step_topk"):
                                 cfg = getattr(model, "runtime_cfg", {}).get("paged_lm_head_stream_topk", 64)

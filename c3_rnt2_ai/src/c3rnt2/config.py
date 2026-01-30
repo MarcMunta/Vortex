@@ -40,6 +40,63 @@ def _resolve_profile(profiles: dict[str, Any], name: str, stack: list[str]) -> d
     return deepcopy(profile)
 
 
+
+
+def normalize_settings(settings: dict) -> dict:
+    normalized = deepcopy(settings)
+    tok = normalized.get("tokenizer", {}) or {}
+    if "vortex_tok_path" not in tok and tok.get("vortex_model_path"):
+        tok["vortex_tok_path"] = tok.get("vortex_model_path")
+    normalized["tokenizer"] = tok
+
+    runtime = normalized.get("runtime")
+    c3 = normalized.get("c3")
+    if runtime is None and c3:
+        runtime = {
+            "paged_lm_head": True,
+            "paged_tile_out": c3.get("tile_size"),
+            "paged_tile_in": c3.get("tile_in"),
+            "cache_vram_budget_mb": c3.get("cache_vram_budget_mb"),
+            "paged_lm_head_stream_topk": c3.get("paged_lm_head_stream_topk"),
+            "prefetch_depth": c3.get("prefetch_depth"),
+            "compression": c3.get("compression"),
+            "pinned_memory": c3.get("pinned_memory"),
+        }
+        normalized["runtime"] = {k: v for k, v in runtime.items() if v is not None}
+    elif runtime is not None:
+        runtime = dict(runtime)
+        if c3:
+            runtime.setdefault("cache_vram_budget_mb", c3.get("cache_vram_budget_mb"))
+            runtime.setdefault("paged_lm_head_stream_topk", c3.get("paged_lm_head_stream_topk"))
+        runtime.setdefault("cache_vram_budget_mb", 2048)
+        normalized["runtime"] = runtime
+
+    vx = normalized.get("vortex_model", {}) or {}
+    core = normalized.get("core", {}) or {}
+    lava_keys = {
+        "lava_top_k",
+        "lava_clusters",
+        "lava_cluster_top",
+        "lava_read_every",
+        "lava_write_every",
+        "lava_write_on_surprise",
+        "lava_surprise_threshold",
+        "lava_cluster_ema",
+        "lava_cluster_reassign_threshold",
+        "lava_ann_mode",
+        "lava_shared_groups",
+    }
+    lava = {}
+    for key in lava_keys:
+        if key in vx:
+            lava[key] = vx.get(key)
+        elif key in core:
+            lava[key] = core.get(key)
+    if lava:
+        normalized["lava"] = lava
+
+    return normalized
+
 def load_settings(profile: str | None = None, settings_path: str | Path | None = None) -> dict[str, Any]:
     path = Path(settings_path) if settings_path else DEFAULT_SETTINGS_PATH
     if not path.exists():
@@ -49,4 +106,4 @@ def load_settings(profile: str | None = None, settings_path: str | Path | None =
     resolved = resolve_profile(profile)
     if resolved not in profiles:
         raise KeyError(f"Profile '{resolved}' not found in {path}")
-    return _resolve_profile(profiles, resolved, [])
+    return normalize_settings(_resolve_profile(profiles, resolved, []))
