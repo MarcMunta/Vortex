@@ -4,6 +4,11 @@ import argparse
 import sys
 import time
 import subprocess
+
+try:
+    import torch
+except Exception:  # pragma: no cover
+    torch = None
 from copy import deepcopy
 from pathlib import Path
 
@@ -25,6 +30,10 @@ from .device import detect_device
 from .selfimprove.improve_loop import run_improve_loop
 from .selfimprove.patch_ops import apply_patch
 from .utils.locks import acquire_exclusive_lock, LockUnavailable
+from .runtime.router import build_features, load_router, log_router_event
+from .training import train_router as train_router_mod
+from .training import train_experts as train_experts_mod
+from .training import finetune_adapters as finetune_mod
 
 
 def _parse_interval(interval: str) -> int:
@@ -89,10 +98,27 @@ def cmd_chat(args: argparse.Namespace) -> None:
                 target_modules = resolve_target_modules(adapter_cfg, strict=strict)
                 inject_lora(model, lora_cfg, target_modules=target_modules)
                 load_lora_state(model, adapter_path)
+    router_cfg = settings.get("core", {}).get("router", settings.get("router", {})) or {}
+    router = None
+    if bool(router_cfg.get("enabled", False)):
+        router_path = Path(router_cfg.get("path", "data/runs/router.pt"))
+        router = load_router(router_path, router_path.with_suffix(".json"))
     info = detect_device()
     print({"device": info.device, "vram_gb": info.vram_gb, "dtype": info.dtype})
     decode_cfg = settings.get("decode", {})
     print("VORTEX-X chat. Type 'exit' to quit.")
+
+    def _set_stream_topk(enable: bool) -> object | None:
+        runtime = getattr(model, "runtime_cfg", None)
+        if runtime is None:
+            return None
+        prev = runtime.get("paged_lm_head_stream_topk", False)
+        if enable:
+            runtime["paged_lm_head_stream_topk"] = int(router_cfg.get("stream_topk_k", 64))
+        else:
+            runtime["paged_lm_head_stream_topk"] = False
+        return prev
+
     while True:
         prompt = input("> ").strip()
         if prompt.lower() in {"exit", "quit"}:
@@ -102,25 +128,86 @@ def cmd_chat(args: argparse.Namespace) -> None:
             top_k = int(rag_cfg.get("top_k", 3))
             context = retrieve_context(Path("."), prompt, settings, top_k=top_k)
             if context:
-                prompt = f"Context:\n{context}\n\nUser:\n{prompt}"
+                prompt = f"Context:
+{context}
+
+User:
+{prompt}"
         backend = settings.get("core", {}).get("backend", "vortex")
         default_system = settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant.")
         messages = [{"role": "user", "content": prompt}]
         prompt_text = build_chat_prompt(messages, backend, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
-        response = model.generate(
-            prompt_text,
-            max_new_tokens=args.max_new_tokens or int(decode_cfg.get("max_new_tokens", 64)),
-            temperature=args.temperature if args.temperature is not None else float(decode_cfg.get("temperature", 1.0)),
-            top_p=args.top_p if args.top_p is not None else float(decode_cfg.get("top_p", 1.0)),
-            repetition_penalty=args.repetition_penalty if args.repetition_penalty is not None else float(decode_cfg.get("repetition_penalty", 1.0)),
-            no_repeat_ngram=args.no_repeat_ngram if args.no_repeat_ngram is not None else int(decode_cfg.get("no_repeat_ngram", 0)),
-            adaptive_granularity=args.adaptive_granularity or bool(decode_cfg.get("adaptive_granularity", False)),
-            exact_copy_mode=bool(decode_cfg.get("exact_copy_mode", False)),
-            escape_restrict=bool(decode_cfg.get("escape_restrict", False)),
-            use_mtp=bool(decode_cfg.get("use_mtp", True)),
-        )
+        max_new = args.max_new_tokens or int(decode_cfg.get("max_new_tokens", 64))
+        decision = None
+        prev_stream = None
+        if router is not None:
+            feats = build_features(prompt_text, max_new, settings)
+            decision = router.decide(feats)
+            prev_stream = _set_stream_topk(bool(decision.stream_topk))
+        start = time.time()
+        if hasattr(model, "blocks"):
+            response, stats = model.generate(
+                prompt_text,
+                max_new_tokens=max_new,
+                temperature=args.temperature if args.temperature is not None else float(decode_cfg.get("temperature", 1.0)),
+                top_p=args.top_p if args.top_p is not None else float(decode_cfg.get("top_p", 1.0)),
+                repetition_penalty=args.repetition_penalty if args.repetition_penalty is not None else float(decode_cfg.get("repetition_penalty", 1.0)),
+                no_repeat_ngram=args.no_repeat_ngram if args.no_repeat_ngram is not None else int(decode_cfg.get("no_repeat_ngram", 0)),
+                adaptive_granularity=args.adaptive_granularity or bool(decode_cfg.get("adaptive_granularity", False)),
+                exact_copy_mode=bool(decode_cfg.get("exact_copy_mode", False)),
+                escape_restrict=bool(decode_cfg.get("escape_restrict", False)),
+                use_mtp=bool(decode_cfg.get("use_mtp", True)),
+                return_stats=True,
+            )
+        else:
+            response = model.generate(
+                prompt_text,
+                max_new_tokens=max_new,
+                temperature=args.temperature if args.temperature is not None else float(decode_cfg.get("temperature", 1.0)),
+                top_p=args.top_p if args.top_p is not None else float(decode_cfg.get("top_p", 1.0)),
+                repetition_penalty=args.repetition_penalty if args.repetition_penalty is not None else float(decode_cfg.get("repetition_penalty", 1.0)),
+                no_repeat_ngram=args.no_repeat_ngram if args.no_repeat_ngram is not None else int(decode_cfg.get("no_repeat_ngram", 0)),
+                adaptive_granularity=args.adaptive_granularity or bool(decode_cfg.get("adaptive_granularity", False)),
+                exact_copy_mode=bool(decode_cfg.get("exact_copy_mode", False)),
+                escape_restrict=bool(decode_cfg.get("escape_restrict", False)),
+                use_mtp=bool(decode_cfg.get("use_mtp", True)),
+            )
+            stats = None
+        elapsed = max(1e-6, time.time() - start)
+        vram_peak = None
+        if torch is not None and torch.cuda.is_available():
+            try:
+                vram_peak = float(torch.cuda.max_memory_allocated() / (1024 ** 2))
+            except Exception:
+                vram_peak = None
+        mem_cost = 0.0
+        if hasattr(model, "blocks"):
+            try:
+                mem_cost = float(sum(block.lava.stats.reads + block.lava.stats.writes for block in model.blocks))
+            except Exception:
+                mem_cost = 0.0
+        if router is not None:
+            verify_rate = 0.0
+            if stats is not None:
+                verify_rate = float(stats.accepted) / max(1, int(stats.proposed))
+            log_router_event(
+                Path("."),
+                {
+                    "request_id": f"cli-{int(time.time())}",
+                    "backend": "core" if backend != "hf" else "hf",
+                    "stream_topk": bool(decision.stream_topk) if decision else False,
+                    "prompt_tokens": len(prompt_text.split()),
+                    "max_new_tokens": max_new,
+                    "tok_per_s": float(max_new) / elapsed,
+                    "verify_accept_rate": verify_rate,
+                    "error_rate": 0.0,
+                    "vram_peak_mb": vram_peak or 0.0,
+                    "mem_cost_estimate": mem_cost,
+                },
+            )
+        if prev_stream is not None:
+            _set_stream_topk(bool(prev_stream))
         print(response)
-
 
 def cmd_agent_demo(args: argparse.Namespace) -> None:
     settings = _load_and_validate(args.profile)
@@ -301,6 +388,59 @@ def cmd_train_once(args: argparse.Namespace) -> None:
 
 
 
+def cmd_train_router(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    weights_cfg = settings.get("router", {}).get("weights", {})
+    weights = {
+        "speed": float(args.w_speed if args.w_speed is not None else weights_cfg.get("speed", 1.0)),
+        "vram": float(args.w_vram if args.w_vram is not None else weights_cfg.get("vram", 0.01)),
+        "error": float(args.w_error if args.w_error is not None else weights_cfg.get("error", 5.0)),
+        "quality": float(args.w_quality if args.w_quality is not None else weights_cfg.get("quality", 1.0)),
+    }
+    result = train_router_mod.train_router(
+        Path(args.data),
+        Path(args.output),
+        weights=weights,
+        epochs=int(args.epochs),
+        hidden_size=int(args.hidden),
+        seed=int(args.seed),
+    )
+    print(result)
+
+
+def cmd_train_experts(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    domains = [d.strip() for d in args.domains.split(",") if d.strip()]
+    if not domains:
+        domains = [p.name for p in Path(args.data).iterdir() if p.is_dir()]
+    result = train_experts_mod.train_experts(
+        settings=settings,
+        domains=domains,
+        data_root=Path(args.data),
+        output_root=Path(args.output),
+        steps=int(args.steps),
+        lr=float(args.lr),
+        batch_tokens=int(args.batch_tokens),
+        grad_accum=int(args.grad_accum),
+    )
+    print(result)
+
+
+def cmd_finetune_adapter(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    result = finetune_mod.finetune_adapter(
+        settings=settings,
+        adapter_path=Path(args.adapter),
+        data_path=Path(args.data),
+        output_path=Path(args.output),
+        steps=int(args.steps),
+        lr=float(args.lr),
+        batch_tokens=int(args.batch_tokens),
+        grad_accum=int(args.grad_accum),
+    )
+    print(result)
+
+
 def cmd_bench(args: argparse.Namespace) -> None:
     profile = args.profile or _default_profile()
     _ = _load_and_validate(profile)
@@ -420,6 +560,41 @@ def main() -> None:
     boot.add_argument("--batch-tokens", type=int, default=4096)
     boot.add_argument("--grad-accum", type=int, default=1)
     boot.set_defaults(func=cmd_bootstrap)
+
+    tr_router = sub.add_parser("train-router")
+    tr_router.add_argument("--profile", default=None)
+    tr_router.add_argument("--data", default="data/logs")
+    tr_router.add_argument("--output", default="data/runs/router.pt")
+    tr_router.add_argument("--epochs", type=int, default=200)
+    tr_router.add_argument("--hidden", type=int, default=16)
+    tr_router.add_argument("--seed", type=int, default=42)
+    tr_router.add_argument("--w-speed", type=float, default=None)
+    tr_router.add_argument("--w-vram", type=float, default=None)
+    tr_router.add_argument("--w-error", type=float, default=None)
+    tr_router.add_argument("--w-quality", type=float, default=None)
+    tr_router.set_defaults(func=cmd_train_router)
+
+    tr_exp = sub.add_parser("train-experts")
+    tr_exp.add_argument("--profile", default=None)
+    tr_exp.add_argument("--data", default="data/corpora")
+    tr_exp.add_argument("--output", default="data/experts")
+    tr_exp.add_argument("--domains", default="")
+    tr_exp.add_argument("--steps", type=int, default=50)
+    tr_exp.add_argument("--lr", type=float, default=1e-4)
+    tr_exp.add_argument("--batch-tokens", type=int, default=2048)
+    tr_exp.add_argument("--grad-accum", type=int, default=1)
+    tr_exp.set_defaults(func=cmd_train_experts)
+
+    ft_ad = sub.add_parser("finetune-adapter")
+    ft_ad.add_argument("--profile", default=None)
+    ft_ad.add_argument("--adapter", required=True)
+    ft_ad.add_argument("--data", required=True)
+    ft_ad.add_argument("--output", default="data/experts/finetuned.pt")
+    ft_ad.add_argument("--steps", type=int, default=50)
+    ft_ad.add_argument("--lr", type=float, default=1e-4)
+    ft_ad.add_argument("--batch-tokens", type=int, default=2048)
+    ft_ad.add_argument("--grad-accum", type=int, default=1)
+    ft_ad.set_defaults(func=cmd_finetune_adapter)
 
     bench = sub.add_parser("bench")
     bench.add_argument("--profile", default=None)

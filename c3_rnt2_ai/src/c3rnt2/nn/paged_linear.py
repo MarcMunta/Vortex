@@ -31,6 +31,7 @@ class PagedLinear(nn.Module):
         prefetch_depth: int = 2,
         pin_memory: bool = True,
         accum_fp32: bool = False,
+        gpu_decompress: str = "none",
     ) -> None:
         super().__init__()
         self.store = store
@@ -47,6 +48,7 @@ class PagedLinear(nn.Module):
             device=device,
             prefetch_depth=prefetch_depth,
             pin_memory=pin_memory,
+            gpu_decompress=gpu_decompress,
         )
         if bias is not None:
             self.register_buffer("bias", bias.detach().to(device))
@@ -65,6 +67,7 @@ class PagedLinear(nn.Module):
         prefetch_depth: int = 2,
         pin_memory: bool = True,
         accum_fp32: bool = False,
+        gpu_decompress: str = "none",
     ) -> "PagedLinear":
         if not isinstance(linear, nn.Linear):
             raise TypeError("from_linear expects nn.Linear")
@@ -83,6 +86,7 @@ class PagedLinear(nn.Module):
             prefetch_depth=prefetch_depth,
             pin_memory=pin_memory,
             accum_fp32=accum_fp32,
+            gpu_decompress=gpu_decompress,
         )
 
 

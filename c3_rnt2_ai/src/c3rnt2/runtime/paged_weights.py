@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Any
@@ -33,12 +33,14 @@ class PagedWeights:
         device: str = "cpu",
         prefetch_depth: int = 2,
         pin_memory: bool | None = None,
+        gpu_decompress: str = "none",
     ):
         self.tile_store = tile_store
         self.cache = cache
         self.device = device
         self.pin_memory = pin_memory if pin_memory is not None else device.startswith("cuda")
         self.non_blocking = device.startswith("cuda")
+        self.gpu_decompress = gpu_decompress
         self.stats = PagedWeightsStats()
         self._prefetched: set[int] = set()
         self._prefetch_events: Dict[int, object] = {}
@@ -71,6 +73,7 @@ class PagedWeights:
                 shape=shape,
                 pin_memory=self.pin_memory,
                 non_blocking=self.non_blocking,
+                backend=self.gpu_decompress,
             )
         else:
             compressed_bytes = int(tile.nbytes)
@@ -79,6 +82,7 @@ class PagedWeights:
                 device="cpu" if self.device.startswith("cuda") else self.device,
                 pin_memory=self.pin_memory,
                 non_blocking=self.non_blocking,
+                backend=self.gpu_decompress,
             )
         size_bytes = int(tensor.numel() * tensor.element_size()) if hasattr(tensor, "numel") else int(compressed_bytes)
         return {

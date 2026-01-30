@@ -36,6 +36,7 @@ def _maybe_enable_paged_lm_head(model: "CoreTransformer", settings: dict) -> Non
     prefetch_depth = int(runtime_cfg.get("prefetch_depth", c3_cfg.get("prefetch_depth", 2)))
     compression = runtime_cfg.get("compression", c3_cfg.get("compression"))
     pin_memory = bool(runtime_cfg.get("pinned_memory", c3_cfg.get("pinned_memory", True)))
+    gpu_decompress = runtime_cfg.get("gpu_decompress", "none")
     model.lm_head = PagedLinear.from_linear(
         model.lm_head,
         tile_out=tile_out,
@@ -45,6 +46,7 @@ def _maybe_enable_paged_lm_head(model: "CoreTransformer", settings: dict) -> Non
         device=str(model.device),
         prefetch_depth=prefetch_depth,
         pin_memory=pin_memory,
+        gpu_decompress=gpu_decompress,
     )
 from .bad_decode import bad_decode
 from .kv_hybrid import KVHybridCache
@@ -292,6 +294,21 @@ class CoreTransformer(nn.Module):
             device=device_info.device,
         )
         model = CoreTransformer(cfg, tokenizer=tokenizer)
+        kv_cfg = settings.get("kv", {}) or {}
+        runtime_cfg = settings.get("runtime", {}) or {}
+        kv_quant = str(runtime_cfg.get("kv_quant", "")).lower()
+        kv_bits = None
+        if kv_quant == "int8":
+            kv_bits = 8
+        elif kv_quant == "2bit":
+            kv_bits = 2
+        elif kv_quant == "none":
+            kv_bits = 0
+        if kv_bits is None:
+            kv_bits = int(kv_cfg.get("kv_quant_bits", 8))
+        kv_window = int(kv_cfg.get("window_size", cfg.window_size))
+        kv_latent = int(kv_cfg.get("latent_slots", 32))
+        model.kv_cache = KVHybridCache(window_size=kv_window, kv_quant_bits=kv_bits, latent_slots=kv_latent)
         model.escape_mode = tok_cfg.get("escape_mode", "exact")
         model.bad_block_size = int(bad_cfg.get("block_size", decode_cfg.get("draft_block", 8)))
         model.bad_entropy = float(bad_cfg.get("entropy_threshold", decode_cfg.get("entropy_threshold", 3.5)))
@@ -698,7 +715,7 @@ class CoreTransformer(nn.Module):
         values, indices = torch.topk(logits, k=min(k, logits.size(-1)), dim=-1)
         return values, indices
 
-    def generate(self, prompt: str, max_new_tokens: int = 32, **kwargs) -> str:
+    def generate(self, prompt: str, max_new_tokens: int = 32, return_stats: bool = False, **kwargs):
         bad_cfg = {
             "block_size": getattr(self, "bad_block_size", 8),
             "entropy_threshold": getattr(self, "bad_entropy", 3.5),
@@ -747,7 +764,7 @@ class CoreTransformer(nn.Module):
         use_mtp = bool(bad_cfg.get("use_mtp", True))
         with torch.inference_mode():
             with autocast_context(enabled=self.device.type == "cuda", dtype=self.config.dtype):
-                text, _stats = bad_decode(
+                text, stats = bad_decode(
                     self,
                     prompt=prompt,
                     max_new_tokens=max_new_tokens,
@@ -766,5 +783,7 @@ class CoreTransformer(nn.Module):
                     escape_restrict=escape_restrict,
                     use_mtp=use_mtp,
                 )
+        if return_stats:
+            return text, stats
         return text
 

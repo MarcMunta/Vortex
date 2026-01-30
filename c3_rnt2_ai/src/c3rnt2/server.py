@@ -1,8 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import threading
 import time
+from copy import deepcopy
+
+try:
+    import torch
+except Exception:  # pragma: no cover
+    torch = None
+
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -12,6 +19,7 @@ from .prompting.chat_format import build_chat_prompt
 from .model.bad_decode import _sample_logits, _sample_logits_topk, _RepetitionTracker, _NgramTracker
 from .continuous.lora import LoRAConfig, inject_lora, load_lora_state, resolve_target_modules
 from .continuous.registry import load_registry
+from .runtime.router import build_features, load_router, log_router_event
 
 
 def _maybe_load_adapter(model: CoreTransformer, settings: dict, base_dir: Path) -> None:
@@ -27,6 +35,35 @@ def _maybe_load_adapter(model: CoreTransformer, settings: dict, base_dir: Path) 
             target_modules = resolve_target_modules(adapter_cfg, strict=strict)
             inject_lora(model, lora_cfg, target_modules=target_modules)
             load_lora_state(model, adapter_path)
+
+
+def _load_backend_model(settings: dict, base_dir: Path, backend: str):
+    local = deepcopy(settings)
+    core = local.get("core", {}) or {}
+    if backend == "hf":
+        core["backend"] = "hf"
+    else:
+        core["backend"] = "vortex"
+    local["core"] = core
+    model = load_inference_model(local)
+    _maybe_load_adapter(model, local, base_dir)
+    return model
+
+
+def _maybe_set_stream_topk(model: CoreTransformer, enabled: bool, top_k: int | None = None):
+    if not hasattr(model, "runtime_cfg"):
+        return None
+    runtime = model.runtime_cfg
+    if runtime is None:
+        return None
+    original = runtime.get("paged_lm_head_stream_topk", False)
+    if enabled:
+        if top_k is None:
+            top_k = int(original) if isinstance(original, int) and original > 0 else 64
+        runtime["paged_lm_head_stream_topk"] = int(top_k)
+    else:
+        runtime["paged_lm_head_stream_topk"] = False
+    return original
 
 
 
@@ -122,12 +159,33 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         raise RuntimeError(f"FastAPI not available: {exc}")
 
     app = FastAPI()
-    model = load_inference_model(settings)
-    _maybe_load_adapter(model, settings, base_dir)
+    router_cfg = settings.get("core", {}).get("router", settings.get("router", {})) or {}
+    router_enabled = bool(router_cfg.get("enabled", False))
+    router = None
+    router_path = Path(router_cfg.get("path", "data/runs/router.pt"))
+    if router_enabled:
+        router = load_router(router_path, router_path.with_suffix(".json"))
+
+    core_backend = str(settings.get("core", {}).get("backend", "vortex")).lower()
+    default_backend_label = "hf" if core_backend == "hf" else "core"
+    model = _load_backend_model(settings, base_dir, default_backend_label)
+    models = {default_backend_label: model}
+    if router_enabled and bool(router_cfg.get("multi_backend", False)):
+        for backend in ("core", "hf"):
+            if backend in models:
+                continue
+            try:
+                models[backend] = _load_backend_model(settings, base_dir, backend)
+            except Exception:
+                continue
+
     model_lock = threading.Lock()
     app.state.model = model
+    app.state.models = models
     app.state.settings = settings
     app.state.model_lock = model_lock
+    app.state.router = router
+    app.state.router_cfg = router_cfg
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
@@ -137,24 +195,90 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             messages = [{"role": "user", "content": payload.get("prompt")}]
         if not messages:
             raise HTTPException(status_code=400, detail="messages required")
-        backend = settings.get("core", {}).get("backend", "vortex")
+        backend_cfg = settings.get("core", {}).get("backend", "vortex")
         default_system = settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant.")
-        prompt = build_chat_prompt(messages, backend, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
+        prompt = build_chat_prompt(messages, backend_cfg, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
         stream = bool(payload.get("stream", False))
         decode_args = _resolve_decode_args(settings, payload)
         created = int(time.time())
         resp_id = f"chatcmpl-{created}"
 
+        chosen_backend = default_backend_label
+        decision = None
+        if router is not None:
+            feats = build_features(prompt, decode_args["max_new_tokens"], settings)
+            decision = router.decide(feats)
+            chosen_backend = decision.backend
+        selected_model = models.get(chosen_backend, model)
+        stream_topk_override = None
+        if decision is not None and hasattr(selected_model, "runtime_cfg"):
+            stream_topk_override = _maybe_set_stream_topk(
+                selected_model,
+                enabled=bool(decision.stream_topk),
+                top_k=int(router_cfg.get("stream_topk_k", 64)),
+            )
+
         if not stream:
+            start = time.time()
             with model_lock:
-                text = model.generate(
-                    prompt,
-                    max_new_tokens=decode_args["max_new_tokens"],
-                    temperature=decode_args["temperature"],
-                    top_p=decode_args["top_p"],
-                    repetition_penalty=decode_args["repetition_penalty"],
-                    no_repeat_ngram=decode_args["no_repeat_ngram"],
+                if hasattr(selected_model, "generate"):
+                    if hasattr(selected_model, "blocks"):
+                        text, stats = selected_model.generate(
+                            prompt,
+                            max_new_tokens=decode_args["max_new_tokens"],
+                            temperature=decode_args["temperature"],
+                            top_p=decode_args["top_p"],
+                            repetition_penalty=decode_args["repetition_penalty"],
+                            no_repeat_ngram=decode_args["no_repeat_ngram"],
+                            return_stats=True,
+                        )
+                    else:
+                        text = selected_model.generate(
+                            prompt,
+                            max_new_tokens=decode_args["max_new_tokens"],
+                            temperature=decode_args["temperature"],
+                            top_p=decode_args["top_p"],
+                            repetition_penalty=decode_args["repetition_penalty"],
+                            no_repeat_ngram=decode_args["no_repeat_ngram"],
+                        )
+                        stats = None
+                else:
+                    text = ""
+                    stats = None
+            elapsed = max(1e-6, time.time() - start)
+            vram_peak = None
+            if torch is not None and torch.cuda.is_available():
+                try:
+                    vram_peak = float(torch.cuda.max_memory_allocated() / (1024 ** 2))
+                except Exception:
+                    vram_peak = None
+            mem_cost = 0.0
+            if hasattr(selected_model, "blocks"):
+                try:
+                    mem_cost = float(sum(block.lava.stats.reads + block.lava.stats.writes for block in selected_model.blocks))
+                except Exception:
+                    mem_cost = 0.0
+            if router is not None:
+                verify_rate = 0.0
+                if stats is not None:
+                    verify_rate = float(stats.accepted) / max(1, int(stats.proposed))
+                log_router_event(
+                    base_dir,
+                    {
+                        "request_id": resp_id,
+                        "backend": chosen_backend,
+                        "stream_topk": bool(decision.stream_topk) if decision else False,
+                        "prompt_tokens": len(prompt.split()),
+                        "max_new_tokens": decode_args["max_new_tokens"],
+                        "tok_per_s": float(decode_args["max_new_tokens"]) / elapsed,
+                        "verify_accept_rate": verify_rate,
+                        "error_rate": 0.0,
+                        "vram_peak_mb": vram_peak or 0.0,
+                        "mem_cost_estimate": mem_cost,
+                    },
                 )
+            if stream_topk_override is not None:
+                _maybe_set_stream_topk(selected_model, enabled=bool(stream_topk_override), top_k=int(stream_topk_override) if stream_topk_override else None)
             data = {
                 "id": resp_id,
                 "object": "chat.completion",
@@ -179,9 +303,12 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
             yield f"data: {json.dumps(header)}\n\n"
+            chunks: list[str] = []
+            start = time.time()
             with model_lock:
-                if hasattr(model, "stream_generate"):
-                    for delta in model.stream_generate(prompt, **decode_args):
+                if hasattr(selected_model, "stream_generate"):
+                    for delta in selected_model.stream_generate(prompt, **decode_args):
+                        chunks.append(delta)
                         chunk = {
                             "id": resp_id,
                             "object": "chat.completion.chunk",
@@ -191,7 +318,8 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                         }
                         yield f"data: {json.dumps(chunk)}\n\n"
                 else:
-                    for delta in _stream_generate(model, prompt, **decode_args):
+                    for delta in _stream_generate(selected_model, prompt, **decode_args):
+                        chunks.append(delta)
                         chunk = {
                             "id": resp_id,
                             "object": "chat.completion.chunk",
@@ -200,6 +328,39 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                             "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
                         }
                         yield f"data: {json.dumps(chunk)}\n\n"
+            elapsed = max(1e-6, time.time() - start)
+            vram_peak = None
+            if torch is not None and torch.cuda.is_available():
+                try:
+                    vram_peak = float(torch.cuda.max_memory_allocated() / (1024 ** 2))
+                except Exception:
+                    vram_peak = None
+            mem_cost = 0.0
+            if hasattr(selected_model, "blocks"):
+                try:
+                    mem_cost = float(sum(block.lava.stats.reads + block.lava.stats.writes for block in selected_model.blocks))
+                except Exception:
+                    mem_cost = 0.0
+            if router is not None:
+                full_text = "".join(chunks)
+                token_count = len(full_text.split())
+                log_router_event(
+                    base_dir,
+                    {
+                        "request_id": resp_id,
+                        "backend": chosen_backend,
+                        "stream_topk": bool(decision.stream_topk) if decision else False,
+                        "prompt_tokens": len(prompt.split()),
+                        "max_new_tokens": decode_args["max_new_tokens"],
+                        "tok_per_s": float(token_count) / elapsed,
+                        "verify_accept_rate": 0.0,
+                        "error_rate": 0.0,
+                        "vram_peak_mb": vram_peak or 0.0,
+                        "mem_cost_estimate": mem_cost,
+                    },
+                )
+            if stream_topk_override is not None:
+                _maybe_set_stream_topk(selected_model, enabled=bool(stream_topk_override), top_k=int(stream_topk_override) if stream_topk_override else None)
             done = {
                 "id": resp_id,
                 "object": "chat.completion.chunk",
@@ -257,8 +418,8 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                 self.end_headers()
                 return
             backend = settings.get("core", {}).get("backend", "vortex")
-        default_system = settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant.")
-        prompt = build_chat_prompt(messages, backend, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
+            default_system = settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant.")
+            prompt = build_chat_prompt(messages, backend, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
             stream = bool(payload.get("stream", False))
             decode_args = _resolve_decode_args(settings, payload)
             created = int(time.time())

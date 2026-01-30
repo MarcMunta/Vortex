@@ -117,3 +117,12 @@ Qwen-8B HF backend:
 
 python -m c3rnt2 chat --profile qwen8b_base
 python -m c3rnt2 serve --profile qwen8b_base
+
+
+## End-to-End
+Router + experts + adapters:
+```bash
+python -m c3rnt2 train-experts --domains programming
+python -m c3rnt2 train-router
+python -m c3rnt2 finetune-adapter --adapter data/experts/programming/adapter.pt --data data/corpora/programming
+```

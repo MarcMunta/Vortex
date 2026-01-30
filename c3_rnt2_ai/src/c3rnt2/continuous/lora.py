@@ -43,8 +43,10 @@ class LoRALinear(nn.Module):
         self.base.weight.requires_grad = False
         if self.base.bias is not None:
             self.base.bias.requires_grad = False
-        self.A = nn.Parameter(torch.zeros(config.rank, base.in_features))
-        self.B = nn.Parameter(torch.zeros(base.out_features, config.rank))
+        device = base.weight.device
+        dtype = base.weight.dtype
+        self.A = nn.Parameter(torch.zeros(config.rank, base.in_features, device=device, dtype=dtype))
+        self.B = nn.Parameter(torch.zeros(base.out_features, config.rank, device=device, dtype=dtype))
         nn.init.kaiming_uniform_(self.A, a=5 ** 0.5)
         nn.init.zeros_(self.B)
 

@@ -63,6 +63,12 @@ profiles:
       top_k: 2
       stability_threshold: 0.1
       mem_cost_weight: 0.01
+      enabled: false
+      weights:
+        speed: 1.0
+        vram: 0.01
+        error: 5.0
+        quality: 1.0
     agent:
       web_allowlist: ["github.com", "docs.python.org", "pytorch.org"]
       tools_enabled: ["run_tests", "search_web", "edit_repo", "open_docs"]
@@ -260,6 +266,12 @@ profiles:
       top_k: 4
       stability_threshold: 0.15
       mem_cost_weight: 0.02
+      enabled: false
+      weights:
+        speed: 1.0
+        vram: 0.01
+        error: 5.0
+        quality: 1.0
     continuous:
       run_interval_minutes: 30
       adapter_rank: 4
@@ -395,6 +407,12 @@ profiles:
       top_k: 4
       stability_threshold: 0.15
       mem_cost_weight: 0.02
+      enabled: false
+      weights:
+        speed: 1.0
+        vram: 0.01
+        error: 5.0
+        quality: 1.0
       hysteresis: 0.1
 
     decode:

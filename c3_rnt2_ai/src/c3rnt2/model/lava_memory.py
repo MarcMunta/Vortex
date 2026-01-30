@@ -94,6 +94,7 @@ class LAVAMemory(nn.Module):
         self.register_buffer("age", torch.zeros(latent_slots))
         self.register_buffer("importance", torch.zeros(latent_slots))
         self.stats = LavaStats()
+        self.enable_write = True
         self._refresh_address_cache()
         self._init_clusters()
 
@@ -249,6 +250,8 @@ class LAVAMemory(nn.Module):
         return self.read_block(x)
 
     def write(self, x: torch.Tensor) -> None:
+        if not getattr(self, "enable_write", True):
+            return
         if x.dim() == 2:
             self.write_step(x)
             return
@@ -260,6 +263,8 @@ class LAVAMemory(nn.Module):
         return mem
 
     def write_step(self, x: torch.Tensor, surprise: torch.Tensor | None = None) -> None:
+        if not getattr(self, "enable_write", True):
+            return
         if self.write_every > 1 and (self._step % self.write_every) != 0:
             return
         with torch.no_grad():
@@ -321,6 +326,8 @@ class LAVAMemory(nn.Module):
             return mem_full
 
     def write_block(self, x: torch.Tensor, surprise: torch.Tensor | None = None) -> None:
+        if not getattr(self, "enable_write", True):
+            return
         if x.dim() != 3:
             raise ValueError("LAVAMemory.write_block expects [B, K, H]")
         if self.write_every > 1:

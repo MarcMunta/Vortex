@@ -69,6 +69,18 @@ def normalize_settings(settings: dict) -> dict:
         runtime["cache_vram_budget_mb"] = 2048
     runtime.setdefault("prefetch_depth", 2)
     runtime.setdefault("paged_lm_head_stream_topk", runtime.get("paged_lm_head_stream_topk", False) or False)
+    kv = normalized.get("kv", {}) or {}
+    if "kv_quant" not in runtime:
+        kv_bits = kv.get("kv_quant_bits")
+        if kv_bits is not None:
+            if int(kv_bits) == 8:
+                runtime["kv_quant"] = "int8"
+            elif int(kv_bits) == 2:
+                runtime["kv_quant"] = "2bit"
+            elif int(kv_bits) <= 0:
+                runtime["kv_quant"] = "none"
+    runtime.setdefault("kv_quant", "none")
+    runtime.setdefault("gpu_decompress", "none")
     normalized["runtime"] = runtime
 
     vx = normalized.get("vortex_model", {}) or {}
@@ -145,6 +157,13 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
     prefetch_depth = runtime.get("prefetch_depth")
     if prefetch_depth is not None and int(prefetch_depth) < 0:
         errors.append("runtime.prefetch_depth must be >= 0")
+
+    kv_quant = str(runtime.get("kv_quant", "none")).lower()
+    if kv_quant not in {"none", "int8", "2bit"}:
+        errors.append("runtime.kv_quant must be one of none|int8|2bit")
+    gpu_decompress = str(runtime.get("gpu_decompress", "none")).lower()
+    if gpu_decompress not in {"none", "triton"}:
+        errors.append("runtime.gpu_decompress must be none or triton")
 
     top_p = float(decode.get("top_p", bad.get("top_p", 1.0)))
     if not (0.0 < top_p <= 1.0):
