@@ -1,5 +1,7 @@
-﻿import numpy as np
-import torch
+import pytest
+import numpy as np
+
+torch = pytest.importorskip("torch")
 
 from c3rnt2.model.kv_hybrid import KVHybridCache
 

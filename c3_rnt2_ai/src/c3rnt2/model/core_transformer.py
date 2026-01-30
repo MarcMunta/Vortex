@@ -315,6 +315,10 @@ class CoreTransformer(nn.Module):
         model.decode_cfg = decode_cfg
         model.depth_gating = settings.get("depth_gating", {}) or {}
         model.runtime_cfg = settings.get("runtime", {}) or {}
+        kv_mode = str(model.runtime_cfg.get("kv_quant", "none")).lower()
+        for block in model.blocks:
+            if hasattr(block, "lava") and hasattr(block.lava, "set_kv_quant"):
+                block.lava.set_kv_quant(kv_mode)
         ckpt = core.get("checkpoint_path")
         if ckpt:
             _load_checkpoint(model, ckpt)
@@ -365,6 +369,10 @@ class CoreTransformer(nn.Module):
                 except Exception:
                     pass
             model.draft_model = draft_model
+            if kv_mode:
+                for block in draft_model.blocks:
+                    if hasattr(block, "lava") and hasattr(block.lava, "set_kv_quant"):
+                        block.lava.set_kv_quant(kv_mode)
         # Sync device/dtype with actual parameters for downstream helpers
         param = next(model.parameters(), None)
         if param is not None:

@@ -164,6 +164,10 @@ class PagedLinear(nn.Module):
             "bytes_h2d": float(self.paged.stats.bytes_h2d),
             "prefetch_hits": float(self.paged.stats.prefetch_hits),
             "bytes_compressed_read": float(self.paged.stats.compressed_bytes),
+            "bytes_decompressed": float(self.paged.stats.bytes_decompressed),
+            "ms_cpu_decompress": float(self.paged.stats.ms_cpu_decompress),
+            "ms_h2d": float(self.paged.stats.ms_h2d),
+            "ms_triton_copy": float(self.paged.stats.ms_triton_copy),
         }
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

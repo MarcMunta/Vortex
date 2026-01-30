@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
 from typing import Any, Tuple
+from dataclasses import dataclass
+import time
 
 import numpy as np
 
@@ -19,6 +21,14 @@ except Exception:  # pragma: no cover
     tl = None
 
 torch: Any = _torch
+
+
+@dataclass
+class DecompressStats:
+    bytes_decompressed: int = 0
+    ms_cpu_decompress: float = 0.0
+    ms_h2d: float = 0.0
+    ms_triton_copy: float = 0.0
 
 
 def _to_tensor(tile: np.ndarray, device: str = "cpu", pin_memory: bool = False, non_blocking: bool = False):
@@ -58,22 +68,52 @@ def decompress_to_tensor(
     device: str = "cpu",
     codec: str | None = None,
     shape: Tuple[int, int] | None = None,
-    pin_memory: bool = False,
-    non_blocking: bool = False,
+    pin_memory: bool | None = None,
+    non_blocking: bool | None = None,
     backend: str = "none",
+    pinned: bool | None = None,
+    stream: object | None = None,
 ):
     """Decompress tile payload if needed and move to device."""
+    if torch is None:
+        raise RuntimeError("PyTorch not available")
+    stats = DecompressStats()
+    use_pin = pinned if pinned is not None else pin_memory
+    if use_pin is None:
+        use_pin = device.startswith("cuda")
+    use_non_blocking = non_blocking if non_blocking is not None else device.startswith("cuda")
+
     if isinstance(tile, np.ndarray):
-        tensor = _to_tensor(tile, device=device, pin_memory=pin_memory, non_blocking=non_blocking)
+        arr = tile
     elif isinstance(tile, (bytes, bytearray)):
         if codec is None or shape is None:
             raise ValueError("codec and shape required for compressed tiles")
+        start = time.perf_counter()
         raw = decompress(bytes(tile), codec=codec)
+        stats.ms_cpu_decompress = (time.perf_counter() - start) * 1000.0
         arr = np.frombuffer(raw, dtype=np.float16).reshape(shape)
-        tensor = _to_tensor(arr, device=device, pin_memory=pin_memory, non_blocking=non_blocking)
     else:
         raise TypeError("Unsupported tile type")
+
+    stats.bytes_decompressed = int(arr.nbytes)
+    tensor = _to_tensor(arr, device="cpu", pin_memory=bool(use_pin), non_blocking=False)
+
+    if device != "cpu":
+        start = time.perf_counter()
+        if stream is not None and torch is not None and hasattr(torch.cuda, "stream"):
+            try:
+                with torch.cuda.stream(stream):
+                    tensor = tensor.to(device, non_blocking=bool(use_non_blocking))
+            except Exception:
+                tensor = tensor.to(device, non_blocking=bool(use_non_blocking))
+        else:
+            tensor = tensor.to(device, non_blocking=bool(use_non_blocking))
+        stats.ms_h2d = (time.perf_counter() - start) * 1000.0
+
     if backend == "triton" and torch is not None and triton is not None:
         if isinstance(tensor, torch.Tensor) and tensor.device.type == "cuda":
-            return _triton_copy(tensor)
-    return tensor
+            start = time.perf_counter()
+            out = _triton_copy(tensor)
+            stats.ms_triton_copy = (time.perf_counter() - start) * 1000.0
+            return out, stats
+    return tensor, stats
