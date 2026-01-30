@@ -131,6 +131,9 @@ profiles:
     core:
       backend: hf
       hf_model: "Qwen/Qwen2.5-8B-Instruct"
+      hf_load_in_4bit: true
+      hf_device: cuda
+      hf_attn_implementation: sdpa
       dtype: bf16
     decode:
       max_new_tokens: 128

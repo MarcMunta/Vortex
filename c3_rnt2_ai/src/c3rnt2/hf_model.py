@@ -12,6 +12,7 @@ class HFConfig:
     model_name: str
     device: str
     dtype: torch.dtype
+    load_kwargs: dict
 
 
 class HFModel:
@@ -25,8 +26,9 @@ class HFModel:
 
         self.cfg = cfg
         self.tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(cfg.model_name, torch_dtype=cfg.dtype)
-        self.model.to(cfg.device)
+        self.model = AutoModelForCausalLM.from_pretrained(cfg.model_name, **cfg.load_kwargs)
+        if "device_map" not in cfg.load_kwargs:
+            self.model.to(cfg.device)
         self.model.eval()
         self.device = torch.device(cfg.device)
 
@@ -109,7 +111,7 @@ def load_hf_model(settings: dict) -> HFModel:
     model_name = core.get("hf_model")
     if not model_name:
         raise ValueError("core.hf_model is required for hf backend")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = str(core.get("hf_device") or ("cuda" if torch.cuda.is_available() else "cpu"))
     dtype = core.get("dtype")
     if dtype == "bf16":
         torch_dtype = torch.bfloat16
@@ -117,5 +119,27 @@ def load_hf_model(settings: dict) -> HFModel:
         torch_dtype = torch.float16
     else:
         torch_dtype = torch.float16 if device == "cuda" else torch.float32
-    cfg = HFConfig(model_name=str(model_name), device=device, dtype=torch_dtype)
-    return HFModel(cfg)
+    load_kwargs: dict = {"torch_dtype": torch_dtype}
+    attn_impl = core.get("hf_attn_implementation")
+    if attn_impl:
+        load_kwargs["attn_implementation"] = attn_impl
+    load_in_4bit = bool(core.get("hf_load_in_4bit"))
+    load_in_8bit = bool(core.get("hf_load_in_8bit"))
+    if load_in_4bit or load_in_8bit:
+        try:
+            import bitsandbytes  # type: ignore  # noqa: F401
+            load_kwargs["load_in_4bit"] = load_in_4bit
+            load_kwargs["load_in_8bit"] = load_in_8bit
+            load_kwargs["device_map"] = "auto" if device == "cuda" else "cpu"
+        except Exception:
+            load_in_4bit = False
+            load_in_8bit = False
+    cfg = HFConfig(model_name=str(model_name), device=device, dtype=torch_dtype, load_kwargs=load_kwargs)
+    model = HFModel(cfg)
+    if load_in_4bit or load_in_8bit:
+        model.quant_fallback = False
+    else:
+        if bool(core.get("hf_load_in_4bit")) or bool(core.get("hf_load_in_8bit")):
+            model.quant_fallback = True
+    return model
+

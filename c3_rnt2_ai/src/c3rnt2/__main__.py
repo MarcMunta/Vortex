@@ -245,6 +245,13 @@ def cmd_bootstrap(args: argparse.Namespace) -> None:
         max_prompts=args.max_prompts,
         max_new_tokens=args.max_new_tokens,
         steps=args.steps,
+        teacher_device=args.teacher_device,
+        teacher_quant=args.teacher_quant,
+        teacher_max_memory=args.teacher_max_memory,
+        reuse_dataset=args.reuse_dataset,
+        batch_tokens=args.batch_tokens,
+        grad_accum_steps=args.grad_accum,
+        profile_name=args.profile,
     )
     print(result)
 
@@ -398,9 +405,15 @@ def main() -> None:
     boot.add_argument("--profile", default=None)
     boot.add_argument("--checkpoint", default=None)
     boot.add_argument("--teacher", default=None)
+    boot.add_argument("--teacher-device", default="cuda")
+    boot.add_argument("--teacher-quant", default="none", choices=["none", "8bit", "4bit"])
+    boot.add_argument("--teacher-max-memory", default=None)
     boot.add_argument("--max-prompts", type=int, default=16)
     boot.add_argument("--max-new-tokens", type=int, default=64)
     boot.add_argument("--steps", type=int, default=50)
+    boot.add_argument("--reuse-dataset", action="store_true")
+    boot.add_argument("--batch-tokens", type=int, default=4096)
+    boot.add_argument("--grad-accum", type=int, default=1)
     boot.set_defaults(func=cmd_bootstrap)
 
     bench = sub.add_parser("bench")

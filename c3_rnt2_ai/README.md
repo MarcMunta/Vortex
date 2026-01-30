@@ -107,3 +107,13 @@ M?tricas clave:
 - `prefetch_hits`: tiles consumidos desde prefetch sin bloqueo.
 - `bytes_h2d`: bytes reales transferidos H2D.
 - `bytes_compressed_read`: bytes le?dos desde payload comprimido.
+
+
+Bootstrap con Qwen-8B (teacher 4bit):
+
+python -m c3rnt2 bootstrap --profile rtx4080_16gb_vortexx_next --teacher Qwen/Qwen2.5-8B-Instruct --teacher-quant 4bit --max-prompts 64 --steps 200 --batch-tokens 8192
+
+Qwen-8B HF backend:
+
+python -m c3rnt2 chat --profile qwen8b_base
+python -m c3rnt2 serve --profile qwen8b_base
