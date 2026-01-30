@@ -213,27 +213,26 @@ def _sample_logits_topk(
 ) -> torch.Tensor:
     if temperature <= 0:
         return indices.gather(1, torch.argmax(values, dim=-1, keepdim=True)).squeeze(1)
-    work = values.float() / max(1e-6, temperature)
-    # apply repetition penalty on available indices
+    work = values.float()
+    if temperature > 0:
+        work = work / max(1e-6, temperature)
+    # apply repetition penalty on available indices (vectorized)
     if repetition_penalty > 1.0:
-        rep_ids = set(rep_tracker.ids())
+        rep_ids = rep_tracker.ids()
         if rep_ids:
-            mask = torch.zeros_like(work, dtype=torch.bool)
-            for tok in rep_ids:
-                mask |= (indices == tok)
-            if mask.any():
-                vals = work[mask]
-                adjusted = torch.where(vals > 0, vals / repetition_penalty, vals * repetition_penalty)
-                work = work.clone()
-                work[mask] = adjusted
+            rep_tensor = torch.tensor(list(rep_ids), device=indices.device)
+            if rep_tensor.numel() > 0:
+                mask = (indices.unsqueeze(-1) == rep_tensor).any(dim=-1)
+                if mask.any():
+                    adjusted = torch.where(work > 0, work / repetition_penalty, work * repetition_penalty)
+                    work = torch.where(mask, adjusted, work)
     banned = ngram_tracker.banned() if ngram_tracker is not None else set()
     if banned:
-        mask = torch.zeros_like(work, dtype=torch.bool)
-        for tok in banned:
-            mask |= (indices == tok)
-        if mask.any():
-            work = work.clone()
-            work[mask] = -float("inf")
+        ban_tensor = torch.tensor(list(banned), device=indices.device)
+        if ban_tensor.numel() > 0:
+            mask = (indices.unsqueeze(-1) == ban_tensor).any(dim=-1)
+            if mask.any():
+                work = work.masked_fill(mask, -float("inf"))
     work = torch.nan_to_num(work, neginf=-1e9, posinf=1e9)
     if top_p < 1.0:
         k = min(max(8, top_p_min_k), work.size(-1))

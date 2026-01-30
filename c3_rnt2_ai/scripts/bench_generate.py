@@ -13,7 +13,7 @@ if str(SRC) not in sys.path:
     sys.path.append(str(SRC))
 
 from c3rnt2.config import load_settings  # type: ignore[import-not-found]
-from c3rnt2.model.bad_decode import bad_decode  # type: ignore[import-not-found]
+from c3rnt2.model.bad_decode import bad_decode, _sample_logits_topk, _RepetitionTracker, _NgramTracker  # type: ignore[import-not-found]
 from c3rnt2.model.core_transformer import CoreTransformer  # type: ignore[import-not-found]
 
 
@@ -22,6 +22,7 @@ def main() -> None:
     parser.add_argument("--profile", type=str, default=None)
     parser.add_argument("--prompt", type=str, default="def f(x):")
     parser.add_argument("--max-new-tokens", type=int, default=64)
+    parser.add_argument("--bench-topk", action="store_true")
     args = parser.parse_args()
 
     settings = load_settings(args.profile)
@@ -107,12 +108,43 @@ def main() -> None:
         stream_tps = args.max_new_tokens / elapsed_s
         core.runtime_cfg["paged_lm_head_stream_topk"] = False
 
+    bench_topk_ms = None
+    if args.bench_topk:
+        rep = _RepetitionTracker(128)
+        for tok in range(32):
+            rep.add(tok)
+        ng = _NgramTracker(3)
+        for tok in range(3):
+            ng.add(tok)
+        vals = torch.randn(1, 256, device=core.device)
+        idx = torch.arange(256, device=core.device).unsqueeze(0)
+        if core.device.type == "cuda":
+            torch.cuda.synchronize()
+        start = time.time()
+        iters = 200
+        for _ in range(iters):
+            _sample_logits_topk(
+                vals,
+                idx,
+                temperature=1.0,
+                top_p=0.9,
+                repetition_penalty=1.2,
+                rep_tracker=rep,
+                ngram_tracker=ng,
+                top_p_min_k=128,
+                top_p_max_k=256,
+            )
+        if core.device.type == "cuda":
+            torch.cuda.synchronize()
+        bench_topk_ms = (time.time() - start) * 1000.0 / iters
+
     depth_stats = core.depth_stats()
     lava_reads = sum(block.lava.stats.reads for block in core.blocks)
     lava_writes = sum(block.lava.stats.writes for block in core.blocks)
     result = {
         "tokens_per_second": round(tokens_per_sec, 3),
         "tokens_per_second_stream_topk": round(stream_tps, 3) if stream_tps else None,
+        "topk_sample_ms": round(bench_topk_ms, 4) if bench_topk_ms is not None else None,
         "time_tokenizer_ms": round(time_tokenizer_ms, 3),
         "proposed": stats.proposed,
         "accepted": stats.accepted,
