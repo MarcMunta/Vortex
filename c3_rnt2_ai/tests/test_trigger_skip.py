@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from c3rnt2.continuous.trainer import ContinualTrainer
+from c3rnt2.continuous.registry import mark_bootstrapped
 
 
 def test_trigger_skip(tmp_path) -> None:
@@ -16,6 +17,7 @@ def test_trigger_skip(tmp_path) -> None:
             "eval": {"anchors_path": tmp_path / "anchors.jsonl", "max_regression": 0.2, "min_improvement": 0.0},
         },
     }
+    mark_bootstrapped(tmp_path, {"source": "test"})
     trainer = ContinualTrainer(settings=settings, base_dir=tmp_path)
     result = trainer.run_tick()
     assert result.promoted is False

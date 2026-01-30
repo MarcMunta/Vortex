@@ -73,6 +73,9 @@ def normalize_settings(settings: dict) -> dict:
 
     vx = normalized.get("vortex_model", {}) or {}
     core = normalized.get("core", {}) or {}
+    if "tf32" not in core and core.get("allow_tf32") is not None:
+        core["tf32"] = core.get("allow_tf32")
+    normalized["core"] = core
     lava_keys = {
         "lava_top_k",
         "lava_clusters",
@@ -107,20 +110,96 @@ def normalize_settings(settings: dict) -> dict:
 
 
 
-def validate_profile(settings: dict) -> None:
-    missing = []
+def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
+    missing: list[str] = []
+    errors: list[str] = []
+    base_dir = Path(base_dir or ".").resolve()
     tok = settings.get("tokenizer", {}) or {}
     core = settings.get("core", {}) or {}
     runtime = settings.get("runtime", {}) or {}
+    decode = settings.get("decode", {}) or {}
+    bad = settings.get("bad", {}) or {}
+    cont = settings.get("continuous", {}) or {}
+
     if not tok.get("vortex_tok_path"):
         missing.append("tokenizer.vortex_tok_path")
     for key in ("hidden_size", "layers", "heads"):
         if key not in core:
             missing.append(f"core.{key}")
+
     if "cache_vram_budget_mb" not in runtime:
         missing.append("runtime.cache_vram_budget_mb")
-    if missing:
-        raise ValueError("missing settings keys: " + ", ".join(missing))
+    else:
+        if float(runtime.get("cache_vram_budget_mb", 0)) <= 0:
+            errors.append("runtime.cache_vram_budget_mb must be > 0")
+    stream_topk = runtime.get("paged_lm_head_stream_topk")
+    if stream_topk is not None and stream_topk is not False:
+        if int(stream_topk) <= 0:
+            errors.append("runtime.paged_lm_head_stream_topk must be > 0")
+    prefetch_depth = runtime.get("prefetch_depth")
+    if prefetch_depth is not None and int(prefetch_depth) < 0:
+        errors.append("runtime.prefetch_depth must be >= 0")
+
+    top_p = float(decode.get("top_p", bad.get("top_p", 1.0)))
+    if not (0.0 < top_p <= 1.0):
+        errors.append("decode.top_p must be in (0, 1]")
+    top_p_min_k = int(bad.get("top_p_min_k", decode.get("top_p_min_k", 0)) or 0)
+    top_p_max_k = int(bad.get("top_p_max_k", decode.get("top_p_max_k", 0)) or 0)
+    if top_p_min_k and top_p_max_k and top_p_min_k > top_p_max_k:
+        errors.append("top_p_min_k must be <= top_p_max_k")
+    draft_cfg = decode.get("draft_model", {}) or {}
+    if draft_cfg.get("enabled"):
+        draft_layers = int(draft_cfg.get("draft_layers", 0))
+        if draft_layers <= 0:
+            errors.append("decode.draft_model.draft_layers must be > 0")
+        core_layers = int(core.get("layers", 0))
+        if core_layers and draft_layers > core_layers:
+            errors.append("decode.draft_model.draft_layers must be <= core.layers")
+
+    interval = cont.get("interval_minutes", cont.get("run_interval_minutes"))
+    if interval is not None and float(interval) <= 0:
+        errors.append("continuous.interval_minutes must be > 0")
+    max_steps = cont.get("max_steps_per_tick", cont.get("max_steps"))
+    if max_steps is not None and int(max_steps) <= 0:
+        errors.append("continuous.max_steps_per_tick must be > 0")
+    lr = cont.get("lr")
+    if lr is not None and float(lr) <= 0:
+        errors.append("continuous.lr must be > 0")
+    batch_tokens = cont.get("batch_tokens")
+    if batch_tokens is not None and int(batch_tokens) <= 0:
+        errors.append("continuous.batch_tokens must be > 0")
+
+    data_root = (base_dir / "data").resolve()
+
+    def _check_data_path(path_value: str | Path | None, label: str) -> None:
+        if not path_value:
+            return
+        path = Path(path_value)
+        if not path.is_absolute():
+            path = (base_dir / path).resolve()
+        if data_root not in path.parents and path != data_root:
+            errors.append(f"{label} must be under ./data")
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            errors.append(f"{label} parent not writable: {exc}")
+            return
+        if not os.access(path.parent, os.W_OK):
+            errors.append(f"{label} parent not writable")
+
+    _check_data_path(cont.get("knowledge_path"), "continuous.knowledge_path")
+    _check_data_path(cont.get("replay", {}).get("path"), "continuous.replay.path")
+    _check_data_path(cont.get("eval", {}).get("anchors_path"), "continuous.eval.anchors_path")
+
+    if missing or errors:
+        message = []
+        if missing:
+            message.append("missing settings keys: " + ", ".join(missing))
+        if errors:
+            message.append("invalid settings: " + ", ".join(errors))
+        raise ValueError("; ".join(message))
+
 
 def load_settings(profile: str | None = None, settings_path: str | Path | None = None) -> dict[str, Any]:
     path = Path(settings_path) if settings_path else DEFAULT_SETTINGS_PATH

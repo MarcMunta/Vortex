@@ -221,7 +221,14 @@ class CoreTransformer(nn.Module):
         bad_cfg = settings.get("bad", {})
         decode_cfg = settings.get("decode", {})
         device_info = detect_device()
-
+        if device_info.cuda_available:
+            tf32 = core.get("tf32")
+            if tf32 is not None:
+                torch.backends.cuda.matmul.allow_tf32 = bool(tf32)
+                torch.backends.cudnn.allow_tf32 = bool(tf32)
+            cudnn_benchmark = core.get("cudnn_benchmark")
+            if cudnn_benchmark is not None:
+                torch.backends.cudnn.benchmark = bool(cudnn_benchmark)
         model_path = Path(tok_cfg.get("vortex_tok_path", tok_cfg.get("vortex_model_path", "data/runs/vortex_tok.pt")))
         block_size = int(tok_cfg.get("block_size", 64))
         tokenizer = load_or_create(model_path, block_size)
@@ -754,3 +761,4 @@ class CoreTransformer(nn.Module):
                     use_mtp=use_mtp,
                 )
         return text
+

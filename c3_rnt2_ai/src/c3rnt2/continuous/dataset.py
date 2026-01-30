@@ -309,7 +309,7 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
     return new_docs
 
 
-def collect_samples(base_dir: Path, allowlist: List[str], settings: dict) -> CollectedSamples:
+def collect_samples(base_dir: Path, allowlist: List[str], settings: dict, ingest: bool = True) -> CollectedSamples:
     continuous = settings.get("continuous", {})
     replay_cfg = continuous.get("replay", {})
     filter_cfg = continuous.get("filter", {})
@@ -326,7 +326,7 @@ def collect_samples(base_dir: Path, allowlist: List[str], settings: dict) -> Col
 
     store = KnowledgeStore(knowledge_path)
     replay = ReplayBuffer(replay_path)
-    new_docs = ingest_sources(base_dir, allowlist, settings)
+    new_docs = ingest_sources(base_dir, allowlist, settings) if ingest else 0
 
     recent_vecs = [embed_text(t) for t in replay.recent_texts(limit=50)]
     total_candidates = 0
@@ -425,3 +425,4 @@ def retrieve_context(base_dir: Path, query: str, settings: dict, top_k: int = 3)
     if max_chars and len(joined) > max_chars:
         joined = joined[:max_chars]
     return joined
+

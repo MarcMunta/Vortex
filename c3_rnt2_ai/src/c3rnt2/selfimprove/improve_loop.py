@@ -16,8 +16,7 @@ def _extract_failures(output: str) -> list[dict]:
             tasks.append({"issue": line.strip()})
     if not tasks:
         # fallback: include tail of output
-        tail = "
-".join(output.splitlines()[-5:])
+        tail = "\n".join(output.splitlines()[-5:])
         if tail:
             tasks.append({"issue": tail})
     return tasks

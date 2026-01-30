@@ -69,3 +69,39 @@ def rollback(base_dir: Path) -> str | None:
     state.current_run_id = state.history.pop()
     save_registry(base_dir, state)
     return state.current_run_id
+
+
+def _bootstrap_path(base_dir: Path) -> Path:
+    return _registry_root(base_dir) / "bootstrap.json"
+
+
+def load_bootstrap(base_dir: Path) -> Dict[str, Any] | None:
+    path = _bootstrap_path(base_dir)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def mark_bootstrapped(base_dir: Path, meta: Dict[str, Any] | None = None) -> None:
+    payload: Dict[str, Any] = {"bootstrapped": True, "ts": time.time()}
+    if meta:
+        payload.update(meta)
+    path = _bootstrap_path(base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def is_bootstrapped(base_dir: Path, settings: Dict[str, Any] | None = None) -> bool:
+    meta = load_bootstrap(base_dir)
+    if meta and meta.get("bootstrapped"):
+        return True
+    if settings:
+        core = settings.get("core", {}) or {}
+        ckpt = core.get("checkpoint_path")
+        if ckpt and Path(ckpt).exists():
+            return True
+    return False
+

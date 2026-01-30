@@ -15,7 +15,7 @@ from .dataset import collect_samples
 from .types import Sample
 from .formatting import format_chat_sample
 from .lora import LoRAConfig, inject_lora, load_lora_state, save_lora_state, resolve_target_modules
-from .registry import begin_run, finalize_run, load_registry, rollback, save_registry
+from .registry import begin_run, finalize_run, load_registry, rollback, save_registry, is_bootstrapped
 from .anchors import load_anchors
 from .consolidate import select_top_runs, adapter_soup, write_consolidated_adapter, write_consolidated_meta
 
@@ -37,8 +37,16 @@ class ContinualTrainer:
     def _build_model(self) -> CoreTransformer:
         return CoreTransformer.from_settings(self.settings)
 
-    def run_tick(self) -> TrainResult:
+    def run_tick(self, ingest: bool = True) -> TrainResult:
         run_id, _run_path = begin_run(self.base_dir)
+        if not is_bootstrapped(self.base_dir, self.settings):
+            finalize_run(
+                self.base_dir,
+                run_id,
+                promote=False,
+                meta={"loss": None, "samples": 0, "reason": "not_bootstrapped", "ts": time.time()},
+            )
+            return TrainResult(run_id=run_id, promoted=False, loss=0.0, samples=0)
         seed = self.settings.get("continuous", {}).get("seed", self.settings.get("seed"))
         if seed is not None:
             random.seed(int(seed))
@@ -46,7 +54,7 @@ class ContinualTrainer:
 
         try:
             allowlist = self.settings.get("agent", {}).get("web_allowlist", ["docs.python.org"])
-            collected = collect_samples(self.base_dir, allowlist, self.settings)
+            collected = collect_samples(self.base_dir, allowlist, self.settings, ingest=ingest)
             stats = collected.stats
             trigger_cfg = self.settings.get("continuous", {}).get("trigger", {})
             if bool(trigger_cfg.get("enabled", True)):
@@ -111,6 +119,9 @@ class ContinualTrainer:
             max_steps = int(self.settings.get("continuous", {}).get("max_steps_per_tick", self.settings.get("continuous", {}).get("max_steps", 50)))
             batch_tokens = int(self.settings.get("continuous", {}).get("batch_tokens", 2048))
             grad_accum_steps = int(self.settings.get("continuous", {}).get("grad_accum_steps", 1))
+            max_minutes = float(self.settings.get("continuous", {}).get("max_minutes_per_tick", 0))
+            deadline = time.time() + max_minutes * 60.0 if max_minutes > 0 else None
+            stopped_early = False
 
             model.train()
             source_weights = self.settings.get("continuous", {}).get("source_weights", {}) or {}
@@ -124,6 +135,9 @@ class ContinualTrainer:
             step_idx = 0
             optimizer.zero_grad(set_to_none=True)
             for _ in range(max_steps):
+                if deadline and time.time() > deadline:
+                    stopped_early = True
+                    break
                 sequences = []
                 token_count = 0
                 attempts = 0
@@ -229,15 +243,19 @@ class ContinualTrainer:
                 promote=promoted,
                 meta={
                     "loss": new_loss,
+                    "loss_holdout": new_loss,
                     "base_loss": base_loss,
                     "anchor_loss": anchor_new_loss,
                     "anchor_base_loss": anchor_base_loss,
                     "anchor_regression": anchor_regression,
+                    "anchor_regression_pct": anchor_regression * 100.0,
                     "gold_loss": gold_new_loss,
                     "gold_base_loss": gold_base_loss,
                     "gold_regression": gold_regression,
+                    "gold_regression_pct": gold_regression * 100.0,
                     "samples": len(samples),
                     "stats": stats.__dict__,
+                    "stopped_early": stopped_early,
                     "ts": time.time(),
                     "tokens_per_sec": tokens_per_sec,
                     "avg_seq_len": avg_seq_len,
@@ -333,3 +351,8 @@ class ContinualTrainer:
             state.history.append(state.current_run_id)
         state.current_run_id = "consolidated"
         save_registry(self.base_dir, state)
+
+
+
+
+
