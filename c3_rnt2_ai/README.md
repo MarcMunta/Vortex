@@ -19,6 +19,16 @@ Para API local (serve):
 pip install -e .[api]
 ```
 
+Para HF + entrenamiento QLoRA:
+```bash
+pip install -e .[hf,train]
+```
+
+Embeddings CPU opcionales (RAG):
+```bash
+pip install -e .[rag]
+```
+
 ## CLI (VORTEX-X)
 Comandos principales via `python -m c3rnt2`:
 ```bash
@@ -30,10 +40,10 @@ python -m c3rnt2 doctor --deep --profile rtx4080_16gb_vortexx_next
 python -m c3rnt2 serve --profile rtx4080_16gb_vortexx_next
 python -m c3rnt2 bootstrap --profile dev_small --checkpoint path.pt
 python -m c3rnt2 ingest-once --profile dev_small
-python -m c3rnt2 train-once --profile dev_small
-python -m c3rnt2 self-train --once
-python -m c3rnt2 self-improve
-python -m c3rnt2 apply-patch --diff data/selfimprove/runs/<id>/proposed.diff --approve
+python -m c3rnt2 train-once --profile qwen8b_train
+python -m c3rnt2 self-train --once --profile qwen8b_train
+python -m c3rnt2 self-patch --goal "fix failing test" --dry-run
+python -m c3rnt2 apply-patch <id> --approve
 python -m c3rnt2 bench --profile rtx4080_16gb_vortexx_next --max-new-tokens 512
 
 Perfil HF (Qwen-8B):
@@ -51,7 +61,7 @@ python -m c3rnt2 doctor --deep --profile qwen8b_base
 python -m c3rnt2 serve --profile qwen8b_base
 python -m c3rnt2 bootstrap --teacher Qwen/Qwen2.5-8B-Instruct --teacher-quant 4bit --reuse-dataset --profile qwen8b_base
 python -m c3rnt2 ingest-once --profile qwen8b_base
-python -m c3rnt2 train-once --profile qwen8b_base
+python -m c3rnt2 train-once --profile qwen8b_train
 python -m c3rnt2 self-patch --goal "mejorar seguridad de self_patch" --dry-run
 ```
 Aplicar un patch aprobado:
@@ -148,7 +158,7 @@ python -m c3rnt2 finetune-adapter --adapter data/experts/programming/adapter.pt 
 python -m c3rnt2 chat --profile qwen8b_base
 python -m c3rnt2 serve --profile qwen8b_base
 python -m c3rnt2 bootstrap --profile rtx4080_16gb_vortexx_next --teacher Qwen/Qwen2.5-8B-Instruct --teacher-quant 4bit --max-prompts 64 --steps 200 --batch-tokens 8192 --reuse-dataset
-python -m c3rnt2 ingest-once --profile safe_selftrain_4080
-python -m c3rnt2 train-once --profile safe_selftrain_4080
+python -m c3rnt2 ingest-once --profile qwen8b_base
+python -m c3rnt2 train-once --profile qwen8b_train
 python -m c3rnt2 self-patch --goal "Fix failing test" --dry-run
 ```

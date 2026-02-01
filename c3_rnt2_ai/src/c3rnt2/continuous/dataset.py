@@ -11,7 +11,7 @@ from typing import Iterable, List
 
 from ..agent.memory import MemoryStore
 from ..agent.tools import AgentTools
-from .knowledge_store import KnowledgeStore, embed_text
+from .knowledge_store import KnowledgeStore, IngestPolicy, EmbeddingBackend, embed_text
 from .replay_buffer import ReplayBuffer, ReplayItem
 from .types import Sample
 
@@ -166,7 +166,25 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
     web_cfg = ingest_cfg.get("web", {}) or {}
     web_cooldown = float(web_cfg.get("cooldown_minutes", 60))
     knowledge_path = Path(continuous.get("knowledge_path", base_dir / "data" / "continuous" / "knowledge.sqlite"))
-    store = KnowledgeStore(knowledge_path)
+    knowledge_cfg = settings.get("knowledge", {}) or {}
+    policy_cfg = knowledge_cfg.get("policy", {}) or {}
+    policy = IngestPolicy(
+        min_quality=float(policy_cfg.get("min_quality", 0.0)),
+        max_age_days=policy_cfg.get("max_age_days"),
+        allow_domains=policy_cfg.get("allow_domains"),
+        deny_domains=policy_cfg.get("deny_domains"),
+        allow_source_kinds=policy_cfg.get("allow_source_kinds"),
+        deny_source_kinds=policy_cfg.get("deny_source_kinds"),
+    )
+    embed_backend = knowledge_cfg.get("embedding_backend", "auto")
+    embed_model = knowledge_cfg.get("embedding_model")
+    embedder = EmbeddingBackend(backend=str(embed_backend), model_name=embed_model) if embed_model else embed_backend
+    store = KnowledgeStore(
+        knowledge_path,
+        embedding_backend=embedder,
+        index_backend=knowledge_cfg.get("index_backend", "auto"),
+        policy=policy,
+    )
     state = IngestState(knowledge_path)
     new_docs = 0
     files_used = 0

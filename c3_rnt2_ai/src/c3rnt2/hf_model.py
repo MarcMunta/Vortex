@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
@@ -148,6 +149,25 @@ def load_hf_model(settings: dict) -> HFModel:
             load_in_8bit = False
     cfg = HFConfig(model_name=str(model_name), device=device, dtype=torch_dtype, load_kwargs=load_kwargs)
     model = HFModel(cfg)
+    adapter_path = core.get("hf_adapter_path")
+    use_latest = bool(core.get("hf_use_latest_adapter", False))
+    merge_adapter = bool(core.get("hf_merge_adapter", False))
+    if adapter_path is None and use_latest:
+        try:
+            from .training.hf_qlora import resolve_latest_adapter
+
+            adapter_path = resolve_latest_adapter(Path("."), settings)
+        except Exception:
+            adapter_path = None
+    if adapter_path:
+        try:
+            from peft import PeftModel  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(f"peft not available for adapter load: {exc}")
+        adapter_path = str(adapter_path)
+        model.model = PeftModel.from_pretrained(model.model, adapter_path)
+        if merge_adapter and hasattr(model.model, "merge_and_unload"):
+            model.model = model.model.merge_and_unload()
     if load_in_4bit or load_in_8bit:
         model.quant_fallback = False
     else:

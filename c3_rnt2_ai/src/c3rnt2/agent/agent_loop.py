@@ -61,6 +61,7 @@ def run_demo_agent(settings: dict) -> Dict[str, str]:
     before = (repo / "calc.py").read_text(encoding="utf-8")
     fixed = "def add(a, b):\n    return a + b\n"
     edit_result = tools.edit_repo(repo / "calc.py", fixed)
+    patch_id_result = tools.propose_patch(repo, {Path("calc.py"): fixed}, goal="fix add bug")
     after = fixed
     diff = "\n".join(
         difflib.unified_diff(
@@ -79,6 +80,7 @@ def run_demo_agent(settings: dict) -> Dict[str, str]:
         "docs_ok": str(docs.ok),
         "docs_excerpt": docs.output[:200],
         "edit_ok": str(edit_result.ok),
+        "patch_id": patch_id_result.output,
         "tests_ok": str(test_result.ok),
         "tests_output": test_result.output[:400],
     }

@@ -5,7 +5,7 @@ from c3rnt2.continuous.knowledge_store import KnowledgeStore, _vec_to_blob
 
 def test_retrieve_basic(tmp_path) -> None:
     db_path = tmp_path / "ks.sqlite"
-    store = KnowledgeStore(db_path)
+    store = KnowledgeStore(db_path, embedding_backend="hash", index_backend="none")
     store.ingest_text("web", "local", "alpha beta gamma", quality=0.8)
     store.ingest_text("web", "local", "delta epsilon zeta", quality=0.8)
     results = store.retrieve("alpha", top_k=1)

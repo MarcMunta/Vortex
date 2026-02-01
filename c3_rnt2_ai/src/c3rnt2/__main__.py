@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -12,6 +13,7 @@ except Exception:  # pragma: no cover
     torch = None
 
 from .config import load_settings, resolve_profile, validate_profile
+from .continuous.dataset import ingest_sources
 from .continuous.bootstrap import run_bootstrap
 from .device import detect_device
 from .doctor import check_deps, run_deep_checks
@@ -19,12 +21,36 @@ from .model_loader import load_inference_model
 from .prompting.chat_format import build_chat_prompt
 from .server import run_server
 from .utils.locks import LockUnavailable, acquire_exclusive_lock
+from .agent.agent_loop import run_demo_agent
+from .training.hf_qlora import train_once as train_hf_once
 
 
 def _load_and_validate(profile: str | None) -> dict:
     settings = load_settings(profile)
     validate_profile(settings, base_dir=Path("."))
     return settings
+
+
+def _resolve_allowlist(settings: dict) -> list[str]:
+    tools_cfg = settings.get("tools", {}) or {}
+    web_cfg = tools_cfg.get("web", {}) or {}
+    if web_cfg.get("allow_domains"):
+        return list(web_cfg.get("allow_domains"))
+    agent_cfg = settings.get("agent", {}) or {}
+    return list(agent_cfg.get("web_allowlist", []))
+
+
+def _self_patch_queue_dir(base_dir: Path, settings: dict) -> Path:
+    queue_dir = settings.get("self_patch", {}).get("queue_dir", "data/self_patch/queue")
+    qpath = Path(queue_dir)
+    if not qpath.is_absolute():
+        qpath = base_dir / qpath
+    return qpath
+
+
+def _run_module(module: str, extra_args: list[str]) -> None:
+    cmd = [sys.executable, "-m", module] + extra_args
+    subprocess.run(cmd, check=True)
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -132,6 +158,191 @@ def cmd_bootstrap(args: argparse.Namespace) -> None:
     print(result)
 
 
+def cmd_ingest_once(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    base_dir = Path(".")
+    allowlist = _resolve_allowlist(settings)
+    new_docs = ingest_sources(base_dir, allowlist, settings)
+    print({"ok": True, "new_docs": new_docs, "knowledge_path": settings.get("continuous", {}).get("knowledge_path")})
+
+
+def cmd_train_once(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    base_dir = Path(".")
+    try:
+        lock = acquire_exclusive_lock(base_dir, "train")
+    except LockUnavailable:
+        print({"ok": False, "error": "train lock unavailable (serve/self_patch running?)"})
+        return
+    try:
+        result = train_hf_once(settings, base_dir, reuse_dataset=args.reuse_dataset)
+        print(result.__dict__)
+        if not result.ok:
+            sys.exit(1)
+    finally:
+        lock.release()
+
+
+def cmd_self_train(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    base_dir = Path(".")
+    interval_min = float(args.interval_minutes or settings.get("continuous", {}).get("run_interval_minutes", 30))
+    once = bool(args.once)
+    try:
+        lock = acquire_exclusive_lock(base_dir, "train")
+    except LockUnavailable:
+        print({"ok": False, "error": "train lock unavailable (serve/self_patch running?)"})
+        return
+    try:
+        while True:
+            allowlist = _resolve_allowlist(settings)
+            new_docs = ingest_sources(base_dir, allowlist, settings)
+            train_result = train_hf_once(settings, base_dir, reuse_dataset=args.reuse_dataset)
+            print({"ingest_new_docs": new_docs, "train": train_result.__dict__})
+            if once:
+                break
+            time.sleep(max(5.0, interval_min * 60.0))
+    finally:
+        lock.release()
+
+
+def cmd_self_patch(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    base_dir = Path(".")
+    try:
+        lock = acquire_exclusive_lock(base_dir, "self_patch")
+    except LockUnavailable:
+        print({"ok": False, "error": "self_patch lock unavailable (serve/train running?)"})
+        return
+    try:
+        from .self_patch.propose_patch import propose_patch
+        from .self_patch.sandbox_run import sandbox_run
+        from .self_patch.apply_patch import apply_patch
+
+        diff_text = None
+        if args.diff_file:
+            diff_text = Path(args.diff_file).read_text(encoding="utf-8")
+        proposal = propose_patch(
+            args.goal,
+            {"changes": {}},
+            base_dir,
+            settings=settings,
+            dry_run=args.dry_run,
+            diff_text=diff_text,
+        )
+        sandbox = sandbox_run(base_dir, proposal.patch_id, bench=not args.no_bench, settings=settings, allow_empty=True)
+        apply_result = None
+        if args.approve:
+            try:
+                meta = json.loads(proposal.meta_path.read_text(encoding="utf-8"))
+                meta["ready_for_review"] = True
+                meta["status"] = "ready_for_review"
+                proposal.meta_path.write_text(json.dumps(meta, ensure_ascii=True), encoding="utf-8")
+            except Exception:
+                pass
+            apply_result = apply_patch(proposal.patch_id, base_dir, settings=settings)
+        print(
+            {
+                "patch_id": proposal.patch_id,
+                "sandbox_ok": bool(sandbox.get("ok")),
+                "apply_ok": getattr(apply_result, "ok", None) if apply_result else None,
+                "apply_error": getattr(apply_result, "error", None) if apply_result else None,
+                "queue_dir": str(proposal.queue_dir),
+            }
+        )
+    finally:
+        lock.release()
+
+
+def cmd_apply_patch(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    base_dir = Path(".")
+    if not args.approve:
+        print({"ok": False, "error": "approve flag required"})
+        sys.exit(1)
+    try:
+        lock = acquire_exclusive_lock(base_dir, "self_patch")
+    except LockUnavailable:
+        print({"ok": False, "error": "self_patch lock unavailable (serve/train running?)"})
+        return
+    try:
+        from .self_patch.apply_patch import apply_patch
+
+        queue_dir = _self_patch_queue_dir(base_dir, settings) / args.patch_id
+        meta_path = queue_dir / "meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                meta["ready_for_review"] = True
+                meta["status"] = "ready_for_review"
+                meta_path.write_text(json.dumps(meta, ensure_ascii=True), encoding="utf-8")
+            except Exception:
+                pass
+        result = apply_patch(args.patch_id, base_dir, settings=settings)
+        print({"ok": result.ok, "error": result.error, "patch_id": result.patch_id})
+        if not result.ok:
+            sys.exit(1)
+    finally:
+        lock.release()
+
+
+def cmd_eval(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    backend = str(settings.get("core", {}).get("backend", "vortex")).lower()
+    if backend == "hf":
+        if torch is None:
+            print({"ok": False, "error": "torch not available"})
+            sys.exit(1)
+        model = load_inference_model(settings)
+        if not hasattr(model, "model") or not hasattr(model, "tokenizer"):
+            print({"ok": False, "error": "hf model not available"})
+            sys.exit(1)
+        samples = ["hello world", "def add(a, b):", "json: {\"k\": 1}"]
+        losses = []
+        with torch.inference_mode():
+            for text in samples:
+                enc = model.tokenizer(text, return_tensors="pt")
+                enc = {k: v.to(model.device) for k, v in enc.items()}
+                out = model.model(**enc, labels=enc["input_ids"])
+                losses.append(float(out.loss.item()))
+        ppl = float(torch.exp(torch.tensor(losses).mean()).item()) if losses else None
+        print({"backend": "hf", "loss": sum(losses) / max(1, len(losses)), "ppl": ppl})
+        return
+    # Core eval: generate and report tokens/sec
+    core = load_inference_model(settings)
+    start = time.time()
+    _ = core.generate("def f(x):", max_new_tokens=32)
+    tps = 32 / max(1e-6, time.time() - start)
+    print({"backend": "vortex", "tokens_per_sec": round(tps, 3)})
+
+
+def cmd_agent_demo(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    report = run_demo_agent(settings)
+    print(report)
+
+
+def cmd_tokenizer_train(args: argparse.Namespace) -> None:
+    _run_module("c3rnt2.tokenizer.rnt2_train", args.extra)
+
+
+def cmd_train_experts(args: argparse.Namespace) -> None:
+    _run_module("c3rnt2.training.train_experts", args.extra)
+
+
+def cmd_train_router(args: argparse.Namespace) -> None:
+    _run_module("c3rnt2.training.train_router", args.extra)
+
+
+def cmd_finetune_adapter(args: argparse.Namespace) -> None:
+    _run_module("c3rnt2.training.finetune_adapters", args.extra)
+
+
+def cmd_self_improve(args: argparse.Namespace) -> None:
+    # Backward-compatible alias for self-patch.
+    args.goal = args.goal or "self-improve"
+    cmd_self_patch(args)
+
 def cmd_bench(args: argparse.Namespace) -> None:
     profile = args.profile or resolve_profile(None)
     _ = _load_and_validate(profile)
@@ -184,6 +395,70 @@ def main() -> None:
     boot.add_argument("--batch-tokens", type=int, default=4096)
     boot.add_argument("--grad-accum", type=int, default=1)
     boot.set_defaults(func=cmd_bootstrap)
+
+    ingest = sub.add_parser("ingest-once")
+    ingest.add_argument("--profile", default=None)
+    ingest.set_defaults(func=cmd_ingest_once)
+
+    train = sub.add_parser("train-once")
+    train.add_argument("--profile", default=None)
+    train.add_argument("--reuse-dataset", action="store_true")
+    train.set_defaults(func=cmd_train_once)
+
+    self_train = sub.add_parser("self-train")
+    self_train.add_argument("--profile", default=None)
+    self_train.add_argument("--once", action="store_true")
+    self_train.add_argument("--interval-minutes", type=float, default=None)
+    self_train.add_argument("--reuse-dataset", action="store_true")
+    self_train.set_defaults(func=cmd_self_train)
+
+    sp = sub.add_parser("self-patch")
+    sp.add_argument("--profile", default=None)
+    sp.add_argument("--goal", required=True)
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--approve", action="store_true")
+    sp.add_argument("--diff-file", default=None)
+    sp.add_argument("--no-bench", action="store_true")
+    sp.set_defaults(func=cmd_self_patch)
+
+    ap = sub.add_parser("apply-patch")
+    ap.add_argument("patch_id")
+    ap.add_argument("--profile", default=None)
+    ap.add_argument("--approve", action="store_true")
+    ap.set_defaults(func=cmd_apply_patch)
+
+    ev = sub.add_parser("eval")
+    ev.add_argument("--profile", default=None)
+    ev.set_defaults(func=cmd_eval)
+
+    ad = sub.add_parser("agent-demo")
+    ad.add_argument("--profile", default=None)
+    ad.set_defaults(func=cmd_agent_demo)
+
+    tok = sub.add_parser("tokenizer-train")
+    tok.add_argument("extra", nargs=argparse.REMAINDER)
+    tok.set_defaults(func=cmd_tokenizer_train)
+
+    te = sub.add_parser("train-experts")
+    te.add_argument("extra", nargs=argparse.REMAINDER)
+    te.set_defaults(func=cmd_train_experts)
+
+    tr = sub.add_parser("train-router")
+    tr.add_argument("extra", nargs=argparse.REMAINDER)
+    tr.set_defaults(func=cmd_train_router)
+
+    fa = sub.add_parser("finetune-adapter")
+    fa.add_argument("extra", nargs=argparse.REMAINDER)
+    fa.set_defaults(func=cmd_finetune_adapter)
+
+    si = sub.add_parser("self-improve")
+    si.add_argument("--profile", default=None)
+    si.add_argument("--goal", default=None)
+    si.add_argument("--dry-run", action="store_true")
+    si.add_argument("--approve", action="store_true")
+    si.add_argument("--diff-file", default=None)
+    si.add_argument("--no-bench", action="store_true")
+    si.set_defaults(func=cmd_self_improve)
 
     args = parser.parse_args()
     if not args.command:

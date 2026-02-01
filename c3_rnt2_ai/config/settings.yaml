@@ -82,14 +82,27 @@ profiles:
         cache_dir: data/web_cache
         cache_ttl_s: 3600
         allow_content_types: ["text/", "application/json"]
+    knowledge:
+      embedding_backend: auto
+      embedding_model: sentence-transformers/all-MiniLM-L6-v2
+      index_backend: auto
+      policy:
+        min_quality: 0.0
+        max_age_days: null
+        allow_domains: null
+        deny_domains: null
+        allow_source_kinds: null
+        deny_source_kinds: null
     self_patch:
       enabled: false
       auto_sandbox: true
       queue_dir: data/self_patch/queue
       sandbox_dir: data/self_patch/sandbox
       max_patch_kb: 128
+      run_tests_on_apply: true
+      allowed_commands: ["pytest", "ruff", "python"]
       allowed_paths: ["src/", "tests/"]
-      forbidden_globs: [".env", ".env.*", "data/**", "*.key", "*.pem", "*.p12", "*.sqlite", "*.db", "keys/**", "secrets/**"]
+      forbidden_globs: [".env", ".env.*", "data/**", "*.key", "*.pem", "*.p12", "*.sqlite", "*.db", "keys/**", "secrets/**", "src/c3rnt2/self_patch/**", "src/c3rnt2/selfimprove/**"]
     continuous:
       run_interval_minutes: 30
       adapter_rank: 4
@@ -165,6 +178,33 @@ profiles:
       max_new_tokens: 128
     runtime:
       paged_lm_head: false
+
+  qwen8b_train:
+    base_profile: qwen8b_base
+    hf_train:
+      enabled: true
+      model_name: "Qwen/Qwen2.5-8B-Instruct"
+      registry_dir: data/registry/hf_train
+      dataset_path: data/registry/hf_train/sft_samples.jsonl
+      state_path: data/registry/hf_train/state.json
+      max_samples: 128
+      min_quality: 0.3
+      prompt_template: "Context:\n{text}\nAnswer:"
+      max_seq_len: 1024
+      micro_batch_size: 1
+      grad_accum_steps: 8
+      max_steps: 100
+      lr: 2.0e-4
+      load_in_4bit: true
+      load_in_8bit: false
+      quant_type: nf4
+      double_quant: true
+      compute_dtype: bf16
+      gradient_checkpointing: true
+      lora_rank: 8
+      lora_alpha: 16
+      lora_dropout: 0.05
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
 
   core_only:
     tokenizer:
@@ -371,8 +411,10 @@ profiles:
       queue_dir: data/self_patch/queue
       sandbox_dir: data/self_patch/sandbox
       max_patch_kb: 128
+      run_tests_on_apply: true
+      allowed_commands: ["pytest", "ruff", "python"]
       allowed_paths: ["src/", "tests/"]
-      forbidden_globs: [".env", ".env.*", "data/**", "*.key", "*.pem", "*.p12", "*.sqlite", "*.db", "keys/**", "secrets/**"]
+      forbidden_globs: [".env", ".env.*", "data/**", "*.key", "*.pem", "*.p12", "*.sqlite", "*.db", "keys/**", "secrets/**", "src/c3rnt2/self_patch/**", "src/c3rnt2/selfimprove/**"]
     continuous:
       run_interval_minutes: 30
       adapter_rank: 4

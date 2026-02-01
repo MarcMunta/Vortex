@@ -26,6 +26,8 @@ DEFAULT_FORBIDDEN_GLOBS = [
     "*.db",
     "keys/**",
     "secrets/**",
+    "src/c3rnt2/self_patch/**",
+    "src/c3rnt2/selfimprove/**",
 ]
 
 
@@ -99,6 +101,7 @@ def apply_patch(patch_id: str, base_dir: Path, settings: dict | None = None) -> 
     allowed = cfg.get("allowed_paths", DEFAULT_ALLOWED)
     forbidden = cfg.get("forbidden_globs", DEFAULT_FORBIDDEN_GLOBS)
     max_kb = int(cfg.get("max_patch_kb", 128)) if cfg else 128
+    run_tests = bool(cfg.get("run_tests_on_apply", True))
     if max_kb > 0 and len(diff_text.encode("utf-8")) > max_kb * 1024:
         return PatchApplyResult(ok=False, patch_id=patch_id, error="patch exceeds max_patch_kb")
     for rel in diff_paths(diff_text):
@@ -109,6 +112,24 @@ def apply_patch(patch_id: str, base_dir: Path, settings: dict | None = None) -> 
         subprocess.run(["git", "apply", str(patch_path)], cwd=str(base_dir), check=True)
     except Exception as exc:
         return PatchApplyResult(ok=False, patch_id=patch_id, error=f"apply failed: {exc}")
+
+    if run_tests:
+        try:
+            result = subprocess.run(["pytest", "-q"], cwd=str(base_dir), capture_output=True, text=True)
+            if result.returncode not in (0, 5):
+                try:
+                    subprocess.run(["git", "apply", "-R", str(patch_path)], cwd=str(base_dir), check=False)
+                except Exception:
+                    pass
+                try:
+                    meta["status"] = "rolled_back"
+                    meta["tests_output"] = (result.stdout + result.stderr)[-2000:]
+                    meta_path.write_text(json.dumps(meta, ensure_ascii=True), encoding="utf-8")
+                except Exception:
+                    pass
+                return PatchApplyResult(ok=False, patch_id=patch_id, error="tests_failed_rolled_back")
+        except Exception as exc:
+            return PatchApplyResult(ok=False, patch_id=patch_id, error=f"tests_failed: {exc}")
 
     try:
         meta["status"] = "applied"

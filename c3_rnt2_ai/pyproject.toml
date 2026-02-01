@@ -23,6 +23,8 @@ dependencies = [
 api = ["fastapi>=0.110", "uvicorn>=0.23"]
 triton = ["triton>=2.1"]
 hf = ["transformers>=4.40", "accelerate>=0.27", "safetensors>=0.4", "bitsandbytes>=0.43"]
+train = ["peft>=0.10"]
+rag = ["sentence-transformers>=2.6"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

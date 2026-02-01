@@ -107,6 +107,8 @@ def normalize_settings(settings: dict) -> dict:
     self_patch.setdefault("sandbox_dir", "data/self_patch/sandbox")
     self_patch.setdefault("max_patch_kb", 128)
     self_patch.setdefault("allowed_paths", ["src/", "tests/"])
+    self_patch.setdefault("run_tests_on_apply", True)
+    self_patch.setdefault("allowed_commands", ["pytest", "ruff", "python"])
     self_patch.setdefault(
         "forbidden_globs",
         [
@@ -120,9 +122,49 @@ def normalize_settings(settings: dict) -> dict:
             "*.db",
             "keys/**",
             "secrets/**",
+            "src/c3rnt2/self_patch/**",
+            "src/c3rnt2/selfimprove/**",
         ],
     )
     normalized["self_patch"] = self_patch
+
+    knowledge = normalized.get("knowledge", {}) or {}
+    knowledge.setdefault("embedding_backend", "auto")
+    knowledge.setdefault("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
+    knowledge.setdefault("index_backend", "auto")
+    policy = knowledge.get("policy", {}) or {}
+    policy.setdefault("min_quality", 0.0)
+    policy.setdefault("max_age_days", None)
+    policy.setdefault("allow_domains", None)
+    policy.setdefault("deny_domains", None)
+    policy.setdefault("allow_source_kinds", None)
+    policy.setdefault("deny_source_kinds", None)
+    knowledge["policy"] = policy
+    normalized["knowledge"] = knowledge
+
+    hf_train = normalized.get("hf_train", {}) or {}
+    hf_train.setdefault("enabled", False)
+    core_ref = normalized.get("core", {}) or {}
+    if not hf_train.get("model_name") and core_ref.get("hf_model"):
+        hf_train["model_name"] = core_ref.get("hf_model")
+    hf_train.setdefault("registry_dir", "data/registry/hf_train")
+    hf_train.setdefault("dataset_path", "data/registry/hf_train/sft_samples.jsonl")
+    hf_train.setdefault("state_path", "data/registry/hf_train/state.json")
+    hf_train.setdefault("max_samples", 128)
+    hf_train.setdefault("min_quality", 0.0)
+    hf_train.setdefault("prompt_template", "Context:\n{text}\nAnswer:")
+    hf_train.setdefault("max_seq_len", 1024)
+    hf_train.setdefault("micro_batch_size", 1)
+    hf_train.setdefault("grad_accum_steps", 4)
+    hf_train.setdefault("max_steps", 50)
+    hf_train.setdefault("lr", 2e-4)
+    hf_train.setdefault("load_in_4bit", True)
+    hf_train.setdefault("load_in_8bit", False)
+    hf_train.setdefault("lora_rank", 8)
+    hf_train.setdefault("lora_alpha", 16)
+    hf_train.setdefault("lora_dropout", 0.05)
+    hf_train.setdefault("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"])
+    normalized["hf_train"] = hf_train
 
     vx = normalized.get("vortex_model", {}) or {}
     core = normalized.get("core", {}) or {}
@@ -178,6 +220,7 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
     tools_cfg = settings.get("tools", {}) or {}
     web_cfg = tools_cfg.get("web", {}) or {}
     self_patch_cfg = settings.get("self_patch", {}) or {}
+    hf_train_cfg = settings.get("hf_train", {}) or {}
 
     if not tok.get("vortex_tok_path"):
         missing.append("tokenizer.vortex_tok_path")
@@ -245,6 +288,30 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
                 errors.append("self_patch.max_patch_kb must be > 0")
         except Exception:
             errors.append("self_patch.max_patch_kb must be > 0")
+
+    if hf_train_cfg and bool(hf_train_cfg.get("enabled", False)):
+        if not (hf_train_cfg.get("model_name") or core.get("hf_model")):
+            errors.append("hf_train.model_name or core.hf_model required for hf training")
+        try:
+            if int(hf_train_cfg.get("micro_batch_size", 1)) <= 0:
+                errors.append("hf_train.micro_batch_size must be > 0")
+        except Exception:
+            errors.append("hf_train.micro_batch_size must be > 0")
+        try:
+            if int(hf_train_cfg.get("grad_accum_steps", 1)) <= 0:
+                errors.append("hf_train.grad_accum_steps must be > 0")
+        except Exception:
+            errors.append("hf_train.grad_accum_steps must be > 0")
+        try:
+            if int(hf_train_cfg.get("max_steps", 1)) <= 0:
+                errors.append("hf_train.max_steps must be > 0")
+        except Exception:
+            errors.append("hf_train.max_steps must be > 0")
+        try:
+            if float(hf_train_cfg.get("lr", 1e-6)) <= 0:
+                errors.append("hf_train.lr must be > 0")
+        except Exception:
+            errors.append("hf_train.lr must be > 0")
 
     top_p = float(decode.get("top_p", bad.get("top_p", 1.0)))
     if not (0.0 < top_p <= 1.0):

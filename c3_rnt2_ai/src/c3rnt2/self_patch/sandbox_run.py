@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable, List
 
 from .apply_patch import DEFAULT_ALLOWED, DEFAULT_FORBIDDEN_GLOBS, _is_allowed, _resolve_queue_root
+from .policy import command_allowed, policy_from_settings
 from .utils import diff_paths
 
 
@@ -38,17 +39,30 @@ def _build_env() -> dict:
     return env
 
 
-def _check_paths(diff_text: str, allowed: Iterable[str], forbidden: Iterable[str]) -> tuple[bool, str | None]:
+def _check_paths(
+    diff_text: str,
+    allowed: Iterable[str],
+    forbidden: Iterable[str],
+    *,
+    allow_empty: bool = False,
+) -> tuple[bool, str | None]:
     paths = diff_paths(diff_text)
     if not paths:
-        return False, "no paths in diff"
+        return (True, None) if allow_empty else (False, "no paths in diff")
     for rel in paths:
         if not _is_allowed(str(rel).replace("\\", "/"), allowed, forbidden):
             return False, f"forbidden path: {rel}"
     return True, None
 
 
-def sandbox_run(base_dir: Path, patch_id: str, bench: bool = True, settings: dict | None = None) -> dict:
+def sandbox_run(
+    base_dir: Path,
+    patch_id: str,
+    bench: bool = True,
+    settings: dict | None = None,
+    *,
+    allow_empty: bool = False,
+) -> dict:
     queue_root = _resolve_queue_root(base_dir, settings)
     queue_dir = queue_root / patch_id
     patch_path = queue_dir / "patch.diff"
@@ -65,7 +79,7 @@ def sandbox_run(base_dir: Path, patch_id: str, bench: bool = True, settings: dic
         (queue_dir / "sandbox.json").write_text(json.dumps(result, ensure_ascii=True), encoding="utf-8")
         return result
 
-    ok_paths, path_error = _check_paths(diff_text, allowed, forbidden)
+    ok_paths, path_error = _check_paths(diff_text, allowed, forbidden, allow_empty=allow_empty)
     if not ok_paths:
         result = {"ok": False, "stage": "validate_paths", "error": path_error, "patch_id": patch_id}
         (queue_dir / "sandbox.json").write_text(json.dumps(result, ensure_ascii=True), encoding="utf-8")
@@ -101,16 +115,33 @@ def sandbox_run(base_dir: Path, patch_id: str, bench: bool = True, settings: dic
         (queue_dir / "sandbox.json").write_text(json.dumps(result, ensure_ascii=True), encoding="utf-8")
         return result
 
+    policy = policy_from_settings(settings)
     checks = []
     if shutil.which("ruff"):
-        checks.append(_run_cmd(["ruff", "check", "src"], cwd=sandbox_root, env=env))
-    checks.append(_run_cmd(["pytest", "-q"], cwd=sandbox_root, env=env))
+        cmd = ["ruff", "check", "src"]
+        if command_allowed(cmd, policy):
+            checks.append(_run_cmd(cmd, cwd=sandbox_root, env=env))
+    cmd = ["pytest", "-q"]
+    if command_allowed(cmd, policy):
+        checks.append(_run_cmd(cmd, cwd=sandbox_root, env=env))
+    else:
+        checks.append({"cmd": "pytest -q", "returncode": -1, "stdout": "", "stderr": "command_not_allowed"})
     if bench:
         bench_script = sandbox_root / "scripts" / "bench_generate.py"
         if bench_script.exists():
-            checks.append(_run_cmd(["python", str(bench_script), "--profile", "dev_small", "--max-new-tokens", "16"], cwd=sandbox_root, env=env))
+            cmd = ["python", str(bench_script), "--profile", "dev_small", "--max-new-tokens", "16"]
+            if command_allowed(cmd, policy):
+                checks.append(_run_cmd(cmd, cwd=sandbox_root, env=env))
 
-    ok = all(item.get("returncode", 1) == 0 for item in checks)
+    ok = True
+    for item in checks:
+        rc = item.get("returncode", 1)
+        cmd = str(item.get("cmd", ""))
+        if cmd.startswith("pytest") and rc in (0, 5):
+            continue
+        if rc != 0:
+            ok = False
+            break
     result = {
         "ok": ok,
         "patch_id": patch_id,

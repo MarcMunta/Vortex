@@ -9,6 +9,7 @@ from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
+from urllib.parse import urlparse
 
 
 def _normalize_text(text: str) -> str:
@@ -53,6 +54,138 @@ def _blob_to_vec(blob: bytes) -> List[float]:
     return list(arr)
 
 
+def _faiss_available() -> bool:
+    try:
+        import faiss  # type: ignore  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def _faiss_rank(
+    candidates: List[Tuple[str, bytes, str, str]],
+    qvec: List[float],
+    top_k: int,
+) -> List[KnowledgeChunk]:
+    try:
+        import faiss  # type: ignore
+        import numpy as np  # type: ignore
+    except Exception:
+        scored: List[KnowledgeChunk] = []
+        for text, vec_blob, source_kind, source_ref in candidates:
+            try:
+                vec = _blob_to_vec(vec_blob) if vec_blob is not None else []
+            except Exception:
+                continue
+            score = _dot(qvec, vec)
+            scored.append(KnowledgeChunk(text=text, score=score, source_kind=source_kind, source_ref=source_ref))
+        scored.sort(key=lambda x: x.score, reverse=True)
+        return scored[:top_k]
+
+    vecs = []
+    meta = []
+    for text, vec_blob, source_kind, source_ref in candidates:
+        try:
+            vec = _blob_to_vec(vec_blob) if vec_blob is not None else []
+        except Exception:
+            continue
+        if not vec:
+            continue
+        vecs.append(vec)
+        meta.append((text, source_kind, source_ref))
+    if not vecs:
+        return []
+    mat = np.array(vecs, dtype="float32")
+    q = np.array([qvec], dtype="float32")
+    index = faiss.IndexFlatIP(mat.shape[1])
+    index.add(mat)
+    scores, idxs = index.search(q, min(top_k, len(vecs)))
+    scored: List[KnowledgeChunk] = []
+    for score, idx in zip(scores[0], idxs[0]):
+        if idx < 0:
+            continue
+        text, source_kind, source_ref = meta[int(idx)]
+        scored.append(KnowledgeChunk(text=text, score=float(score), source_kind=source_kind, source_ref=source_ref))
+    scored.sort(key=lambda x: x.score, reverse=True)
+    return scored
+
+
+@dataclass
+class IngestPolicy:
+    min_quality: float = 0.0
+    max_age_days: float | None = None
+    allow_domains: list[str] | None = None
+    deny_domains: list[str] | None = None
+    allow_source_kinds: list[str] | None = None
+    deny_source_kinds: list[str] | None = None
+
+    def _domain_from_ref(self, source_ref: str) -> str | None:
+        if not source_ref:
+            return None
+        if source_ref.startswith("http://") or source_ref.startswith("https://"):
+            try:
+                parsed = urlparse(source_ref)
+                domain = parsed.netloc.lower()
+                domain = domain.split("@")[-1]
+                if domain.startswith("[") and domain.endswith("]"):
+                    domain = domain[1:-1]
+                domain = domain.split(":")[0]
+                return domain
+            except Exception:
+                return None
+        return None
+
+    def allows(self, source_kind: str, source_ref: str, quality: float, ts: float) -> bool:
+        if quality < self.min_quality:
+            return False
+        if self.max_age_days is not None:
+            cutoff = time.time() - float(self.max_age_days) * 86400.0
+            if ts < cutoff:
+                return False
+        if self.allow_source_kinds and source_kind not in self.allow_source_kinds:
+            return False
+        if self.deny_source_kinds and source_kind in self.deny_source_kinds:
+            return False
+        domain = self._domain_from_ref(source_ref)
+        if domain:
+            if self.allow_domains and not any(domain == d or domain.endswith("." + d) for d in self.allow_domains):
+                return False
+            if self.deny_domains and any(domain == d or domain.endswith("." + d) for d in self.deny_domains):
+                return False
+        return True
+
+
+class EmbeddingBackend:
+    def __init__(self, backend: str = "auto", dim: int = 128, model_name: str | None = None):
+        self.backend = (backend or "auto").lower()
+        self.dim = dim
+        self.model_name = model_name or "sentence-transformers/all-MiniLM-L6-v2"
+        self._model = None
+        if self.backend in {"auto", "sentence-transformer"}:
+            try:
+                from sentence_transformers import SentenceTransformer  # type: ignore
+
+                self._model = SentenceTransformer(self.model_name)
+                self.backend = "sentence-transformer"
+                try:
+                    self.dim = int(self._model.get_sentence_embedding_dimension())
+                except Exception:
+                    pass
+            except Exception:
+                if self.backend == "sentence-transformer":
+                    raise
+                self.backend = "hash"
+
+    def encode(self, texts: List[str]) -> List[List[float]]:
+        if self.backend == "sentence-transformer" and self._model is not None:
+            try:
+                vecs = self._model.encode(texts, normalize_embeddings=True)
+                return [list(v) for v in vecs]
+            except Exception:
+                self.backend = "hash"
+        return [_normalize_vec(embed_text(text, dim=self.dim)) for text in texts]
+
+
 @dataclass
 class KnowledgeChunk:
     text: str
@@ -62,10 +195,27 @@ class KnowledgeChunk:
 
 
 class KnowledgeStore:
-    def __init__(self, db_path: Path, dim: int = 128, cache_limit: int = 2000):
+    def __init__(
+        self,
+        db_path: Path,
+        dim: int = 128,
+        cache_limit: int = 2000,
+        *,
+        embedding_backend: str | EmbeddingBackend = "auto",
+        index_backend: str = "auto",
+        policy: IngestPolicy | None = None,
+    ):
         self.db_path = db_path
-        self.dim = dim
+        if isinstance(embedding_backend, EmbeddingBackend):
+            self.embedder = embedding_backend
+        else:
+            self.embedder = EmbeddingBackend(backend=str(embedding_backend), dim=dim)
+        self.dim = int(self.embedder.dim)
         self.cache_limit = cache_limit
+        self.index_backend = str(index_backend or "auto").lower()
+        if self.index_backend == "auto":
+            self.index_backend = "faiss" if _faiss_available() else "none"
+        self.policy = policy
         self.fts_rebuilds = 0
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
@@ -173,8 +323,11 @@ class KnowledgeStore:
                 normalized = _normalize_text(chunk)
                 if not normalized:
                     continue
+                if self.policy and not self.policy.allows(source_kind, source_ref, quality, ts_val):
+                    continue
                 digest = _hash_text(normalized)
-                vec = _normalize_vec(embed_text(normalized, dim=self.dim))
+                vec = self.embedder.encode([normalized])[0]
+                vec = _normalize_vec(vec)
                 tokens_est = max(1, len(_tokenize(normalized)))
                 blob = _vec_to_blob(vec)
                 cur = conn.execute(
@@ -211,7 +364,8 @@ class KnowledgeStore:
             return []
 
     def retrieve(self, query: str, top_k: int = 5, min_quality: float = 0.0) -> List[KnowledgeChunk]:
-        qvec = _normalize_vec(embed_text(query, dim=self.dim))
+        qvec = self.embedder.encode([query])[0]
+        qvec = _normalize_vec(qvec)
         qtokens = max(1, len(_tokenize(query)))
         min_tokens = max(1, int(qtokens * 0.3))
         max_tokens = max(50, int(qtokens * 8.0))
@@ -236,14 +390,18 @@ class KnowledgeStore:
                 )
                 candidates = cur.fetchall()
         scored: List[KnowledgeChunk] = []
-        for text, vec_blob, source_kind, source_ref in candidates:
-            try:
-                vec = _blob_to_vec(vec_blob) if vec_blob is not None else []
-            except Exception:
-                continue
-            score = _dot(qvec, vec)
-            scored.append(KnowledgeChunk(text=text, score=score, source_kind=source_kind, source_ref=source_ref))
-        scored.sort(key=lambda x: x.score, reverse=True)
+        if candidates:
+            if self.index_backend == "faiss":
+                scored = _faiss_rank(candidates, qvec, top_k)
+            else:
+                for text, vec_blob, source_kind, source_ref in candidates:
+                    try:
+                        vec = _blob_to_vec(vec_blob) if vec_blob is not None else []
+                    except Exception:
+                        continue
+                    score = _dot(qvec, vec)
+                    scored.append(KnowledgeChunk(text=text, score=score, source_kind=source_kind, source_ref=source_ref))
+                scored.sort(key=lambda x: x.score, reverse=True)
         top = scored[:top_k]
         self._bump_use_count(top)
         return top
@@ -257,19 +415,31 @@ class KnowledgeStore:
                 conn.execute("UPDATE docs SET use_count = use_count + 1 WHERE hash = ?", (digest,))
             conn.commit()
 
-    def sample_chunks(self, limit: int = 50, min_quality: float = 0.0) -> List[KnowledgeChunk]:
+    def sample_chunks(
+        self,
+        limit: int = 50,
+        min_quality: float = 0.0,
+        since_ts: float | None = None,
+        source_kinds: list[str] | None = None,
+    ) -> List[KnowledgeChunk]:
         chunks: List[KnowledgeChunk] = []
         with self._connect() as conn:
-            cur = conn.execute(
-                """
-                SELECT text, source_kind, source_ref, quality
-                FROM docs
-                WHERE quality >= ?
-                ORDER BY ts DESC
-                LIMIT ?
-                """,
-                (min_quality, limit),
-            )
+            query = [
+                "SELECT text, source_kind, source_ref, quality",
+                "FROM docs",
+                "WHERE quality >= ?",
+            ]
+            params: list[object] = [min_quality]
+            if since_ts is not None:
+                query.append("AND ts > ?")
+                params.append(float(since_ts))
+            if source_kinds:
+                placeholders = ",".join(["?"] * len(source_kinds))
+                query.append(f"AND source_kind IN ({placeholders})")
+                params.extend(source_kinds)
+            query.append("ORDER BY ts DESC LIMIT ?")
+            params.append(limit)
+            cur = conn.execute(" ".join(query), params)
             for text, source_kind, source_ref, quality in cur.fetchall():
                 chunks.append(KnowledgeChunk(text=text, score=float(quality), source_kind=source_kind, source_ref=source_ref))
         return chunks

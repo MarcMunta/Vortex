@@ -37,6 +37,7 @@ def propose_patch(
     *,
     settings: dict | None = None,
     dry_run: bool = False,
+    diff_text: Optional[str] = None,
 ) -> PatchProposal:
     patch_id = uuid.uuid4().hex[:10]
     queue_root = _resolve_queue_root(repo_root, settings)
@@ -44,13 +45,13 @@ def propose_patch(
     queue_dir.mkdir(parents=True, exist_ok=True)
     patch_path = queue_dir / "patch.diff"
 
-    diff_text = ""
+    diff_payload = diff_text or ""
     changes = {}
     if isinstance(context, dict):
         changes = context.get("changes", {}) or {}
-    if changes:
-        diff_text = generate_diff(repo_root, {Path(k): v for k, v in changes.items()})
-    patch_path.write_text(diff_text, encoding="utf-8")
+    if not diff_payload and changes:
+        diff_payload = generate_diff(repo_root, {Path(k): v for k, v in changes.items()})
+    patch_path.write_text(diff_payload, encoding="utf-8")
 
     context_payload: str | None = None
     if context is not None:

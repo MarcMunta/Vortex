@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass
@@ -104,30 +105,32 @@ class AgentTools:
         except Exception as exc:
             return ToolResult(ok=False, output=f"edit failed: {exc}")
 
-    def propose_patch(self, repo_root: Path, changes: Dict[Path, str]) -> ToolResult:
+    def propose_patch(self, repo_root: Path, changes: Dict[Path, str], goal: str = "agent_patch") -> ToolResult:
         try:
-            from ..selfimprove.patch_ops import propose_patch
+            from ..self_patch.propose_patch import propose_patch
 
-            diff = propose_patch(repo_root, changes)
-            return ToolResult(ok=True, output=diff)
+            context = {"changes": {str(k): v for k, v in changes.items()}}
+            proposal = propose_patch(goal, context, repo_root, settings={})
+            return ToolResult(ok=True, output=proposal.patch_id)
         except Exception as exc:
             return ToolResult(ok=False, output=f"propose failed: {exc}")
 
-    def validate_patch(self, repo_root: Path, diff_text: str) -> ToolResult:
+    def sandbox_patch(self, repo_root: Path, patch_id: str) -> ToolResult:
         try:
-            from ..selfimprove.patch_ops import validate_patch
-            from ..selfimprove.safety_kernel import SafetyPolicy
+            from ..self_patch.sandbox_run import sandbox_run
 
-            result = validate_patch(repo_root, diff_text, SafetyPolicy())
-            return ToolResult(ok=result.ok, output=result.message)
+            result = sandbox_run(repo_root, patch_id, settings={})
+            return ToolResult(ok=bool(result.get("ok")), output=json.dumps(result))
         except Exception as exc:
-            return ToolResult(ok=False, output=f"validate failed: {exc}")
+            return ToolResult(ok=False, output=f"sandbox failed: {exc}")
 
-    def apply_patch(self, repo_root: Path, diff_text: str, approve: bool = False) -> ToolResult:
+    def apply_patch(self, repo_root: Path, patch_id: str, approve: bool = False) -> ToolResult:
         try:
-            from ..selfimprove.patch_ops import apply_patch
+            if not approve:
+                return ToolResult(ok=False, output="approval required")
+            from ..self_patch.apply_patch import apply_patch
 
-            result = apply_patch(repo_root, diff_text, approve=approve)
-            return ToolResult(ok=result.ok, output=result.message)
+            result = apply_patch(patch_id, repo_root, settings={})
+            return ToolResult(ok=result.ok, output=result.error or "applied")
         except Exception as exc:
             return ToolResult(ok=False, output=f"apply failed: {exc}")

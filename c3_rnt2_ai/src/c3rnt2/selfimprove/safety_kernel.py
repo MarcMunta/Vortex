@@ -2,40 +2,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Tuple
+
+from ..self_patch.policy import (
+    DEFAULT_ALLOWED_COMMANDS,
+    DEFAULT_ALLOWED_PATHS,
+    DEFAULT_FORBIDDEN_GLOBS,
+    DEFAULT_MAX_PATCH_KB,
+    SelfPatchPolicy,
+    normalize_path,
+    is_forbidden as _is_forbidden,
+)
 
 
 @dataclass(frozen=True)
 class SafetyPolicy:
-    max_patch_kb: int = 64
-    allow_commands: tuple[str, ...] = ("pytest",)
+    max_patch_kb: int = DEFAULT_MAX_PATCH_KB
+    allow_commands: Tuple[str, ...] = DEFAULT_ALLOWED_COMMANDS
+    allowed_paths: Tuple[str, ...] = DEFAULT_ALLOWED_PATHS
+    forbidden_globs: Tuple[str, ...] = DEFAULT_FORBIDDEN_GLOBS
 
-
-SAFETY_KERNEL_PATHS = {
-    "src/c3rnt2/selfimprove/safety_kernel.py",
-    "src/c3rnt2/selfimprove/patch_ops.py",
-    "src/c3rnt2/selfimprove/improve_loop.py",
-}
-
-FORBIDDEN_PATH_PREFIXES = {
-    ".git",
-    "data/registry",
-}
-
-
-def normalize_path(repo_root: Path, path: Path) -> str:
-    try:
-        rel = path.resolve().relative_to(repo_root.resolve())
-        return str(rel).replace("\\", "/")
-    except Exception:
-        return str(path).replace("\\", "/")
+    def to_self_patch(self) -> SelfPatchPolicy:
+        return SelfPatchPolicy(
+            allowed_paths=self.allowed_paths,
+            forbidden_globs=self.forbidden_globs,
+            max_patch_kb=self.max_patch_kb,
+            allowed_commands=self.allow_commands,
+        )
 
 
 def is_forbidden(repo_root: Path, path: Path) -> bool:
     rel = normalize_path(repo_root, path)
-    if rel in SAFETY_KERNEL_PATHS:
-        return True
-    for prefix in FORBIDDEN_PATH_PREFIXES:
-        if rel.startswith(prefix):
-            return True
-    return False
+    return _is_forbidden(rel, DEFAULT_FORBIDDEN_GLOBS)
