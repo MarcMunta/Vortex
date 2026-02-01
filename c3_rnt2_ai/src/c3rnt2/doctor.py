@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 import torch
 
-from .config import validate_profile
+from .config import validate_profile, load_settings, DEFAULT_SETTINGS_PATH
 from .device import detect_device
 from .model.core_transformer import CoreTransformer
 from .model_loader import load_inference_model
@@ -89,6 +89,41 @@ def run_deep_checks(settings: dict, base_dir: Path) -> dict[str, Any]:
             tokens_per_sec = gen_tokens / gen_elapsed
     elapsed = time.time() - start
     vram_peak_gb = None
+    runtime = settings.get("runtime", {}) or {}
+    tools = settings.get("tools", {}) or {}
+    web = tools.get("web", {}) or {}
+    self_patch = settings.get("self_patch", {}) or {}
+    locks_dir = base_dir / "data" / "locks"
+    bootstrap_path = base_dir / "data" / "registry" / "bootstrap" / "bootstrap_samples.jsonl"
+    profile_checks: dict[str, str] = {}
+    try:
+        import yaml  # type: ignore
+
+        data = yaml.safe_load(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8")) or {}
+        for name in (data.get("profiles", {}) or {}).keys():
+            try:
+                prof_settings = load_settings(name)
+                validate_profile(prof_settings, base_dir=base_dir)
+                profile_checks[name] = "ok"
+            except Exception as exc:
+                profile_checks[name] = f"error: {exc}"
+    except Exception as exc:  # pragma: no cover
+        profile_checks["error"] = str(exc)
+    deep_extra = {
+        "web_enabled": bool(web.get("enabled", False)),
+        "web_allowlist_ok": bool(web.get("allow_domains")) if web.get("enabled") else True,
+        "web_content_types_ok": bool(web.get("allow_content_types")) if web.get("enabled") else True,
+        "web_cache_ttl_s": web.get("cache_ttl_s", None),
+        "self_patch_enabled": bool(self_patch.get("enabled", False)),
+        "self_patch_paths_ok": bool(self_patch.get("allowed_paths")) if self_patch.get("enabled") else True,
+        "bootstrap_dataset_exists": bootstrap_path.exists(),
+        "kv_quant": runtime.get("kv_quant", "none"),
+        "kv_quant_2bit_experimental": runtime.get("kv_quant_2bit_experimental", False),
+        "gpu_decompress": runtime.get("gpu_decompress", "none"),
+        "locks_dir": str(locks_dir),
+        "locks_exist": locks_dir.exists(),
+        "profiles": profile_checks,
+    }
     if info.cuda_available:
         vram_peak_gb = torch.cuda.max_memory_allocated() / (1024**3)
     return {
@@ -96,6 +131,7 @@ def run_deep_checks(settings: dict, base_dir: Path) -> dict[str, Any]:
         "elapsed_sec": round(elapsed, 3),
         "vram_peak_gb": round(vram_peak_gb, 3) if vram_peak_gb is not None else None,
         "tokens_per_sec": round(tokens_per_sec, 3),
+        "checks": deep_extra,
     }
 
 

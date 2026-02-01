@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import requests
 
 from .policies import WebPolicy
 
@@ -26,8 +25,10 @@ class AgentTools:
         sandbox_root: Path | None = None,
         cache_root: Path | None = None,
         rate_limit_per_min: int = 30,
+        web_cfg: dict | None = None,
     ):
         self.policy = WebPolicy(allowlist=allowlist, rate_limit_per_min=rate_limit_per_min)
+        self.web_cfg = web_cfg or {}
         self.sandbox_root = sandbox_root or Path("data") / "workspaces"
         self.cache_root = cache_root or Path("data") / "web_cache"
         self.cache_root.mkdir(parents=True, exist_ok=True)
@@ -58,6 +59,37 @@ class AgentTools:
         payload = {"text": text}
         path.write_text(json.dumps(payload), encoding="utf-8")
 
+
+    def web_fetch(self, url: str) -> ToolResult:
+        cfg = self.web_cfg.get("web", {}) if isinstance(self.web_cfg, dict) else {}
+        if not cfg.get("enabled", False):
+            return ToolResult(ok=False, output="web disabled")
+        from ..tools.web_access import web_fetch
+        allow_domains = cfg.get("allow_domains", self.policy.allowlist)
+        max_bytes = int(cfg.get("max_bytes", 512000))
+        timeout_s = int(cfg.get("timeout_s", 10))
+        cache_dir = Path(cfg.get("cache_dir", self.cache_root))
+        rate_limit = int(cfg.get("rate_limit_per_min", self.policy.rate_limit_per_min))
+        cache_ttl_s = cfg.get("cache_ttl_s", 3600)
+        if cache_ttl_s is not None:
+            cache_ttl_s = int(cache_ttl_s)
+        allow_content_types = cfg.get("allow_content_types")
+        result = web_fetch(
+            url,
+            allowlist=list(allow_domains),
+            max_bytes=max_bytes,
+            timeout_s=timeout_s,
+            cache_dir=cache_dir,
+            rate_limit_per_min=rate_limit,
+            cache_ttl_s=cache_ttl_s,
+            allow_content_types=allow_content_types,
+            base_dir=Path('.'),
+        )
+        if not result.ok:
+            return ToolResult(ok=False, output=result.error or "fetch failed")
+        text = self._sanitize_text(result.text)
+        return ToolResult(ok=True, output=text)
+
     def run_tests(self, repo_path: Path) -> ToolResult:
         try:
             result = subprocess.run(
@@ -73,42 +105,11 @@ class AgentTools:
             return ToolResult(ok=False, output=f"pytest failed: {exc}")
 
     def search_web(self, query: str) -> ToolResult:
-        if not self.policy.check_rate():
-            return ToolResult(ok=False, output="rate limit exceeded")
-        # MVP: naive GET to duckduckgo html if allowed (unlikely). Return stub if blocked.
         url = f"https://duckduckgo.com/html/?q={query}"
-        if not self.policy.allow_url(url):
-            return ToolResult(ok=False, output="domain not in allowlist")
-        cached = self._cache_get(url)
-        if cached is not None:
-            return ToolResult(ok=True, output=cached)
-        try:
-            resp = requests.get(url, timeout=10)
-            if not resp.ok:
-                return ToolResult(ok=False, output=f"http {resp.status_code}")
-            text = self._sanitize_text(resp.text)[:1000]
-            self._cache_set(url, text)
-            return ToolResult(ok=True, output=text)
-        except Exception as exc:
-            return ToolResult(ok=False, output=f"web error: {exc}")
+        return self.web_fetch(url)
 
     def open_docs(self, url: str) -> ToolResult:
-        if not self.policy.check_rate():
-            return ToolResult(ok=False, output="rate limit exceeded")
-        if not self.policy.allow_url(url):
-            return ToolResult(ok=False, output="domain not in allowlist")
-        cached = self._cache_get(url)
-        if cached is not None:
-            return ToolResult(ok=True, output=cached)
-        try:
-            resp = requests.get(url, timeout=10)
-            if not resp.ok:
-                return ToolResult(ok=False, output=f"http {resp.status_code}")
-            text = self._sanitize_text(resp.text)[:1200]
-            self._cache_set(url, text)
-            return ToolResult(ok=True, output=text)
-        except Exception as exc:
-            return ToolResult(ok=False, output=f"web error: {exc}")
+        return self.web_fetch(url)
 
     def edit_repo(self, file_path: Path, new_text: str) -> ToolResult:
         try:

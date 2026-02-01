@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Deque, Iterable, List, Optional
 
@@ -43,12 +44,17 @@ class Prefetcher:
             return obj
         if isinstance(obj, torch.Tensor):
             if obj.device.type == "cpu":
-                return obj.to(self.device, non_blocking=True)
+                start = time.perf_counter()
+                out = obj.to(self.device, non_blocking=True)
+                ms = (time.perf_counter() - start) * 1000.0
+                return out, ms
             return obj
         if isinstance(obj, dict) and "tensor" in obj:
             tensor = obj.get("tensor")
             if isinstance(tensor, torch.Tensor) and tensor.device.type == "cpu":
+                start = time.perf_counter()
                 obj["tensor"] = tensor.to(self.device, non_blocking=True)
+                obj["ms_h2d"] = (time.perf_counter() - start) * 1000.0
             return obj
         return obj
 
@@ -70,6 +76,10 @@ class Prefetcher:
                 if stream is not None:
                     with torch.cuda.stream(stream):
                         obj = self._maybe_to_device(obj)
+                        if isinstance(obj, tuple):
+                            obj, ms_h2d = obj
+                        else:
+                            ms_h2d = None
                         event = torch.cuda.Event()
                         event.record(stream)
                         self._events.append(event)
@@ -77,6 +87,8 @@ class Prefetcher:
                         if isinstance(obj, dict):
                             obj.setdefault("tile_id", tile_id)
                             obj["event"] = event
+                            if ms_h2d is not None:
+                                obj["ms_h2d"] = ms_h2d
                 loaded.append(obj)
             return loaded
         while self.queue:
@@ -86,6 +98,10 @@ class Prefetcher:
                 with torch.cuda.stream(stream):
                     obj = self.loader(tile_id)
                     obj = self._maybe_to_device(obj)
+                    if isinstance(obj, tuple):
+                        obj, ms_h2d = obj
+                    else:
+                        ms_h2d = None
                     event = torch.cuda.Event()
                     event.record(stream)
                     self._events.append(event)
@@ -93,6 +109,8 @@ class Prefetcher:
                     if isinstance(obj, dict):
                         obj.setdefault("tile_id", tile_id)
                         obj["event"] = event
+                        if ms_h2d is not None:
+                            obj["ms_h2d"] = ms_h2d
                     loaded.append(obj)
             else:
                 loaded.append(self.loader(tile_id))

@@ -80,8 +80,29 @@ def normalize_settings(settings: dict) -> dict:
             elif int(kv_bits) <= 0:
                 runtime["kv_quant"] = "none"
     runtime.setdefault("kv_quant", "none")
+    runtime.setdefault("kv_quant_2bit_experimental", False)
     runtime.setdefault("gpu_decompress", "none")
     normalized["runtime"] = runtime
+
+    tools = normalized.get("tools", {}) or {}
+    web = tools.get("web", {}) or {}
+    web.setdefault("enabled", False)
+    web.setdefault("allow_domains", ["docs.python.org", "pytorch.org", "github.com"])
+    web.setdefault("max_bytes", 512000)
+    web.setdefault("timeout_s", 10)
+    web.setdefault("rate_limit_per_min", 30)
+    web.setdefault("cache_dir", "data/web_cache")
+    web.setdefault("cache_ttl_s", 3600)
+    web.setdefault("allow_content_types", ["text/", "application/json"])
+    tools["web"] = web
+    normalized["tools"] = tools
+
+    self_patch = normalized.get("self_patch", {}) or {}
+    self_patch.setdefault("enabled", False)
+    self_patch.setdefault("auto_sandbox", True)
+    self_patch.setdefault("allowed_paths", ["src/", "tests/"])
+    self_patch.setdefault("forbidden_paths", [".env", ".env.", ".git/", "data/", "data/db", "data/keys", "keys", "secrets"])
+    normalized["self_patch"] = self_patch
 
     vx = normalized.get("vortex_model", {}) or {}
     core = normalized.get("core", {}) or {}
@@ -161,6 +182,8 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
     kv_quant = str(runtime.get("kv_quant", "none")).lower()
     if kv_quant not in {"none", "int8", "2bit"}:
         errors.append("runtime.kv_quant must be one of none|int8|2bit")
+    if kv_quant == "2bit" and not bool(runtime.get("kv_quant_2bit_experimental", False)):
+        errors.append("runtime.kv_quant=2bit requires runtime.kv_quant_2bit_experimental=true")
     gpu_decompress = str(runtime.get("gpu_decompress", "none")).lower()
     if gpu_decompress not in {"none", "triton"}:
         errors.append("runtime.gpu_decompress must be none or triton")
@@ -193,6 +216,22 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
     batch_tokens = cont.get("batch_tokens")
     if batch_tokens is not None and int(batch_tokens) <= 0:
         errors.append("continuous.batch_tokens must be > 0")
+
+    tools = settings.get("tools", {}) or {}
+    web = tools.get("web", {}) or {}
+    if web.get("enabled"):
+        allow = web.get("allow_domains", [])
+        if not allow:
+            errors.append("tools.web.allow_domains required when web enabled")
+        allow_types = web.get("allow_content_types", [])
+        if not allow_types:
+            errors.append("tools.web.allow_content_types required when web enabled")
+
+    self_patch = settings.get("self_patch", {}) or {}
+    if self_patch.get("enabled"):
+        allowed_paths = self_patch.get("allowed_paths", [])
+        if not allowed_paths:
+            errors.append("self_patch.allowed_paths required when self_patch enabled")
 
     data_root = (base_dir / "data").resolve()
 

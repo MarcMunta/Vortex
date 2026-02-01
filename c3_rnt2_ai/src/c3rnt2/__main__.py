@@ -28,9 +28,11 @@ from .prompting.chat_format import build_chat_prompt
 from .continuous.bootstrap import run_bootstrap
 from .device import detect_device
 from .selfimprove.improve_loop import run_improve_loop
-from .selfimprove.patch_ops import apply_patch
+from .selfimprove.patch_ops import apply_patch as legacy_apply_patch
+from .self_patch import propose_patch as sp_propose_patch, sandbox_run as sp_run_sandbox, apply_patch as sp_apply_patch
 from .utils.locks import acquire_exclusive_lock, LockUnavailable
 from .runtime.router import build_features, load_router, log_router_event
+from .server import run_server
 from .training import train_router as train_router_mod
 from .training import train_experts as train_experts_mod
 from .training import finetune_adapters as finetune_mod
@@ -83,6 +85,43 @@ def cmd_eval(_args: argparse.Namespace) -> None:
     eval_mod.main()
 
 
+def cmd_doctor(args: argparse.Namespace) -> None:
+    info = detect_device()
+    print({
+        "device": info.device,
+        "cuda_available": info.cuda_available,
+        "gpu": info.name,
+        "vram_gb": info.vram_gb,
+        "dtype": info.dtype,
+        "python": sys.version.split()[0],
+    })
+    modules = [
+        "torch",
+        "bitsandbytes",
+        "faiss",
+        "triton",
+        "fastapi",
+        "zstandard",
+        "lz4",
+    ]
+    status = check_deps(modules)
+    print({"deps": status})
+    base_dir = Path(".")
+    try:
+        settings = _load_and_validate(args.profile)
+        print({"settings_ok": True, "profile": resolve_profile(args.profile)})
+        if args.deep:
+            try:
+                deep_result = run_deep_checks(settings, base_dir=base_dir)
+                print({"deep": deep_result})
+            except Exception as exc:
+                print({"deep": {"deep_ok": False, "error": str(exc)}})
+    except Exception as exc:
+        print({"warning": "settings_invalid", "error": str(exc)})
+        if args.deep:
+            print({"deep": {"deep_ok": False}})
+
+
 def cmd_chat(args: argparse.Namespace) -> None:
     settings = _load_and_validate(args.profile)
     model = load_inference_model(settings)
@@ -128,11 +167,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
             top_k = int(rag_cfg.get("top_k", 3))
             context = retrieve_context(Path("."), prompt, settings, top_k=top_k)
             if context:
-                prompt = f"Context:
-{context}
-
-User:
-{prompt}"
+                prompt = f"Context:\n{context}\n\nUser:\n{prompt}"
         backend = settings.get("core", {}).get("backend", "vortex")
         default_system = settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant.")
         messages = [{"role": "user", "content": prompt}]
@@ -209,6 +244,20 @@ User:
             _set_stream_topk(bool(prev_stream))
         print(response)
 
+
+def cmd_serve(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    base_dir = Path(".")
+    try:
+        lock = acquire_exclusive_lock(base_dir, "serve")
+    except LockUnavailable:
+        print({"ok": False, "error": "serve lock unavailable (train/self_patch running?)"})
+        return
+    try:
+        run_server(settings, base_dir=base_dir, host=args.host, port=args.port)
+    finally:
+        lock.release()
+
 def cmd_agent_demo(args: argparse.Namespace) -> None:
     settings = _load_and_validate(args.profile)
     report = run_demo_agent(settings)
@@ -246,67 +295,56 @@ def cmd_self_improve(_args: argparse.Namespace) -> None:
     print(report)
 
 
-def cmd_apply_patch(args: argparse.Namespace) -> None:
-    diff = Path(args.diff).read_text(encoding="utf-8")
-    result = apply_patch(Path("."), diff, approve=args.approve)
-    print({"ok": result.ok, "message": result.message})
-
-
-def cmd_doctor(args: argparse.Namespace) -> None:
-    info = detect_device()
-    print({
-        "device": info.device,
-        "cuda_available": info.cuda_available,
-        "gpu": info.name,
-        "vram_gb": info.vram_gb,
-        "dtype": info.dtype,
-        "python": sys.version.split()[0],
-    })
-    modules = [
-        "torch",
-        "bitsandbytes",
-        "faiss",
-        "triton",
-        "fastapi",
-        "zstandard",
-        "lz4",
-    ]
-    print({"deps": check_deps(modules)})
-    base_dir = Path(".")
-    try:
-        settings = _load_and_validate(args.profile)
-    except Exception as exc:
-        print({"warning": "settings_invalid", "error": str(exc), "hint": "Update config/settings.yaml to include missing keys"})
+def cmd_self_patch(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    cfg = settings.get("self_patch", {}) or {}
+    if not cfg.get("enabled", False) and not args.force and not args.dry_run:
+        print({"ok": False, "error": "self_patch disabled"})
         return
-    print({"settings_ok": True, "profile": args.profile or resolve_profile(None)})
-    if args.deep:
-        try:
-            deep_result = run_deep_checks(settings, base_dir=base_dir)
-            print({"deep": deep_result})
-        except Exception as exc:
-            print({"deep": {"deep_ok": False, "error": str(exc)}})
-
-
-def cmd_serve(args: argparse.Namespace) -> None:
-    profile = args.profile or _default_profile()
-    settings = _load_and_validate(profile)
     base_dir = Path(".")
     try:
-        lock = acquire_exclusive_lock(base_dir, "serve")
+        lock = acquire_exclusive_lock(base_dir, "self_patch")
     except LockUnavailable:
-        print({"ok": False, "error": "serve lock unavailable (training running?)"})
+        print({"ok": False, "error": "self_patch lock unavailable (serve/train running?)"})
         return
+    diff_text = None
+    if args.diff:
+        diff_text = Path(args.diff).read_text(encoding="utf-8")
     try:
-        from .server import run_server
-    except Exception as exc:
-        lock.release()
-        print({"ok": False, "error": f"fastapi/uvicorn not available: {exc}"})
-        return
-    try:
-        run_server(settings=settings, base_dir=base_dir, host=args.host, port=args.port)
+        result = sp_propose_patch(base_dir, goal=args.goal, context=args.context, diff_text=diff_text, dry_run=args.dry_run)
+        if args.dry_run:
+            print(result)
+            return
+        auto_sandbox = bool(cfg.get("auto_sandbox", True))
+        if args.run_sandbox or auto_sandbox:
+            sandbox_result = sp_run_sandbox(base_dir, result["patch_id"], bench=bool(args.bench), settings=settings)
+            result["sandbox"] = sandbox_result
+        print(result)
     finally:
         lock.release()
 
+
+def cmd_apply_patch(args: argparse.Namespace) -> None:
+    base_dir = Path(".")
+    if args.patch_id and not args.diff:
+        settings = _load_and_validate(args.profile)
+        try:
+            lock = acquire_exclusive_lock(base_dir, "self_patch")
+        except LockUnavailable:
+            print({"ok": False, "error": "self_patch lock unavailable (serve/train running?)"})
+            return
+        try:
+            result = sp_apply_patch(base_dir, args.patch_id, settings=settings, human_approved=True)
+            print(result)
+            return
+        finally:
+            lock.release()
+    if not args.diff:
+        print({"ok": False, "error": "diff or patch_id required"})
+        return
+    diff = Path(args.diff).read_text(encoding="utf-8")
+    result = legacy_apply_patch(base_dir, diff, approve=args.approve)
+    print({"ok": result.ok, "message": result.message})
 
 
 def cmd_load_checkpoint(args: argparse.Namespace) -> None:
@@ -531,9 +569,22 @@ def main() -> None:
     si = sub.add_parser("self-improve")
     si.set_defaults(func=cmd_self_improve)
 
+    sp = sub.add_parser("self-patch")
+    sp.add_argument("--profile", default=None)
+    sp.add_argument("--goal", required=True)
+    sp.add_argument("--context", default=None)
+    sp.add_argument("--diff", default=None)
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--run-sandbox", action="store_true")
+    sp.add_argument("--bench", action="store_true")
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_self_patch)
+
     ap = sub.add_parser("apply-patch")
-    ap.add_argument("--diff", required=True)
+    ap.add_argument("patch_id", nargs="?")
+    ap.add_argument("--diff", required=False)
     ap.add_argument("--approve", action="store_true")
+    ap.add_argument("--profile", default=None)
     ap.set_defaults(func=cmd_apply_patch)
 
     lc = sub.add_parser("load-checkpoint")

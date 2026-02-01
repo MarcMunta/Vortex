@@ -197,6 +197,7 @@ def _load_teacher(teacher: str, device: str, quant: str, max_memory: str | None)
         except Exception:
             info["quant_fallback"] = True
             use_quant = False
+    info["use_quant"] = use_quant
 
     if not use_quant:
         dtype = torch.float16 if device == "cuda" else torch.float32
@@ -247,7 +248,7 @@ def _generate_teacher_samples(
         samples.append(Sample(prompt=prompt, response=completion, source_kind="bootstrap"))
 
     try:
-        if hasattr(teacher_model, "to"):
+        if not bool(info.get("use_quant")) and hasattr(teacher_model, "to"):
             teacher_model.to("cpu")
     except Exception:
         pass
@@ -391,6 +392,10 @@ def _distill_teacher(
 
     if not samples:
         return {"ok": False, "error": "no distillation samples produced"}
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     model, last_loss = _train_from_samples(
         settings=settings,

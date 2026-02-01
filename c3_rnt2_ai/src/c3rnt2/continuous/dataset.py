@@ -230,7 +230,8 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
     # Web docs (cache + cooldown)
     if bool(continuous.get("ingest_web", True)) and allowlist:
         urls = continuous.get("ingest_urls", ["https://docs.python.org/3/", "https://pytorch.org/docs/stable/"])
-        tools = AgentTools(allowlist=allowlist)
+        tools_cfg = settings.get("tools", {}) or {}
+        tools = AgentTools(allowlist=allowlist, web_cfg=tools_cfg)
         for url in urls:
             if files_used >= max_files_per_tick or bytes_used >= max_total_bytes_per_tick:
                 break
@@ -338,7 +339,9 @@ def collect_samples(base_dir: Path, allowlist: List[str], settings: dict, ingest
     # Episodes -> gold samples
     episodes_path = base_dir / "data" / "episodes" / "agent.jsonl"
     for ep in _load_episodes(episodes_path):
-        if not ep.get("tests_ok"):
+        tests_ok = bool(ep.get("tests_ok"))
+        tools_ok = bool(ep.get("tools_ok"))
+        if not (tests_ok or tools_ok):
             continue
         task = str(ep.get("task", "")).strip()
         context = str(ep.get("prompt", "")).strip()
@@ -349,12 +352,20 @@ def collect_samples(base_dir: Path, allowlist: List[str], settings: dict, ingest
         if context:
             prompt = f"{prompt}\nContext:\n{context}"
         sample = Sample(prompt=prompt, response=diff, source_kind="episode")
-        event_id = hashlib.sha256(f"{task}\n{context}\n{diff}\ntests_ok".encode("utf-8")).hexdigest()
+        signals = []
+        if tests_ok:
+            signals.append("tests_ok")
+        if tools_ok:
+            signals.append("tools_ok")
+        signal_label = "+".join(signals)
+        event_id = hashlib.sha256(f"{task}\n{context}\n{diff}\n{signal_label}".encode("utf-8")).hexdigest()
         gold_samples.append(sample)
         quality = _quality_score(diff, "episode", max_repeat_ratio)
         novelty = _novelty_score(diff, recent_vecs)
         total_candidates += 1
         successes += 1
+        digest = replay.hash_sample(sample.prompt, sample.response)
+        replay.bump_success_once(digest, event_id, delta=1)
         if quality >= min_quality:
             inserted = replay.add(
                 ReplayItem(
@@ -362,14 +373,12 @@ def collect_samples(base_dir: Path, allowlist: List[str], settings: dict, ingest
                     source_kind="episode",
                     quality_score=quality,
                     novelty_score=novelty,
-                    success_count=1,
+                    success_count=0,
                 ),
                 max_items=max_items,
             )
             if inserted:
                 novelty_scores.append(novelty)
-            digest = replay.hash_sample(sample.prompt, sample.response)
-            replay.bump_success_once(digest, event_id, delta=1)
         else:
             filtered += 1
 

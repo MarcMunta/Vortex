@@ -49,6 +49,7 @@ class LAVAMemory(nn.Module):
         write_every: int = 1,
         write_on_surprise: bool = False,
         surprise_threshold: float = 0.0,
+        kv_quant_bits: int = 0,
     ):
         super().__init__()
         self.hidden_size = hidden_size
@@ -66,12 +67,17 @@ class LAVAMemory(nn.Module):
         self.write_every = max(1, int(write_every))
         self.write_on_surprise = bool(write_on_surprise)
         self.surprise_threshold = float(surprise_threshold)
+        self.kv_quant_bits = int(kv_quant_bits)
         self._step = 0
         self._cluster_dirty = False
         self._centroid_dirty = False
 
         self.register_buffer("addresses", torch.randn(latent_slots, hidden_size) * 0.02)
         self.register_buffer("contents", torch.randn(latent_slots, hidden_size) * 0.02)
+        self.register_buffer("contents_q", torch.zeros(latent_slots, hidden_size, dtype=torch.int8))
+        self.register_buffer("contents_scale", torch.ones(latent_slots, dtype=torch.float32))
+        self.register_buffer("addresses_q", torch.zeros(latent_slots, hidden_size, dtype=torch.int8))
+        self.register_buffer("addresses_scale", torch.ones(latent_slots, dtype=torch.float32))
         self.register_buffer("addresses_norm", torch.empty(latent_slots, hidden_size))
         self.register_buffer("addresses_norm_t", torch.empty(hidden_size, latent_slots))
         if self.lava_clusters > 0:
@@ -97,6 +103,9 @@ class LAVAMemory(nn.Module):
         self.enable_write = True
         self._refresh_address_cache()
         self._init_clusters()
+        if self.kv_quant_bits > 0:
+            for slot in range(self.latent_slots):
+                self._quantize_slot(slot)
 
     def _refresh_address_cache(self) -> None:
         with torch.no_grad():
@@ -190,6 +199,77 @@ class LAVAMemory(nn.Module):
         self._centroid_dirty = True
         self._cluster_dirty = True
 
+
+    def _pack_2bit(self, q: torch.Tensor) -> torch.Tensor:
+        total = q.numel()
+        pad = (4 - total % 4) % 4
+        if pad:
+            q = torch.cat([q, torch.zeros(pad, device=q.device, dtype=q.dtype)])
+        q = q.view(-1, 4).to(torch.uint8)
+        packed = q[:, 0] | (q[:, 1] << 2) | (q[:, 2] << 4) | (q[:, 3] << 6)
+        return packed
+
+    def _unpack_2bit(self, packed: torch.Tensor, total: int) -> torch.Tensor:
+        packed = packed.to(torch.uint8)
+        q0 = packed & 0x3
+        q1 = (packed >> 2) & 0x3
+        q2 = (packed >> 4) & 0x3
+        q3 = (packed >> 6) & 0x3
+        q = torch.stack([q0, q1, q2, q3], dim=1).reshape(-1)
+        return q[:total]
+
+    def _quantize_vec(self, vec: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.kv_quant_bits == 2:
+            # Experimental 2-bit quantization. TODO: per-channel scaling and better packing.
+            scale = vec.abs().max() / 1.5 if vec.numel() else torch.tensor(1.0, device=vec.device)
+            if scale == 0:
+                scale = torch.tensor(1.0, device=vec.device)
+            q = torch.round(vec / scale).clamp(-2, 1).to(torch.int8)
+            q = (q + 2).to(torch.uint8)
+            return q, scale
+        # int8 default
+        scale = vec.abs().max() / 127.0 if vec.numel() else torch.tensor(1.0, device=vec.device)
+        if scale == 0:
+            scale = torch.tensor(1.0, device=vec.device)
+        q = torch.round(vec / scale).clamp(-127, 127).to(torch.int8)
+        return q, scale
+
+    def _dequantize_vec(self, q: torch.Tensor, scale: torch.Tensor, total: int) -> torch.Tensor:
+        if self.kv_quant_bits == 2:
+            return (q.to(torch.int8) - 2).to(torch.float32) * scale
+        return q.to(torch.float32) * scale
+
+    def _quantize_slot(self, slot: int) -> None:
+        if self.kv_quant_bits <= 0:
+            return
+        with torch.no_grad():
+            vec = self.contents[slot].float()
+            q, scale = self._quantize_vec(vec)
+            if self.kv_quant_bits == 2:
+                self.contents_q[slot] = q
+            else:
+                self.contents_q[slot].copy_(q)
+            self.contents_scale[slot] = scale.float()
+            addr_vec = self.addresses[slot].float()
+            q_addr, scale_addr = self._quantize_vec(addr_vec)
+            if self.kv_quant_bits == 2:
+                self.addresses_q[slot] = q_addr
+            else:
+                self.addresses_q[slot].copy_(q_addr)
+            self.addresses_scale[slot] = scale_addr.float()
+
+    def _dequantize_contents(self, slots: torch.Tensor) -> torch.Tensor:
+        # slots: [B, K]
+        if self.kv_quant_bits <= 0:
+            return self.contents[slots]
+        if self.kv_quant_bits == 2:
+            q = self.contents_q[slots].to(torch.int8) - 2
+            scales = self.contents_scale[slots].unsqueeze(-1)
+            return q.to(torch.float32) * scales
+        q = self.contents_q[slots].to(torch.float32)
+        scales = self.contents_scale[slots].unsqueeze(-1)
+        return q * scales
+
     def reset_state(self) -> None:
         with torch.no_grad():
             self.addresses.copy_(torch.randn_like(self.addresses) * 0.02)
@@ -199,6 +279,9 @@ class LAVAMemory(nn.Module):
             self.stats = LavaStats()
         self._refresh_address_cache()
         self._init_clusters()
+        if self.kv_quant_bits > 0:
+            for slot in range(self.latent_slots):
+                self._quantize_slot(slot)
         self._step = 0
         self._cluster_dirty = False
         self._centroid_dirty = False
@@ -288,6 +371,8 @@ class LAVAMemory(nn.Module):
             if not self.write_on_surprise:
                 self.stats.writes += int(x.shape[0])
             self._update_address_cache_row(slot)
+            if self.kv_quant_bits > 0:
+                self._quantize_slot(slot)
             self._maybe_reassign_cluster(slot, self.addresses_norm[slot])
 
     def read_block(self, x: torch.Tensor) -> torch.Tensor:
@@ -314,7 +399,10 @@ class LAVAMemory(nn.Module):
                 top_k = min(self.top_k, self.latent_slots)
                 vals, idx = torch.topk(scores, k=top_k, dim=-1)
             attn = torch.softmax(vals, dim=-1)
-            selected = self.contents[idx]
+            if self.kv_quant_bits > 0:
+                selected = self._dequantize_contents(idx)
+            else:
+                selected = self.contents[idx]
             mem = (attn.unsqueeze(-1) * selected).sum(dim=-2)
             mem = self.read_proj(mem)
             if positions is None:
@@ -362,6 +450,8 @@ class LAVAMemory(nn.Module):
             if not self.write_on_surprise:
                 self.stats.writes += 1
             self._update_address_cache_row(slot)
+            if self.kv_quant_bits > 0:
+                self._quantize_slot(slot)
             self._maybe_reassign_cluster(slot, self.addresses_norm[slot])
 
     def _ann_topk_batch(self, q_norm: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

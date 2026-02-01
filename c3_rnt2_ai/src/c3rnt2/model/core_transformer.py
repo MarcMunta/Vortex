@@ -119,6 +119,7 @@ class VortexXConfig:
     draft_hidden: int
     mtp_k: int
     cuda_graphs: bool
+    kv_quant_bits: int = 0
     dtype: str | None = None
     device: str | None = None
 
@@ -198,6 +199,7 @@ class CoreTransformer(nn.Module):
                     local_mixer_kernel=config.local_mixer_kernel,
                     ssm_state_size=config.ssm_state_size,
                     gated_mlp_ratio=config.gated_mlp_ratio,
+                    kv_quant_bits=int(getattr(config, "kv_quant_bits", 0)),
                     dtype=config.dtype,
                 )
             )
@@ -265,6 +267,19 @@ class CoreTransformer(nn.Module):
             return core.get(key, default)
 
         lava_ann_mode = str(_vx("lava_ann_mode", vx_cfg.get("lava_ann_mode", "ivf" if int(_vx("lava_clusters", 0)) > 0 else "flat")))
+        runtime_cfg = settings.get("runtime", {}) or {}
+        kv_quant = str(runtime_cfg.get("kv_quant", "")).lower()
+        if kv_quant == "2bit" and not bool(runtime_cfg.get("kv_quant_2bit_experimental", False)):
+            kv_quant = "none"
+        kv_bits = None
+        if kv_quant == "int8":
+            kv_bits = 8
+        elif kv_quant == "2bit":
+            kv_bits = 2
+        elif kv_quant == "none":
+            kv_bits = 0
+        if kv_bits is None:
+            kv_bits = int(settings.get("kv", {}).get("kv_quant_bits", 0) or 0)
         cfg = VortexXConfig(
             hidden_size=int(core.get("hidden_size", 256)),
             layers=layers,
@@ -290,22 +305,12 @@ class CoreTransformer(nn.Module):
             draft_hidden=int(vx_cfg.get("draft_hidden", core.get("draft_hidden", core.get("hidden_size", 256)))),
             mtp_k=int(core.get("mtp_k", 0)),
             cuda_graphs=bool(core.get("cuda_graphs", vx_cfg.get("cuda_graphs", False))),
+            kv_quant_bits=int(kv_bits),
             dtype=dtype_override or device_info.dtype,
             device=device_info.device,
         )
         model = CoreTransformer(cfg, tokenizer=tokenizer)
         kv_cfg = settings.get("kv", {}) or {}
-        runtime_cfg = settings.get("runtime", {}) or {}
-        kv_quant = str(runtime_cfg.get("kv_quant", "")).lower()
-        kv_bits = None
-        if kv_quant == "int8":
-            kv_bits = 8
-        elif kv_quant == "2bit":
-            kv_bits = 2
-        elif kv_quant == "none":
-            kv_bits = 0
-        if kv_bits is None:
-            kv_bits = int(kv_cfg.get("kv_quant_bits", 8))
         kv_window = int(kv_cfg.get("window_size", cfg.window_size))
         kv_latent = int(kv_cfg.get("latent_slots", 32))
         model.kv_cache = KVHybridCache(window_size=kv_window, kv_quant_bits=kv_bits, latent_slots=kv_latent)

@@ -81,6 +81,7 @@ class DraftModel(nn.Module):
                         local_mixer_kernel=config.local_mixer_kernel,
                         ssm_state_size=config.ssm_state_size,
                         gated_mlp_ratio=config.gated_mlp_ratio,
+                        kv_quant_bits=int(getattr(config, "kv_quant_bits", 0)),
                         dtype=config.dtype,
                     )
                 )

@@ -72,6 +72,21 @@ profiles:
     agent:
       web_allowlist: ["github.com", "docs.python.org", "pytorch.org"]
       tools_enabled: ["run_tests", "search_web", "edit_repo", "open_docs"]
+    tools:
+      web:
+        enabled: false
+        allow_domains: ["github.com", "docs.python.org", "pytorch.org"]
+        max_bytes: 512000
+        timeout_s: 10
+        rate_limit_per_min: 30
+        cache_dir: data/web_cache
+        cache_ttl_s: 3600
+        allow_content_types: ["text/", "application/json"]
+    self_patch:
+      enabled: false
+      auto_sandbox: true
+      allowed_paths: ["src/", "tests/"]
+      forbidden_paths: [".env", ".env.", ".git/", "data/", "data/db", "data/keys", "keys", "secrets"]
     continuous:
       run_interval_minutes: 30
       adapter_rank: 4
@@ -336,6 +351,21 @@ profiles:
     agent:
       web_allowlist: ["github.com", "docs.python.org", "pytorch.org"]
       tools_enabled: ["run_tests", "search_web", "edit_repo", "open_docs"]
+    tools:
+      web:
+        enabled: false
+        allow_domains: ["github.com", "docs.python.org", "pytorch.org"]
+        max_bytes: 512000
+        timeout_s: 10
+        rate_limit_per_min: 30
+        cache_dir: data/web_cache
+        cache_ttl_s: 3600
+        allow_content_types: ["text/", "application/json"]
+    self_patch:
+      enabled: false
+      auto_sandbox: true
+      allowed_paths: ["src/", "tests/"]
+      forbidden_paths: [".env", ".env.", ".git/", "data/", "data/db", "data/keys", "keys", "secrets"]
     continuous:
       run_interval_minutes: 30
       adapter_rank: 4

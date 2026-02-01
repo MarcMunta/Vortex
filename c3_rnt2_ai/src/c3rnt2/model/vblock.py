@@ -28,6 +28,7 @@ class VBlockConfig:
     local_mixer_kernel: int
     ssm_state_size: int
     gated_mlp_ratio: int
+    kv_quant_bits: int = 0
     dtype: str | None = None
 
 
@@ -79,6 +80,7 @@ class VBlock(nn.Module):
             write_every=config.lava_write_every,
             write_on_surprise=config.lava_write_on_surprise,
             surprise_threshold=config.lava_surprise_threshold,
+            kv_quant_bits=int(getattr(config, "kv_quant_bits", 0)),
         )
         self.mlp = GatedMLP(config.hidden_size, ratio=config.gated_mlp_ratio)
 

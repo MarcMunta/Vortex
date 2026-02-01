@@ -111,7 +111,7 @@ M?tricas clave:
 
 Bootstrap con Qwen-8B (teacher 4bit):
 
-python -m c3rnt2 bootstrap --profile rtx4080_16gb_vortexx_next --teacher Qwen/Qwen2.5-8B-Instruct --teacher-quant 4bit --max-prompts 64 --steps 200 --batch-tokens 8192
+python -m c3rnt2 bootstrap --profile rtx4080_16gb_vortexx_next --teacher Qwen/Qwen2.5-8B-Instruct --teacher-quant 4bit --max-prompts 64 --steps 200 --batch-tokens 8192 --reuse-dataset
 
 Qwen-8B HF backend:
 
@@ -125,4 +125,15 @@ Router + experts + adapters:
 python -m c3rnt2 train-experts --domains programming
 python -m c3rnt2 train-router
 python -m c3rnt2 finetune-adapter --adapter data/experts/programming/adapter.pt --data data/corpora/programming
+```
+
+
+## Base 100% (comandos)
+```bash
+python -m c3rnt2 chat --profile qwen8b_base
+python -m c3rnt2 serve --profile qwen8b_base
+python -m c3rnt2 bootstrap --profile rtx4080_16gb_vortexx_next --teacher Qwen/Qwen2.5-8B-Instruct --teacher-quant 4bit --max-prompts 64 --steps 200 --batch-tokens 8192 --reuse-dataset
+python -m c3rnt2 ingest-once --profile safe_selftrain_4080
+python -m c3rnt2 train-once --profile safe_selftrain_4080
+python -m c3rnt2 self-patch --goal "Fix failing test" --dry-run
 ```

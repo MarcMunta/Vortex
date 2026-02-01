@@ -36,9 +36,8 @@ def build_chat_prompt(
     tokenizer: Any | None = None,
     default_system: str | None = None,
 ) -> str:
-    backend = (backend or "vortex").lower()
     normalized = _normalize_messages(messages, default_system)
-    if backend == "hf" and tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
+    if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
         try:
             return tokenizer.apply_chat_template(
                 normalized,
