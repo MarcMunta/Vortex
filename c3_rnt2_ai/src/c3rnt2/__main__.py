@@ -93,6 +93,17 @@ def _resolve_fallback_backend(settings: dict, current: str) -> str | None:
     return None
 
 
+def _resolve_interval_minutes(args_interval: float | None, settings: dict) -> float:
+    if args_interval is not None:
+        return float(args_interval)
+    cont = settings.get("continuous", {}) or {}
+    if cont.get("run_interval_minutes") is not None:
+        return float(cont.get("run_interval_minutes"))
+    if cont.get("interval_minutes") is not None:
+        return float(cont.get("interval_minutes"))
+    return 30.0
+
+
 def _run_module(module: str, extra_args: list[str]) -> None:
     cmd = [sys.executable, "-m", module] + extra_args
     subprocess.run(cmd, check=True)
@@ -287,7 +298,7 @@ def cmd_train_once(args: argparse.Namespace) -> None:
 def cmd_self_train(args: argparse.Namespace) -> None:
     settings = _load_and_validate(args.profile)
     base_dir = Path(".")
-    interval_min = float(args.interval_minutes or settings.get("continuous", {}).get("run_interval_minutes", 30))
+    interval_min = _resolve_interval_minutes(args.interval_minutes, settings)
     once = bool(args.once)
     while True:
         allowlist = _resolve_allowlist(settings)
@@ -321,8 +332,7 @@ def _run_self_train_tick(
 ) -> dict:
     allowlist = _resolve_allowlist(settings)
     new_docs = ingest_sources(base_dir, allowlist, settings)
-    server_cfg = settings.get("server", {}) or {}
-    block_during_training = bool(server_cfg.get("block_during_training", False))
+    _server_cfg = settings.get("server", {}) or {}
     lock_path = base_dir / "data" / "locks" / "train.lock"
     lock = FileLock(lock_path)
     try:
@@ -333,15 +343,13 @@ def _run_self_train_tick(
         state = getattr(app, "state", SimpleNamespace())
         setattr(app, "state", state)
         state.training_active = True
-        if block_during_training:
-            state.maintenance_until = float("inf")
-        elif maintenance_window_s and maintenance_window_s > 0:
+        if maintenance_window_s and maintenance_window_s > 0:
             state.maintenance_until = time.time() + float(maintenance_window_s)
         result = train_hf_once(settings, base_dir, reuse_dataset=reuse_dataset)
     finally:
         try:
             app.state.training_active = False
-            if block_during_training and maintenance_window_s and maintenance_window_s > 0:
+            if maintenance_window_s and maintenance_window_s > 0:
                 app.state.maintenance_until = time.time() + float(maintenance_window_s)
         except Exception:
             pass
@@ -358,7 +366,7 @@ def _run_self_train_tick(
 def cmd_serve_self_train(args: argparse.Namespace) -> None:
     settings = _load_and_validate(args.profile, override=lambda s: _apply_cli_overrides(s, args))
     base_dir = Path(".")
-    interval_min = float(args.interval_minutes or settings.get("continuous", {}).get("run_interval_minutes", 30))
+    interval_min = _resolve_interval_minutes(args.interval_minutes, settings)
     maintenance_window_s = float(args.maintenance_window_s or settings.get("server", {}).get("maintenance_window_s", 10))
     reuse_dataset = bool(args.reuse_dataset)
     once = bool(args.once)

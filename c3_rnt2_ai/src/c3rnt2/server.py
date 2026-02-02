@@ -494,14 +494,12 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         payload = await request.json()
         server_cfg = settings.get("server", {}) or {}
         block_during_training = bool(server_cfg.get("block_during_training", False))
-        maintenance_until = float(getattr(app.state, "maintenance_until", 0.0))
         training_active = bool(getattr(app.state, "training_active", False))
-        if block_during_training and (training_active or time.time() < maintenance_until):
-            retry_after = _retry_after_seconds(maintenance_until)
+        if block_during_training and training_active:
             return JSONResponse(
                 status_code=503,
                 content={"ok": False, "error": "training_active"},
-                headers={"Retry-After": str(retry_after)},
+                headers={"Retry-After": "30"},
             )
         messages = _resolve_messages(payload)
         if not messages:
