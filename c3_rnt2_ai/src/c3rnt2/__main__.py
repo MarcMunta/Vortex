@@ -286,22 +286,25 @@ def cmd_self_train(args: argparse.Namespace) -> None:
     base_dir = Path(".")
     interval_min = float(args.interval_minutes or settings.get("continuous", {}).get("run_interval_minutes", 30))
     once = bool(args.once)
-    try:
-        lock = acquire_exclusive_lock(base_dir, "train")
-    except LockUnavailable:
-        print({"ok": False, "error": "train lock unavailable (serve/self_patch running?)"})
-        return
-    try:
-        while True:
-            allowlist = _resolve_allowlist(settings)
-            new_docs = ingest_sources(base_dir, allowlist, settings)
+    while True:
+        allowlist = _resolve_allowlist(settings)
+        new_docs = ingest_sources(base_dir, allowlist, settings)
+        try:
+            lock = acquire_exclusive_lock(base_dir, "train")
+        except LockUnavailable:
+            print({"ok": False, "error": "train lock unavailable (serve/self_patch running?)"})
+            if once:
+                return
+            time.sleep(max(5.0, interval_min * 60.0))
+            continue
+        try:
             train_result = train_hf_once(settings, base_dir, reuse_dataset=args.reuse_dataset)
             print({"ingest_new_docs": new_docs, "train": train_result.__dict__})
-            if once:
-                break
-            time.sleep(max(5.0, interval_min * 60.0))
-    finally:
-        lock.release()
+        finally:
+            lock.release()
+        if once:
+            break
+        time.sleep(max(5.0, interval_min * 60.0))
 
 
 def cmd_self_patch(args: argparse.Namespace) -> None:
@@ -439,14 +442,7 @@ def cmd_learn_ingest(args: argparse.Namespace) -> None:
 def cmd_learn_train(args: argparse.Namespace) -> None:
     settings = _load_and_validate(args.profile)
     base_dir = Path(".")
-    curate = curate_dataset(base_dir, settings)
-    if not curate.ok:
-        print(curate.__dict__)
-        sys.exit(1)
-    hf_cfg = dict(settings.get("hf_train", {}) or {})
-    hf_cfg["dataset_path"] = str(curate.output_path)
-    settings["hf_train"] = hf_cfg
-    result = train_qlora(settings, base_dir, steps=args.steps, reuse_dataset=True)
+    result = train_qlora(settings, base_dir, steps=args.steps, reuse_dataset=False)
     print(result.__dict__ if hasattr(result, "__dict__") else result)
     if hasattr(result, "ok") and not result.ok:
         sys.exit(1)

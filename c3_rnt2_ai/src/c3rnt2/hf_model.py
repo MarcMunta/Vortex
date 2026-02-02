@@ -186,6 +186,16 @@ def _try_load(cfg: HFConfig) -> HFModel:
 
 
 def load_hf_model(settings: dict) -> HFModel:
+    if torch.cuda.is_available():
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+        except Exception:
+            pass
     core = settings.get("core", {}) or {}
     model_name = core.get("hf_model")
     if not model_name:
@@ -294,6 +304,10 @@ def load_hf_model(settings: dict) -> HFModel:
             raise RuntimeError(f"peft not available for adapter load: {exc}")
         adapter_path = str(adapter_path)
         model.model = PeftModel.from_pretrained(model.model, adapter_path)
+        try:
+            model.adapter_path = adapter_path
+        except Exception:
+            pass
         if merge_adapter and hasattr(model.model, "merge_and_unload"):
             model.model = model.model.merge_and_unload()
     used_quant = False

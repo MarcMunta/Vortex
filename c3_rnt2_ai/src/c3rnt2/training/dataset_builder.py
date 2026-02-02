@@ -155,6 +155,94 @@ def _episode_examples(episodes_path: Path, system: str, *, queue_dir: Path | Non
     return samples
 
 
+def _iter_jsonl(path: Path) -> Iterable[dict]:
+    if not path.exists():
+        return []
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            yield payload
+
+
+def _load_feedback_map(feedback_path: Path | None) -> dict[str, dict]:
+    if feedback_path is None or not feedback_path.exists():
+        return {}
+    feedback: dict[str, dict] = {}
+    for payload in _iter_jsonl(feedback_path):
+        req_id = str(payload.get("request_id", "")).strip()
+        if not req_id:
+            continue
+        feedback[req_id] = payload
+    return feedback
+
+
+def _chat_examples(
+    chat_path: Path | None,
+    feedback_path: Path | None,
+    training_path: Path | None,
+    *,
+    include_soft_feedback: bool = True,
+) -> List[Sample]:
+    samples: List[Sample] = []
+    seen: set[str] = set()
+    feedback = _load_feedback_map(feedback_path)
+
+    if training_path and training_path.exists():
+        for payload in _iter_jsonl(training_path):
+            messages = payload.get("messages")
+            response = str(payload.get("response", "")).strip()
+            if not response:
+                continue
+            if not isinstance(messages, list):
+                messages = []
+            sample = Sample(prompt="", response=response, source_kind="chat_feedback", messages=messages)
+            digest = _hash_sample(sample)
+            if digest in seen:
+                continue
+            seen.add(digest)
+            samples.append(sample)
+
+    if chat_path is None or not chat_path.exists():
+        return samples
+    for payload in _iter_jsonl(chat_path):
+        req_id = str(payload.get("request_id", "")).strip()
+        if not req_id:
+            continue
+        fb = feedback.get(req_id)
+        if not fb:
+            continue
+        rating = str(fb.get("rating", "")).strip().lower()
+        if rating != "up":
+            continue
+        ideal = str(fb.get("ideal_response", "") or "").strip()
+        response = ideal
+        source_kind = "chat_feedback"
+        if not response:
+            if not include_soft_feedback:
+                continue
+            response = str(payload.get("response_text", "")).strip()
+            source_kind = "chat_feedback_soft"
+        if not response:
+            continue
+        messages = payload.get("messages")
+        if not isinstance(messages, list) or not messages:
+            prompt_text = str(payload.get("prompt_text", "")).strip()
+            messages = [{"role": "user", "content": prompt_text}] if prompt_text else []
+        sample = Sample(prompt="", response=response, source_kind=source_kind, messages=messages)
+        digest = _hash_sample(sample)
+        if digest in seen:
+            continue
+        seen.add(digest)
+        samples.append(sample)
+    return samples
+
+
 def build_sft_dataset(
     *,
     chunks: Iterable[KnowledgeChunk],
@@ -162,12 +250,20 @@ def build_sft_dataset(
     output_path: Path,
     system_prompt: str,
     queue_dir: Path | None = None,
+    chat_path: Path | None = None,
+    feedback_path: Path | None = None,
+    training_path: Path | None = None,
+    include_soft_feedback: bool = True,
     min_chars: int = 40,
     max_repeat_ratio: float = 0.8,
     semantic_dedup_threshold: float = 0.97,
     embedding_backend: EmbeddingBackend | None = None,
 ) -> BuildStats:
-    examples = _doc_examples(chunks, system_prompt) + _episode_examples(episodes_path, system_prompt, queue_dir=queue_dir)
+    examples = (
+        _doc_examples(chunks, system_prompt)
+        + _episode_examples(episodes_path, system_prompt, queue_dir=queue_dir)
+        + _chat_examples(chat_path, feedback_path, training_path, include_soft_feedback=include_soft_feedback)
+    )
     seen_hashes: set[str] = set()
     seen_vecs: List[List[float]] = []
     written = 0
@@ -205,12 +301,18 @@ def build_sft_dataset(
                     continue
             seen_hashes.add(digest)
             seen_vecs.append(vec)
+            quality = None
+            if sample.source_kind == "chat_feedback_soft":
+                quality = 0.5
+            elif sample.source_kind == "chat_feedback":
+                quality = 0.9
             payload = {
                 "messages": sample.messages,
                 "prompt": sample.prompt,
                 "response": sample.response,
                 "source_kind": sample.source_kind,
                 "source_ref": getattr(sample, "source_ref", None),
+                "quality": quality,
                 "ts": time.time(),
             }
             handle.write(json.dumps(payload, ensure_ascii=True) + "\n")

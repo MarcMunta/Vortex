@@ -99,6 +99,7 @@ def _read_cache(cache_dir: Path, url: str, ttl_s: Optional[int]) -> Optional[dic
 def _write_cache(cache_dir: Path, url: str, payload: dict) -> None:
     path = _cache_path(cache_dir, url)
     payload = dict(payload)
+    payload.setdefault("url", url)
     payload["ts"] = time.time()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
@@ -230,12 +231,14 @@ def web_fetch(
         except Exception:
             pass
     text = b"".join(chunks).decode("utf-8", errors="ignore")
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
     payload = {
         "text": text,
         "status": status,
         "etag": resp.headers.get("ETag"),
         "last_modified": resp.headers.get("Last-Modified"),
         "content_type": content_type,
+        "content_hash": content_hash,
     }
     if use_cache:
         _write_cache(cache_dir, url, payload)

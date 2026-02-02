@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 from copy import deepcopy
 
 try:
@@ -20,6 +21,7 @@ from .model.bad_decode import _sample_logits, _sample_logits_topk, _RepetitionTr
 from .continuous.lora import LoRAConfig, inject_lora, load_lora_state, resolve_target_modules
 from .continuous.dataset import retrieve_context_details
 from .continuous.registry import load_registry
+from .episodes import EpisodeIndex
 from .runtime.router import build_features, load_router, log_router_event
 from .utils.oom import is_oom_error, clear_cuda_cache
 
@@ -37,6 +39,10 @@ def _maybe_load_adapter(model: CoreTransformer, settings: dict, base_dir: Path) 
             target_modules = resolve_target_modules(adapter_cfg, strict=strict)
             inject_lora(model, lora_cfg, target_modules=target_modules)
             load_lora_state(model, adapter_path)
+            try:
+                model.adapter_path = str(adapter_path)
+            except Exception:
+                pass
 
 
 def _load_backend_model(settings: dict, base_dir: Path, backend: str):
@@ -175,6 +181,55 @@ def _resolve_decode_args(settings: dict, payload: dict) -> dict[str, Any]:
     }
 
 
+def _new_request_id(raw: str | None = None) -> str:
+    if raw:
+        return str(raw)
+    return uuid.uuid4().hex
+
+
+def _estimate_tokens(text: str, model: object | None = None) -> int:
+    if not text:
+        return 0
+    tok = getattr(model, "tokenizer", None)
+    if tok is not None:
+        try:
+            return int(len(tok(text, add_special_tokens=False)["input_ids"]))
+        except Exception:
+            pass
+    return len(text.split())
+
+
+def _append_jsonl(path: Path, payload: dict) -> int:
+    line = json.dumps(payload, ensure_ascii=True) + "\n"
+    data = line.encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("ab") as handle:
+        handle.seek(0, 2)
+        offset = handle.tell()
+        handle.write(data)
+    return offset
+
+
+def _log_chat_episode(base_dir: Path, index: EpisodeIndex | None, payload: dict) -> None:
+    path = base_dir / "data" / "episodes" / "chat.jsonl"
+    offset = _append_jsonl(path, payload)
+    if index is None:
+        return
+    request_id = str(payload.get("request_id", "")).strip()
+    if request_id:
+        index.add(request_id, path, offset, float(payload.get("ts", time.time())))
+
+
+def _log_feedback(base_dir: Path, payload: dict) -> None:
+    path = base_dir / "data" / "episodes" / "feedback.jsonl"
+    _append_jsonl(path, payload)
+
+
+def _log_training_event(base_dir: Path, payload: dict) -> None:
+    path = base_dir / "data" / "episodes" / "training.jsonl"
+    _append_jsonl(path, payload)
+
+
 def _log_rag_event(base_dir: Path, payload: dict) -> None:
     log_path = base_dir / "data" / "logs" / "rag_events.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,30 +263,39 @@ def _inject_rag_context(
     settings: dict,
     messages: list[dict],
     prompt: str | None,
-) -> tuple[list[dict], str | None]:
+) -> tuple[list[dict], str | None, dict]:
     rag_cfg = settings.get("rag", {}) or {}
-    if not bool(rag_cfg.get("enabled", False)):
-        return messages, prompt
+    enabled = bool(rag_cfg.get("enabled", False))
+    rag_info = {
+        "enabled": enabled,
+        "top_k": int(rag_cfg.get("top_k", 3)),
+        "refs": [],
+        "chars": 0,
+        "latency_ms": 0.0,
+    }
+    if not enabled:
+        return messages, prompt, rag_info
     if _has_context_marker(messages, prompt):
-        return messages, prompt
+        return messages, prompt, rag_info
     query = _extract_query(messages, prompt)
     if not query:
-        return messages, prompt
-    top_k = int(rag_cfg.get("top_k", 3))
+        return messages, prompt, rag_info
+    top_k = rag_info["top_k"]
     start = time.time()
     context, refs = retrieve_context_details(base_dir, query, settings, top_k=top_k)
     elapsed_ms = (time.time() - start) * 1000.0
+    rag_info.update({"refs": refs, "chars": len(context or ""), "latency_ms": elapsed_ms})
     if not context:
         _log_rag_event(base_dir, {"query": query, "top_k": top_k, "chars": 0, "source_refs": refs, "latency_ms": elapsed_ms})
-        return messages, prompt
+        return messages, prompt, rag_info
     block = f"CONTEXT:\n{context}\nEND_CONTEXT"
     if messages:
         new_messages = [{"role": "system", "content": block}] + list(messages)
         _log_rag_event(base_dir, {"query": query, "top_k": top_k, "chars": len(context), "source_refs": refs, "latency_ms": elapsed_ms})
-        return new_messages, prompt
+        return new_messages, prompt, rag_info
     new_prompt = f"{block}\n\n{prompt or ''}".strip()
     _log_rag_event(base_dir, {"query": query, "top_k": top_k, "chars": len(context), "source_refs": refs, "latency_ms": elapsed_ms})
-    return messages, new_prompt
+    return messages, new_prompt, rag_info
 
 
 def create_app(settings: dict, base_dir: Path) -> "FastAPI":
@@ -263,10 +327,14 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 continue
 
     model_lock = threading.Lock()
+    episode_lock = threading.Lock()
+    episode_index = EpisodeIndex(base_dir / "data" / "episodes" / "index.sqlite")
     app.state.model = model
     app.state.models = models
     app.state.settings = settings
     app.state.model_lock = model_lock
+    app.state.episode_lock = episode_lock
+    app.state.episode_index = episode_index
     app.state.router = router
     app.state.router_cfg = router_cfg
 
@@ -278,7 +346,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             messages = [{"role": "user", "content": payload.get("prompt")}]
         if not messages:
             raise HTTPException(status_code=400, detail="messages required")
-        messages, prompt_override = _inject_rag_context(base_dir, settings, messages, payload.get("prompt"))
+        messages, prompt_override, rag_info = _inject_rag_context(base_dir, settings, messages, payload.get("prompt"))
         backend_cfg = settings.get("core", {}).get("backend", "vortex")
         default_system = settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant.")
         prompt = build_chat_prompt(messages, backend_cfg, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
@@ -287,7 +355,8 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         stream = bool(payload.get("stream", False))
         decode_args = _resolve_decode_args(settings, payload)
         created = int(time.time())
-        resp_id = f"chatcmpl-{created}"
+        request_id = _new_request_id(payload.get("request_id"))
+        resp_id = f"chatcmpl-{request_id}"
 
         chosen_backend = default_backend_label
         decision = None
@@ -391,7 +460,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 log_router_event(
                     base_dir,
                     {
-                        "request_id": resp_id,
+                        "request_id": request_id,
                         "backend": chosen_backend,
                         "stream_topk": bool(decision.stream_topk) if decision else False,
                         "prompt_tokens": len(prompt.split()),
@@ -405,11 +474,33 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 )
             if stream_topk_override is not None:
                 _maybe_set_stream_topk(selected_model, enabled=bool(stream_topk_override), top_k=int(stream_topk_override) if stream_topk_override else None)
+            tokens_out = _estimate_tokens(text, selected_model)
+            perf = {
+                "latency_ms": float(elapsed * 1000.0),
+                "tokens_out_est": int(tokens_out),
+                "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
+                "vram_peak_mb": vram_peak,
+            }
+            episode = {
+                "version": 1,
+                "ts": time.time(),
+                "request_id": request_id,
+                "backend": str(chosen_backend),
+                "messages": messages,
+                "prompt_text": prompt,
+                "response_text": text,
+                "decode_args": decode_args,
+                "rag": rag_info,
+                "perf": perf,
+            }
+            with app.state.episode_lock:
+                _log_chat_episode(base_dir, app.state.episode_index, episode)
             data = {
                 "id": resp_id,
                 "object": "chat.completion",
                 "created": created,
                 "model": "vortex-x",
+                "request_id": request_id,
                 "choices": [
                     {
                         "index": 0,
@@ -418,6 +509,8 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                     }
                 ],
             }
+            if payload.get("include_sources"):
+                data["sources"] = rag_info.get("refs", [])
             return JSONResponse(content=data)
 
         def event_stream() -> Iterable[str]:
@@ -429,6 +522,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 "created": created,
                 "model": "vortex-x",
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                "request_id": request_id,
             }
             yield f"data: {json.dumps(header)}\n\n"
             chunks: list[str] = []
@@ -473,6 +567,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                         "created": created,
                         "model": "vortex-x",
                         "choices": [{"index": 0, "delta": {"content": first}, "finish_reason": None}],
+                        "request_id": request_id,
                     }
                     yield f"data: {json.dumps(chunk)}\n\n"
                 for delta in gen:
@@ -485,6 +580,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                         "created": created,
                         "model": "vortex-x",
                         "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                        "request_id": request_id,
                     }
                     yield f"data: {json.dumps(chunk)}\n\n"
             elapsed = max(1e-6, time.time() - start)
@@ -500,13 +596,20 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                     mem_cost = float(sum(block.lava.stats.reads + block.lava.stats.writes for block in current_model.blocks))
                 except Exception:
                     mem_cost = 0.0
+            full_text = "".join(chunks)
+            tokens_out = _estimate_tokens(full_text, current_model)
+            perf = {
+                "latency_ms": float(elapsed * 1000.0),
+                "tokens_out_est": int(tokens_out),
+                "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
+                "vram_peak_mb": vram_peak,
+            }
             if router is not None:
-                full_text = "".join(chunks)
                 token_count = len(full_text.split())
                 log_router_event(
                     base_dir,
                     {
-                        "request_id": resp_id,
+                        "request_id": request_id,
                         "backend": current_backend,
                         "stream_topk": bool(decision.stream_topk) if decision else False,
                         "prompt_tokens": len(prompt.split()),
@@ -520,17 +623,90 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 )
             if stream_topk_override is not None:
                 _maybe_set_stream_topk(selected_model, enabled=bool(stream_topk_override), top_k=int(stream_topk_override) if stream_topk_override else None)
+            episode = {
+                "version": 1,
+                "ts": time.time(),
+                "request_id": request_id,
+                "backend": str(current_backend),
+                "messages": messages,
+                "prompt_text": prompt,
+                "response_text": full_text,
+                "decode_args": decode_args,
+                "rag": rag_info,
+                "perf": perf,
+            }
+            with app.state.episode_lock:
+                _log_chat_episode(base_dir, app.state.episode_index, episode)
             done = {
                 "id": resp_id,
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": "vortex-x",
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "request_id": request_id,
             }
+            if payload.get("include_sources"):
+                done["sources"] = rag_info.get("refs", [])
             yield f"data: {json.dumps(done)}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/v1/feedback")
+    async def chat_feedback(request: Request):
+        payload = await request.json()
+        request_id = str(payload.get("request_id", "")).strip()
+        rating = str(payload.get("rating", "")).strip().lower()
+        ideal_response = payload.get("ideal_response")
+        notes = payload.get("notes")
+        if not request_id:
+            raise HTTPException(status_code=400, detail="request_id required")
+        if rating not in {"up", "down"}:
+            raise HTTPException(status_code=400, detail="rating must be up or down")
+        episode = app.state.episode_index.load(request_id)
+        feedback = {
+            "version": 1,
+            "ts": time.time(),
+            "request_id": request_id,
+            "rating": rating,
+            "ideal_response": ideal_response,
+            "notes": notes,
+            "episode_found": bool(episode),
+        }
+        with app.state.episode_lock:
+            _log_feedback(base_dir, feedback)
+        if episode is None:
+            return JSONResponse(status_code=404, content={"ok": False, "error": "episode_not_found", "request_id": request_id})
+        training_event = None
+        if rating == "up" and ideal_response:
+            training_event = {
+                "version": 1,
+                "ts": time.time(),
+                "request_id": request_id,
+                "backend": episode.get("backend"),
+                "messages": episode.get("messages"),
+                "prompt_text": episode.get("prompt_text"),
+                "response": ideal_response,
+                "source": "feedback",
+            }
+            with app.state.episode_lock:
+                _log_training_event(base_dir, training_event)
+        return JSONResponse(content={"ok": True, "request_id": request_id, "training_event": bool(training_event)})
+
+    @app.get("/v1/status")
+    async def status():
+        adapters: dict[str, str | None] = {}
+        for key, mdl in app.state.models.items():
+            adapters[key] = getattr(mdl, "adapter_path", None)
+        return JSONResponse(
+            content={
+                "ok": True,
+                "backend": default_backend_label,
+                "backends": list(app.state.models.keys()),
+                "adapter": adapters.get(default_backend_label),
+                "adapters": adapters,
+            }
+        )
 
     return app
 
@@ -551,6 +727,8 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
     model = load_inference_model(settings)
     _maybe_load_adapter(model, settings, base_dir)
     model_lock = threading.Lock()
+    episode_lock = threading.Lock()
+    episode_index = EpisodeIndex(base_dir / "data" / "episodes" / "index.sqlite")
     fallback_backend = _resolve_fallback_backend(settings, str(settings.get("core", {}).get("backend", "vortex")).lower())
     fallback_model = None
 
@@ -558,17 +736,88 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
         def log_message(self, format, *args):  # noqa: N802
             return
 
-        def do_POST(self):  # noqa: N802
-            if self.path != "/v1/chat/completions":
+        def do_GET(self):  # noqa: N802
+            if self.path != "/v1/status":
                 self.send_response(404)
                 self.end_headers()
                 return
+            adapters = {"core": getattr(model, "adapter_path", None)}
+            body = json.dumps(
+                {
+                    "ok": True,
+                    "backend": "core",
+                    "backends": ["core"],
+                    "adapter": adapters.get("core"),
+                    "adapters": adapters,
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):  # noqa: N802
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 raw = self.rfile.read(length) if length > 0 else b"{}"
                 payload = json.loads(raw.decode("utf-8")) if raw else {}
             except Exception:
                 self.send_response(400)
+                self.end_headers()
+                return
+            if self.path == "/v1/feedback":
+                request_id = str(payload.get("request_id", "")).strip()
+                rating = str(payload.get("rating", "")).strip().lower()
+                ideal_response = payload.get("ideal_response")
+                notes = payload.get("notes")
+                if not request_id or rating not in {"up", "down"}:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                episode = episode_index.load(request_id)
+                feedback = {
+                    "version": 1,
+                    "ts": time.time(),
+                    "request_id": request_id,
+                    "rating": rating,
+                    "ideal_response": ideal_response,
+                    "notes": notes,
+                    "episode_found": bool(episode),
+                }
+                with episode_lock:
+                    _log_feedback(base_dir, feedback)
+                if episode is None:
+                    body = json.dumps({"ok": False, "error": "episode_not_found", "request_id": request_id}).encode("utf-8")
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                training_event = None
+                if rating == "up" and ideal_response:
+                    training_event = {
+                        "version": 1,
+                        "ts": time.time(),
+                        "request_id": request_id,
+                        "backend": episode.get("backend"),
+                        "messages": episode.get("messages"),
+                        "prompt_text": episode.get("prompt_text"),
+                        "response": ideal_response,
+                        "source": "feedback",
+                    }
+                    with episode_lock:
+                        _log_training_event(base_dir, training_event)
+                body = json.dumps({"ok": True, "request_id": request_id, "training_event": bool(training_event)}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path != "/v1/chat/completions":
+                self.send_response(404)
                 self.end_headers()
                 return
             messages = payload.get("messages") or []
@@ -578,8 +827,9 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                 self.send_response(400)
                 self.end_headers()
                 return
-            messages, prompt_override = _inject_rag_context(base_dir, settings, messages, payload.get("prompt"))
+            messages, prompt_override, rag_info = _inject_rag_context(base_dir, settings, messages, payload.get("prompt"))
             backend = settings.get("core", {}).get("backend", "vortex")
+            backend_label = "hf" if str(backend).lower() == "hf" else "core"
             default_system = settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant.")
             prompt = build_chat_prompt(messages, backend, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
             if prompt_override:
@@ -587,9 +837,11 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
             stream = bool(payload.get("stream", False))
             decode_args = _resolve_decode_args(settings, payload)
             created = int(time.time())
-            resp_id = f"chatcmpl-{created}"
+            request_id = _new_request_id(payload.get("request_id"))
+            resp_id = f"chatcmpl-{request_id}"
 
             if not stream:
+                start = time.time()
                 with model_lock:
                     try:
                         text = model.generate(
@@ -618,11 +870,34 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                             )
                         else:
                             raise
+                elapsed = max(1e-6, time.time() - start)
+                tokens_out = _estimate_tokens(text, model)
+                perf = {
+                    "latency_ms": float(elapsed * 1000.0),
+                    "tokens_out_est": int(tokens_out),
+                    "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
+                    "vram_peak_mb": None,
+                }
+                episode = {
+                    "version": 1,
+                    "ts": time.time(),
+                    "request_id": request_id,
+                    "backend": str(backend_label),
+                    "messages": messages,
+                    "prompt_text": prompt,
+                    "response_text": text,
+                    "decode_args": decode_args,
+                    "rag": rag_info,
+                    "perf": perf,
+                }
+                with episode_lock:
+                    _log_chat_episode(base_dir, episode_index, episode)
                 data = {
                     "id": resp_id,
                     "object": "chat.completion",
                     "created": created,
                     "model": "vortex-x",
+                    "request_id": request_id,
                     "choices": [
                         {
                             "index": 0,
@@ -631,6 +906,8 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                         }
                     ],
                 }
+                if payload.get("include_sources"):
+                    data["sources"] = rag_info.get("refs", [])
                 body = json.dumps(data).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -649,9 +926,12 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                 "created": created,
                 "model": "vortex-x",
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                "request_id": request_id,
             }
             self.wfile.write(f"data: {json.dumps(header)}\n\n".encode("utf-8"))
             self.wfile.flush()
+            chunks: list[str] = []
+            start = time.time()
             with model_lock:
                 if hasattr(model, "stream_generate"):
                     for delta in model.stream_generate(prompt, **decode_args):
@@ -661,7 +941,10 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                             "created": created,
                             "model": "vortex-x",
                             "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                            "request_id": request_id,
                         }
+                        if delta:
+                            chunks.append(delta)
                         self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
                         self.wfile.flush()
                 else:
@@ -672,16 +955,45 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                             "created": created,
                             "model": "vortex-x",
                             "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                            "request_id": request_id,
                         }
+                        if delta:
+                            chunks.append(delta)
                         self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
                         self.wfile.flush()
+            elapsed = max(1e-6, time.time() - start)
+            full_text = "".join(chunks)
+            tokens_out = _estimate_tokens(full_text, model)
+            perf = {
+                "latency_ms": float(elapsed * 1000.0),
+                "tokens_out_est": int(tokens_out),
+                "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
+                "vram_peak_mb": None,
+            }
+            episode = {
+                "version": 1,
+                "ts": time.time(),
+                "request_id": request_id,
+                "backend": str(backend_label),
+                "messages": messages,
+                "prompt_text": prompt,
+                "response_text": full_text,
+                "decode_args": decode_args,
+                "rag": rag_info,
+                "perf": perf,
+            }
+            with episode_lock:
+                _log_chat_episode(base_dir, episode_index, episode)
             done = {
                 "id": resp_id,
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": "vortex-x",
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "request_id": request_id,
             }
+            if payload.get("include_sources"):
+                done["sources"] = rag_info.get("refs", [])
             self.wfile.write(f"data: {json.dumps(done)}\n\n".encode("utf-8"))
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()

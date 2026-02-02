@@ -172,6 +172,7 @@ profiles:
       hf_device: cuda
       hf_attn_implementation: sdpa
       hf_system_prompt: "You are a helpful coding assistant."
+      hf_use_latest_adapter: true
       dtype: bf16
       backend_fallback: vortex
     decode:

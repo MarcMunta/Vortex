@@ -146,6 +146,33 @@ python -m c3rnt2 agent-run --task "Fix failing test" --profile qwen8b_base
 - Web tool desactivada por defecto. Activar en `config/settings.yaml` (`tools.web.enabled: true`) y allowlist.
 - Tests de herramientas en sandbox con `C3RNT2_NO_NET=1` y sin secretos del entorno.
 
+## Web tools allowlist
+Para habilitar busqueda y apertura de docs en el agente/servidor:
+```yaml
+tools:
+  web:
+    enabled: true
+    allow_domains: ["docs.python.org", "pytorch.org", "github.com"]
+```
+
+## Feedback y entrenamiento
+- Cada chat guarda un episodio en `data/episodes/chat.jsonl` con `request_id`.
+- Envia feedback con:
+```bash
+curl -X POST http://localhost:8000/v1/feedback -H "Content-Type: application/json" -d '{"request_id":"<id>","rating":"up","ideal_response":"respuesta ideal"}'
+```
+- Si hay `ideal_response` y rating="up", se crea un training event en `data/episodes/training.jsonl` y queda disponible para SFT.
+
+## Comandos minimos
+```bash
+python -m c3rnt2 doctor --profile qwen8b_base
+python -m c3rnt2 chat --profile qwen8b_base
+python -m c3rnt2 serve --profile qwen8b_base
+python -m c3rnt2 ingest-once --profile qwen8b_base
+python -m c3rnt2 train-once --profile qwen8b_train
+python -m c3rnt2 self-train --once --profile qwen8b_train
+```
+
 ## Configuración
 `config/settings.yaml` define perfiles (`dev_small`, `core_only`, `c3_paged`, `agent`) con par?metros para VORTEX, BAD y self-train.
 

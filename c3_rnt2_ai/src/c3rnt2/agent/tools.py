@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 import subprocess
@@ -104,18 +105,55 @@ class AgentTools:
     def fetch_page(self, url: str) -> ToolResult:
         return self.web_fetch(url)
 
-    def search_web(self, query: str) -> ToolResult:
+    def search_web(self, query: str, max_results: int = 5) -> ToolResult:
+        if not self.web_enabled:
+            return ToolResult(ok=False, output="web disabled")
+        if not query:
+            return ToolResult(ok=False, output="query required")
         url = f"https://duckduckgo.com/html/?q={query}"
-        result = self.web_fetch(url)
+        result = web_fetch(
+            url,
+            allowlist=self.allowlist,
+            max_bytes=self.max_bytes,
+            timeout_s=self.timeout_s,
+            cache_dir=self.cache_root,
+            rate_limit_per_min=self.rate_limit_per_min,
+            cache_ttl_s=self.cache_ttl_s,
+            allow_content_types=self.allow_content_types,
+        )
         if not result.ok:
-            return result
-        return ToolResult(ok=True, output=result.output[:1000])
+            return ToolResult(ok=False, output=result.error or "fetch failed")
+        html_text = result.text or ""
+        matches = re.findall(r'<a[^>]+class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>', html_text, flags=re.IGNORECASE | re.DOTALL)
+        lines: List[str] = []
+        for href, title_html in matches:
+            title = re.sub(r"<[^>]+>", " ", title_html)
+            title = html.unescape(" ".join(title.split()))
+            link = html.unescape(href)
+            if not title or not link:
+                continue
+            lines.append(f"{title} - {link}")
+            if len(lines) >= max_results:
+                break
+        if not lines:
+            cleaned = self._sanitize_text(html_text)
+            return ToolResult(ok=True, output=cleaned[:1000])
+        return ToolResult(ok=True, output="\n".join(lines))
 
-    def open_docs(self, url: str) -> ToolResult:
+    def open_docs(self, url: str, max_chars: int | None = None) -> ToolResult:
         result = self.fetch_page(url)
         if not result.ok:
             return result
-        return ToolResult(ok=True, output=result.output[:1200])
+        limit = max_chars
+        if limit is None:
+            try:
+                limit = int(self.web_cfg.get("open_docs_max_chars", 1200))
+            except Exception:
+                limit = 1200
+        output = result.output
+        if limit and len(output) > limit:
+            output = output[:limit]
+        return ToolResult(ok=True, output=output)
 
     def run_tests(self, repo_path: Path) -> ToolResult:
         result = run_sandbox_command(repo_path, ["pytest", "-q"], self.sandbox_root, timeout_s=300)

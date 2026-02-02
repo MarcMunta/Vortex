@@ -171,6 +171,7 @@ def normalize_settings(settings: dict) -> dict:
     hf_train.setdefault("min_chars", 40)
     hf_train.setdefault("max_repeat_ratio", 0.8)
     hf_train.setdefault("semantic_dedup_threshold", 0.97)
+    hf_train.setdefault("include_soft_feedback", True)
     hf_train.setdefault("pack_samples", False)
     hf_train.setdefault("bucket_by_length", True)
     hf_train.setdefault("grad_clip", 1.0)

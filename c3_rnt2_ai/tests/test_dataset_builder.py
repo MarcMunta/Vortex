@@ -51,3 +51,46 @@ def test_dataset_builder_doc_prompt_coherent(tmp_path: Path) -> None:
     user_msg = [m.get("content") for m in payload["messages"] if m.get("role") == "user"][0]
     assert "EXACTLY" in user_msg
     assert payload.get("response") == "doc sample"
+
+
+def test_dataset_builder_chat_feedback(tmp_path: Path) -> None:
+    chat_path = tmp_path / "data" / "episodes" / "chat.jsonl"
+    feedback_path = tmp_path / "data" / "episodes" / "feedback.jsonl"
+    episodes_path = tmp_path / "episodes.jsonl"
+    chat_path.parent.mkdir(parents=True, exist_ok=True)
+    chat_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "ts": 1.0,
+                "request_id": "req1",
+                "messages": [{"role": "user", "content": "hi"}],
+                "prompt_text": "hi",
+                "response_text": "hello",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    feedback_path.write_text(
+        json.dumps({"version": 1, "ts": 2.0, "request_id": "req1", "rating": "up", "ideal_response": "ideal"})
+        + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "sft_chat.jsonl"
+    stats = build_sft_dataset(
+        chunks=[],
+        episodes_path=episodes_path,
+        output_path=out,
+        system_prompt="You are a helpful assistant.",
+        chat_path=chat_path,
+        feedback_path=feedback_path,
+        training_path=None,
+        min_chars=1,
+        max_repeat_ratio=0.99,
+        semantic_dedup_threshold=0.99,
+        embedding_backend=None,
+    )
+    assert stats.written == 1
+    payload = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    assert payload.get("response") == "ideal"
