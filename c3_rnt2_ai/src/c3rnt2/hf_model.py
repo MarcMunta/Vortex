@@ -50,6 +50,8 @@ class HFModel:
             self.model.to(cfg.device)
         self.model.eval()
         self.device = torch.device(cfg.device)
+        self.base_model = self.model
+        self.adapter_path = None
 
     def _prepare_prompt(self, prompt: str | None, messages: list[dict] | None, system: str | None) -> str:
         if messages is not None:
@@ -159,6 +161,24 @@ class HFModel:
             except Exception:
                 vram_peak = None
         _log_infer_stats(Path("."), {"tokens": int(count), "tokens_per_sec": float(count) / elapsed, "vram_peak_mb": vram_peak, "stream": True})
+
+    def load_adapter(self, adapter_path: str, merge: bool = False) -> bool:
+        if not adapter_path:
+            return False
+        if getattr(self, "adapter_path", None) == adapter_path:
+            return False
+        try:
+            from peft import PeftModel  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(f"peft not available for adapter load: {exc}")
+        base = getattr(self, "base_model", None) or self.model
+        model = PeftModel.from_pretrained(base, adapter_path)
+        if merge and hasattr(model, "merge_and_unload"):
+            model = model.merge_and_unload()
+            self.base_model = model
+        self.model = model
+        self.adapter_path = adapter_path
+        return True
 
 
 def _build_load_kwargs(
@@ -298,18 +318,22 @@ def load_hf_model(settings: dict) -> HFModel:
         except Exception:
             adapter_path = None
     if adapter_path:
-        try:
-            from peft import PeftModel  # type: ignore
-        except Exception as exc:
-            raise RuntimeError(f"peft not available for adapter load: {exc}")
         adapter_path = str(adapter_path)
-        model.model = PeftModel.from_pretrained(model.model, adapter_path)
-        try:
-            model.adapter_path = adapter_path
-        except Exception:
-            pass
-        if merge_adapter and hasattr(model.model, "merge_and_unload"):
-            model.model = model.model.merge_and_unload()
+        if hasattr(model, "load_adapter"):
+            model.load_adapter(adapter_path, merge=merge_adapter)
+        else:
+            try:
+                from peft import PeftModel  # type: ignore
+            except Exception as exc:
+                raise RuntimeError(f"peft not available for adapter load: {exc}")
+            base_model = getattr(model, "model", model)
+            model.model = PeftModel.from_pretrained(base_model, adapter_path)
+            try:
+                model.adapter_path = adapter_path
+            except Exception:
+                pass
+            if merge_adapter and hasattr(model.model, "merge_and_unload"):
+                model.model = model.model.merge_and_unload()
     used_quant = False
     if hasattr(model, "cfg"):
         used_quant = bool(model.cfg.load_kwargs.get("load_in_4bit") or model.cfg.load_kwargs.get("load_in_8bit"))

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from ..continuous.knowledge_store import KnowledgeStore, KnowledgeChunk, EmbeddingBackend
 from ..continuous.types import Sample
@@ -95,6 +95,23 @@ def build_sft_texts(
     return texts
 
 
+def build_sft_texts_with_weights(
+    samples: List[Sample],
+    weights: List[float],
+    *,
+    tokenizer: object | None,
+    default_system: str | None,
+) -> tuple[List[str], List[float]]:
+    texts: List[str] = []
+    out_weights: List[float] = []
+    for sample, weight in zip(samples, weights):
+        text = format_chat_sample(sample, backend="hf", tokenizer=tokenizer, default_system=default_system)
+        if text:
+            texts.append(text)
+            out_weights.append(weight)
+    return texts, out_weights
+
+
 def build_sft_samples_from_chunks(
     chunks: List[KnowledgeChunk],
     prompt_template: str,
@@ -156,6 +173,7 @@ def _save_dataset(path: Path, samples: List[Sample]) -> None:
                 "response": sample.response,
                 "source_kind": sample.source_kind,
                 "messages": sample.messages,
+                "quality": getattr(sample, "quality", None),
             }
             handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
 
@@ -172,15 +190,32 @@ def _load_dataset(path: Path) -> List[Sample]:
             payload = json.loads(line)
         except Exception:
             continue
+        quality = payload.get("quality")
         samples.append(
             Sample(
                 prompt=str(payload.get("prompt", "")),
                 response=str(payload.get("response", "")),
                 source_kind=str(payload.get("source_kind", "unknown")),
                 messages=payload.get("messages"),
+                quality=float(quality) if quality is not None else None,
             )
         )
     return samples
+
+
+def _compute_sample_weights(samples: List[Sample], settings: dict) -> List[float]:
+    cfg = settings.get("hf_train", {}) or {}
+    if not bool(cfg.get("use_weighted_sampling", False)):
+        return [1.0 for _ in samples]
+    source_weights = cfg.get("source_kind_weights", {}) or {}
+    weights: List[float] = []
+    for sample in samples:
+        quality = getattr(sample, "quality", None)
+        q = float(quality) if quality is not None else 1.0
+        q = max(0.1, min(1.0, q))
+        sk = float(source_weights.get(sample.source_kind, 1.0))
+        weights.append(q * sk)
+    return weights
 
 
 def _pack_texts(texts: List[str], tokenizer: object, max_tokens: int) -> List[str]:
@@ -213,6 +248,18 @@ def _bucket_by_length(texts: List[str], tokenizer: object) -> List[str]:
         lengths.append((length, text))
     lengths.sort(key=lambda x: x[0])
     return [t for _, t in lengths]
+
+
+def _bucket_by_length_with_weights(texts: List[str], weights: List[float], tokenizer: object) -> tuple[List[str], List[float]]:
+    lengths = []
+    for text, weight in zip(texts, weights):
+        try:
+            length = len(tokenizer(text)["input_ids"])
+        except Exception:
+            length = len(text.split())
+        lengths.append((length, text, weight))
+    lengths.sort(key=lambda x: x[0])
+    return [t for _, t, _ in lengths], [w for _, _, w in lengths]
 
 
 def _eval_loss(model, tokenizer, samples: List[Sample], max_length: int) -> float:
@@ -390,14 +437,32 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
 
     max_length = int(cfg.get("max_seq_len", 1024))
     default_system = cfg.get("default_system") or settings.get("core", {}).get("hf_system_prompt")
-    texts = build_sft_texts(samples, tokenizer=tokenizer, default_system=default_system)
+    use_weighted = bool(cfg.get("use_weighted_sampling", False))
+    weights = _compute_sample_weights(samples, settings) if use_weighted else []
+    if use_weighted:
+        texts, weights = build_sft_texts_with_weights(samples, weights, tokenizer=tokenizer, default_system=default_system)
+    else:
+        texts = build_sft_texts(samples, tokenizer=tokenizer, default_system=default_system)
     if bool(cfg.get("pack_samples", False)):
         texts = _pack_texts(texts, tokenizer, max_tokens=max_length)
+        weights = []
     if bool(cfg.get("bucket_by_length", True)):
-        texts = _bucket_by_length(texts, tokenizer)
+        if weights:
+            texts, weights = _bucket_by_length_with_weights(texts, weights, tokenizer)
+        else:
+            texts = _bucket_by_length(texts, tokenizer)
     dataset = SFTDataset(texts, tokenizer=tokenizer, max_length=max_length)
     micro_batch = max(1, int(cfg.get("micro_batch_size", 1)))
-    loader = DataLoader(dataset, batch_size=micro_batch, shuffle=True, collate_fn=lambda b: _collate_fn(b, tokenizer.pad_token_id))
+    sampler = None
+    if use_weighted and weights:
+        sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+    loader = DataLoader(
+        dataset,
+        batch_size=micro_batch,
+        shuffle=sampler is None,
+        sampler=sampler,
+        collate_fn=lambda b: _collate_fn(b, tokenizer.pad_token_id),
+    )
 
     lr = float(cfg.get("lr", 2e-4))
     optim_params = [p for p in model.parameters() if p.requires_grad]

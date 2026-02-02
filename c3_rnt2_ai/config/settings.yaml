@@ -118,6 +118,10 @@ profiles:
         max_total_bytes_per_tick: 5242880
         web:
           cooldown_minutes: 60
+          sanitize:
+            max_chars: 2000
+            max_instruction_density: 0.04
+            max_repeat_lines: 2
       trigger:
         enabled: true
         min_new_docs: 1
@@ -178,6 +182,10 @@ profiles:
       hf_use_latest_adapter: true
       dtype: bf16
       backend_fallback: vortex
+    server:
+      auto_reload_adapter: false
+      reload_interval_s: 60
+      maintenance_window_s: 10
     decode:
       max_new_tokens: 128
     runtime:
@@ -221,6 +229,12 @@ profiles:
       lora_alpha: 16
       lora_dropout: 0.05
       target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+      use_weighted_sampling: true
+      source_kind_weights:
+        chat_feedback: 2.0
+        chat_feedback_soft: 1.2
+        web: 0.8
+        episode: 1.5
 
   core_only:
     tokenizer:
@@ -590,6 +604,10 @@ profiles:
         max_total_bytes_per_tick: 10485760
         web:
           cooldown_minutes: 60
+          sanitize:
+            max_chars: 2000
+            max_instruction_density: 0.04
+            max_repeat_lines: 2
       adapters:
         type: lora
         rank: 16

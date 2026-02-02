@@ -28,7 +28,10 @@ def test_rag_enabled_injects_context(tmp_path: Path) -> None:
     assert prompt is None
     assert new_messages[0]["role"] == "system"
     assert "CONTEXT" in new_messages[0]["content"]
-    assert len(new_messages[0]["content"]) <= len("CONTEXT:\n") + 10 + len("\nEND_CONTEXT")
+    assert "UNTRUSTED CONTEXT" in new_messages[0]["content"]
+    content = new_messages[0]["content"]
+    ctx = content.split("CONTEXT:\n", 1)[-1].split("\nEND_CONTEXT", 1)[0]
+    assert len(ctx) <= 10
     assert rag["enabled"] is True
 
 

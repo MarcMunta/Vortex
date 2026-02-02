@@ -10,3 +10,4 @@ class Sample:
     response: str
     source_kind: str = "unknown"
     messages: list[dict[str, Any]] | None = None
+    quality: float | None = None

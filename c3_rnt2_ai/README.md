@@ -120,6 +120,12 @@ Salida reciente en `data/bench/latest.txt`.
 python -m c3rnt2 chat --profile rtx4080_16gb --backend hf --model Qwen/Qwen2.5-8B-Instruct --stream
 python -m c3rnt2 serve --profile rtx4080_16gb --backend hf --model Qwen/Qwen2.5-8B-Instruct
 ```
+RTX 4080 + Qwen-8B (serve + self-train):
+```bash
+python -m c3rnt2 doctor --deep --profile rtx4080_16gb
+python -m c3rnt2 serve --profile rtx4080_16gb
+python -m c3rnt2 serve-self-train --profile qwen8b_train --host 0.0.0.0 --port 8000
+```
 Para activar RAG en el servidor:
 ```bash
 # en config/settings.yaml

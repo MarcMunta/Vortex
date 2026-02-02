@@ -31,6 +31,7 @@ _TORCH_TESTS = {
     "test_paged_linear_dtype_path.py",
     "test_paged_lm_head.py",
     "test_router_training.py",
+    "test_hf_weighted_sampling.py",
     "test_step_block.py",
     "test_trigger_skip.py",
 }

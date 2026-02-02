@@ -5,6 +5,9 @@ import json
 import subprocess
 import sys
 import time
+import threading
+from types import SimpleNamespace
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable
 
@@ -21,7 +24,7 @@ from .doctor import check_deps, run_deep_checks
 from .model_loader import load_inference_model
 from .prompting.chat_format import build_chat_prompt
 from .server import run_server
-from .utils.locks import LockUnavailable, acquire_exclusive_lock
+from .utils.locks import LockUnavailable, acquire_exclusive_lock, FileLock
 from .agent.agent_loop import run_demo_agent
 from .training.hf_qlora import train_once as train_hf_once
 from .utils.oom import is_oom_error, clear_cuda_cache
@@ -307,6 +310,99 @@ def cmd_self_train(args: argparse.Namespace) -> None:
         time.sleep(max(5.0, interval_min * 60.0))
 
 
+def _run_self_train_tick(
+    app: object,
+    settings: dict,
+    base_dir: Path,
+    *,
+    reuse_dataset: bool,
+    maintenance_window_s: float,
+    reload_fn: Callable | None = None,
+) -> dict:
+    allowlist = _resolve_allowlist(settings)
+    new_docs = ingest_sources(base_dir, allowlist, settings)
+    lock_path = base_dir / "data" / "locks" / "train.lock"
+    lock = FileLock(lock_path)
+    try:
+        lock.acquire(blocking=False)
+    except LockUnavailable:
+        return {"ok": False, "error": "train_lock_unavailable", "new_docs": new_docs}
+    try:
+        state = getattr(app, "state", SimpleNamespace())
+        setattr(app, "state", state)
+        state.training_active = True
+        if maintenance_window_s and maintenance_window_s > 0:
+            state.maintenance_until = time.time() + float(maintenance_window_s)
+        result = train_hf_once(settings, base_dir, reuse_dataset=reuse_dataset)
+    finally:
+        try:
+            app.state.training_active = False
+        except Exception:
+            pass
+        lock.release()
+    reload_result = None
+    if reload_fn is not None and result.ok:
+        try:
+            reload_result = reload_fn(app, base_dir, settings, force=True)
+        except Exception as exc:
+            reload_result = {"ok": False, "error": str(exc)}
+    return {"ok": True, "new_docs": new_docs, "train": result.__dict__, "reload": reload_result}
+
+
+def cmd_serve_self_train(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile, override=lambda s: _apply_cli_overrides(s, args))
+    base_dir = Path(".")
+    interval_min = float(args.interval_minutes or settings.get("continuous", {}).get("run_interval_minutes", 30))
+    maintenance_window_s = float(args.maintenance_window_s or settings.get("server", {}).get("maintenance_window_s", 10))
+    reuse_dataset = bool(args.reuse_dataset)
+    once = bool(args.once)
+    reload_fn = None
+    app = None
+
+    if args.mock:
+        class _DummyLock:
+            def read_lock(self):
+                return nullcontext()
+
+            def write_lock(self):
+                return nullcontext()
+
+        app = SimpleNamespace(state=SimpleNamespace(model_lock=_DummyLock(), models={}, model=None))
+        def _mock_reload(_app, _base_dir, _settings, force: bool = False):
+            return {"ok": True, "reloaded": bool(force), "mock": True}
+        reload_fn = _mock_reload
+    else:
+        try:
+            from .server import create_app, reload_latest_adapter_for_app
+        except Exception as exc:
+            print({"ok": False, "error": f"server_unavailable: {exc}"})
+            return
+        app = create_app(settings, base_dir=base_dir)
+        reload_fn = reload_latest_adapter_for_app
+
+        def _serve():
+            import uvicorn  # type: ignore
+
+            uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+        thread = threading.Thread(target=_serve, daemon=True)
+        thread.start()
+
+    while True:
+        result = _run_self_train_tick(
+            app,
+            settings,
+            base_dir,
+            reuse_dataset=reuse_dataset,
+            maintenance_window_s=maintenance_window_s,
+            reload_fn=reload_fn,
+        )
+        print({"self_train": result})
+        if once:
+            break
+        time.sleep(max(5.0, interval_min * 60.0))
+
+
 def cmd_self_patch(args: argparse.Namespace) -> None:
     settings = _load_and_validate(args.profile)
     base_dir = Path(".")
@@ -530,6 +626,20 @@ def main() -> None:
     serve.add_argument("--host", default="0.0.0.0")
     serve.add_argument("--port", type=int, default=8000)
     serve.set_defaults(func=cmd_serve)
+
+    serve_self = sub.add_parser("serve-self-train")
+    serve_self.add_argument("--profile", default=None)
+    serve_self.add_argument("--backend", default=None)
+    serve_self.add_argument("--model", default=None)
+    serve_self.add_argument("--device", default=None)
+    serve_self.add_argument("--host", default="0.0.0.0")
+    serve_self.add_argument("--port", type=int, default=8000)
+    serve_self.add_argument("--once", action="store_true")
+    serve_self.add_argument("--interval-minutes", type=float, default=None)
+    serve_self.add_argument("--reuse-dataset", action="store_true")
+    serve_self.add_argument("--maintenance-window-s", type=float, default=None)
+    serve_self.add_argument("--mock", action="store_true")
+    serve_self.set_defaults(func=cmd_serve_self_train)
 
     bench = sub.add_parser("bench")
     bench.add_argument("--profile", default=None)

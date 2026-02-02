@@ -132,6 +132,12 @@ def normalize_settings(settings: dict) -> dict:
     agent.setdefault("max_iters", 5)
     normalized["agent"] = agent
 
+    server_cfg = normalized.get("server", {}) or {}
+    server_cfg.setdefault("auto_reload_adapter", False)
+    server_cfg.setdefault("reload_interval_s", 60)
+    server_cfg.setdefault("maintenance_window_s", 10)
+    normalized["server"] = server_cfg
+
     knowledge = normalized.get("knowledge", {}) or {}
     knowledge.setdefault("embedding_backend", "auto")
     knowledge.setdefault("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
@@ -175,6 +181,16 @@ def normalize_settings(settings: dict) -> dict:
     hf_train.setdefault("pack_samples", False)
     hf_train.setdefault("bucket_by_length", True)
     hf_train.setdefault("grad_clip", 1.0)
+    hf_train.setdefault("use_weighted_sampling", True)
+    hf_train.setdefault(
+        "source_kind_weights",
+        {
+            "chat_feedback": 2.0,
+            "chat_feedback_soft": 1.2,
+            "web": 0.8,
+            "episode": 1.5,
+        },
+    )
     hf_eval = hf_train.get("eval", {}) or {}
     hf_eval.setdefault("enabled", True)
     hf_eval.setdefault("min_improvement", 0.0)

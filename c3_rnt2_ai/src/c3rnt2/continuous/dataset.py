@@ -5,6 +5,7 @@ import sqlite3
 import time
 import hashlib
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List
@@ -200,6 +201,77 @@ def _quality_score(text: str, source_kind: str, max_repeat_ratio: float) -> floa
     return max(0.0, min(1.0, base))
 
 
+_INSTRUCTION_KEYWORDS = {
+    "system",
+    "assistant",
+    "developer",
+    "user",
+    "instruction",
+    "instructions",
+    "ignore",
+    "follow",
+    "must",
+    "policy",
+    "prompt",
+    "role",
+    "override",
+    "jailbreak",
+}
+
+
+def _instruction_density(text: str) -> float:
+    lowered = text.lower()
+    tokens = re.findall(r"[a-zA-Z']+", lowered)
+    if not tokens:
+        return 0.0
+    keyword_hits = sum(1 for tok in tokens if tok in _INSTRUCTION_KEYWORDS)
+    pattern_hits = 0
+    patterns = [
+        r"ignore (all|previous) instructions",
+        r"do not follow",
+        r"system prompt",
+        r"role:\s*system",
+        r"developer message",
+        r"you are (an|a) (assistant|system)",
+    ]
+    for pat in patterns:
+        if re.search(pat, lowered):
+            pattern_hits += 1
+    return (keyword_hits + pattern_hits * 3) / max(1, len(tokens))
+
+
+def _sanitize_web_text(
+    text: str,
+    *,
+    max_chars: int,
+    max_instruction_density: float,
+    max_repeat_lines: int,
+) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"<script.*?>.*?</script>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<style.*?>.*?</style>", " ", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if max_repeat_lines > 0 and lines:
+        seen: dict[str, int] = {}
+        deduped: list[str] = []
+        for line in lines:
+            key = line.lower()
+            count = seen.get(key, 0)
+            if count >= max_repeat_lines:
+                continue
+            seen[key] = count + 1
+            deduped.append(line)
+        lines = deduped
+    cleaned = " ".join(" ".join(lines).split())
+    if max_chars and len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars]
+    if _instruction_density(cleaned) > max_instruction_density:
+        return ""
+    return cleaned.strip()
+
+
 def _promote_web_quarantine(
     store: KnowledgeStore,
     recent_vecs: List[List[float]],
@@ -333,6 +405,18 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
             if not doc.ok:
                 continue
             content = doc.output or ""
+            sanitize_cfg = web_cfg.get("sanitize", {}) or {}
+            max_chars = int(sanitize_cfg.get("max_chars", 2000))
+            max_instr = float(sanitize_cfg.get("max_instruction_density", 0.04))
+            max_repeat_lines = int(sanitize_cfg.get("max_repeat_lines", 2))
+            content = _sanitize_web_text(
+                content,
+                max_chars=max_chars,
+                max_instruction_density=max_instr,
+                max_repeat_lines=max_repeat_lines,
+            )
+            if not content:
+                continue
             content_bytes = content.encode("utf-8", errors="ignore")
             content_hash = hashlib.sha256(content_bytes).hexdigest()
             if content_hash == last_hash:
