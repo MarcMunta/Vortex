@@ -50,8 +50,46 @@ class CollectorState:
             conn.commit()
 
 
-def _hash_record(prompt: str, response: str, source: str) -> str:
-    payload = f"{source}\n{prompt}\n{response}".encode("utf-8", errors="ignore")
+def _resolve_queue_dir(base_dir: Path, settings: dict) -> Path:
+    queue_dir = settings.get("self_patch", {}).get("queue_dir", "data/self_patch/queue")
+    qpath = Path(queue_dir)
+    if not qpath.is_absolute():
+        qpath = base_dir / qpath
+    return qpath
+
+
+def _load_patch_from_queue(queue_dir: Path, patch_id: str | None) -> str:
+    if not patch_id:
+        return ""
+    patch_path = queue_dir / patch_id / "patch.diff"
+    if not patch_path.exists():
+        return ""
+    try:
+        return patch_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def _episode_prompt(payload: dict) -> str:
+    prompt = str(payload.get("prompt", "") or payload.get("context", "")).strip()
+    if prompt:
+        return prompt
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for msg in reversed(messages):
+            if msg.get("role") == "user" and msg.get("content"):
+                return str(msg.get("content")).strip()
+    return ""
+
+
+def _episode_hash(task: str, prompt: str, patch: str, tests_ok: bool, tools_ok: bool) -> str:
+    signals = []
+    if tests_ok:
+        signals.append("tests_ok")
+    if tools_ok:
+        signals.append("tools_ok")
+    signal_label = "+".join(signals)
+    payload = f"{task}\n{prompt}\n{patch}\n{signal_label}".encode("utf-8", errors="ignore")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -86,6 +124,7 @@ def collect_from_episodes(base_dir: Path, settings: dict, max_events: int | None
     skipped = 0
     total = 0
     max_events = int(max_events) if max_events is not None else int(learning.get("max_events", 500))
+    queue_dir = _resolve_queue_dir(base_dir, settings)
 
     try:
         with output_path.open("a", encoding="utf-8") as handle:
@@ -93,12 +132,22 @@ def collect_from_episodes(base_dir: Path, settings: dict, max_events: int | None
                 if max_events and total >= max_events:
                     break
                 total += 1
-                prompt = str(payload.get("prompt", "")).strip()
+                tests_ok = bool(payload.get("tests_ok", False))
+                tools_ok = bool(payload.get("tools_ok", False))
+                if not (tests_ok or tools_ok):
+                    skipped += 1
+                    continue
+                prompt = _episode_prompt(payload)
                 response = str(payload.get("patch", payload.get("response", ""))).strip()
+                if not response:
+                    raw_patch_id = payload.get("patch_id")
+                    patch_id = str(raw_patch_id).strip() if raw_patch_id else ""
+                    response = _load_patch_from_queue(queue_dir, patch_id)
                 if not prompt or not response:
                     skipped += 1
                     continue
-                digest = _hash_record(prompt, response, "episode")
+                task = str(payload.get("task", "")).strip()
+                digest = _episode_hash(task, prompt, response, tests_ok, tools_ok)
                 if state.seen(digest):
                     skipped += 1
                     continue
@@ -109,9 +158,9 @@ def collect_from_episodes(base_dir: Path, settings: dict, max_events: int | None
                     "prompt": prompt,
                     "response": response,
                     "meta": {
-                        "tests_ok": bool(payload.get("tests_ok", False)),
-                        "tools_ok": bool(payload.get("tools_ok", False)),
-                        "task": payload.get("task"),
+                        "tests_ok": tests_ok,
+                        "tools_ok": tools_ok,
+                        "task": task,
                     },
                 }
                 handle.write(json.dumps(record, ensure_ascii=True) + "\n")

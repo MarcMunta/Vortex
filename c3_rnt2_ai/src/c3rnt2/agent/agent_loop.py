@@ -86,13 +86,25 @@ def run_demo_agent(settings: dict) -> Dict[str, str]:
         "tests_ok": str(test_result.ok),
         "tests_output": test_result.output[:400],
     }
+    prompt = "Task: Fix calc.add bug"
+    if docs.output:
+        prompt = f"{prompt}\n\nContext:\n{docs.output[:400]}"
     episode = {
+        "version": 2,
+        "ts": time.time(),
         "task": "Fix calc.add bug",
-        "prompt": docs.output[:400],
+        "prompt": prompt,
+        "patch_id": patch_id_result.output if patch_id_result.ok else None,
         "patch": diff,
-        "tests_ok": test_result.ok,
-        "tests_output_excerpt": test_result.output[:400],
-        "timestamp": time.time(),
+        "tests_ok": bool(test_result.ok),
+        "tools_ok": bool(patch_id_result.ok),
+        "summary": "demo_run",
+        "tool_calls": [
+            {"action": "open_docs", "ok": docs.ok, "output": docs.output[:200]},
+            {"action": "edit_repo", "ok": edit_result.ok, "output": edit_result.output},
+            {"action": "propose_patch", "ok": patch_id_result.ok, "output": patch_id_result.output},
+            {"action": "run_tests", "ok": test_result.ok, "output": test_result.output[:400]},
+        ],
     }
     _log_episode(Path("."), episode)
     return summary

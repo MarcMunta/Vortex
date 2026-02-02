@@ -274,11 +274,15 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
         samples = _load_dataset(dataset_path)
     else:
         system_prompt = cfg.get("default_system") or settings.get("core", {}).get("hf_system_prompt") or "You are a helpful coding assistant."
+        queue_dir = Path(settings.get("self_patch", {}).get("queue_dir", "data/self_patch/queue"))
+        if not queue_dir.is_absolute():
+            queue_dir = base_dir / queue_dir
         build_sft_dataset(
             chunks=chunks,
             episodes_path=episodes_path,
             output_path=dataset_path,
             system_prompt=system_prompt,
+            queue_dir=queue_dir,
             min_chars=int(cfg.get("min_chars", 40)),
             max_repeat_ratio=float(cfg.get("max_repeat_ratio", 0.8)),
             semantic_dedup_threshold=float(cfg.get("semantic_dedup_threshold", 0.97)),

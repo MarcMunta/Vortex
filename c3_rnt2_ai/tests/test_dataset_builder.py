@@ -31,3 +31,23 @@ def test_dataset_builder_dedup(tmp_path: Path) -> None:
     roles = [m.get("role") for m in payload["messages"]]
     assert "system" in roles and "user" in roles
     assert payload.get("response")
+
+
+def test_dataset_builder_doc_prompt_coherent(tmp_path: Path) -> None:
+    chunks = [KnowledgeChunk(text="doc sample", score=0.9, source_kind="web", source_ref="local")]
+    out = tmp_path / "sft.jsonl"
+    stats = build_sft_dataset(
+        chunks=chunks,
+        episodes_path=tmp_path / "episodes.jsonl",
+        output_path=out,
+        system_prompt="You are a helpful assistant.",
+        min_chars=1,
+        max_repeat_ratio=0.99,
+        semantic_dedup_threshold=0.99,
+        embedding_backend=None,
+    )
+    assert stats.written == 1
+    payload = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    user_msg = [m.get("content") for m in payload["messages"] if m.get("role") == "user"][0]
+    assert "EXACTLY" in user_msg
+    assert payload.get("response") == "doc sample"

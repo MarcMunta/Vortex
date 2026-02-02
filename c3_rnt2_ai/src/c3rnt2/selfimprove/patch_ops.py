@@ -78,11 +78,15 @@ def apply_patch(repo_root: Path, diff_text: str, approve: bool = False) -> Patch
     if not result.ok:
         return PatchResult(ok=False, message=result.error or "apply failed")
     _log_episode(repo_root, {
+        "version": 2,
+        "ts": time.time(),
         "task": "self-improve apply_patch",
-        "prompt": "pytest -q",
+        "prompt": "Task: self-improve apply_patch\n\nContext:\npytest -q",
+        "patch_id": proposal.patch_id,
         "patch": diff_text,
         "tests_ok": True,
-        "tests_output_excerpt": "",
-        "timestamp": time.time(),
+        "tools_ok": True,
+        "summary": "self_improve_apply",
+        "tool_calls": [{"action": "run_tests", "ok": True, "output": ""}],
     })
     return PatchResult(ok=True, message="applied")

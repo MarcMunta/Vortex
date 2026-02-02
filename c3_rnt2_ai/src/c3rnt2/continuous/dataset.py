@@ -118,6 +118,49 @@ def _load_episodes(path: Path) -> List[dict]:
     return episodes
 
 
+def _resolve_queue_dir(base_dir: Path, settings: dict) -> Path:
+    queue_dir = settings.get("self_patch", {}).get("queue_dir", "data/self_patch/queue")
+    qpath = Path(queue_dir)
+    if not qpath.is_absolute():
+        qpath = base_dir / qpath
+    return qpath
+
+
+def _load_patch_from_queue(queue_dir: Path, patch_id: str | None) -> str:
+    if not patch_id:
+        return ""
+    patch_path = queue_dir / patch_id / "patch.diff"
+    if not patch_path.exists():
+        return ""
+    try:
+        return patch_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def _episode_prompt(payload: dict) -> str:
+    prompt = str(payload.get("prompt", "") or payload.get("context", "")).strip()
+    if prompt:
+        return prompt
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for msg in reversed(messages):
+            if msg.get("role") == "user" and msg.get("content"):
+                return str(msg.get("content")).strip()
+    return ""
+
+
+def _episode_hash(task: str, prompt: str, patch: str, tests_ok: bool, tools_ok: bool) -> str:
+    signals = []
+    if tests_ok:
+        signals.append("tests_ok")
+    if tools_ok:
+        signals.append("tools_ok")
+    signal_label = "+".join(signals)
+    payload = f"{task}\n{prompt}\n{patch}\n{signal_label}".encode("utf-8", errors="ignore")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _cosine_sim(a: List[float], b: List[float]) -> float:
     denom = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
     if denom <= 1e-9:
@@ -288,6 +331,7 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
         key = f"episodes:{episodes_path.as_posix()}"
         meta = state.get_json(key, {"size": 0, "offset": 0})
         offset = int(meta.get("offset", 0))
+        queue_dir = _resolve_queue_dir(base_dir, settings)
         try:
             stat = episodes_path.stat()
         except Exception:
@@ -317,9 +361,17 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
                                         continue
                                     if not isinstance(payload, dict):
                                         continue
+                                    tests_ok = bool(payload.get("tests_ok"))
+                                    tools_ok = bool(payload.get("tools_ok"))
+                                    if not (tests_ok or tools_ok):
+                                        continue
                                     task = str(payload.get("task", "")).strip()
-                                    context = str(payload.get("prompt", "")).strip()
+                                    context = _episode_prompt(payload)
                                     diff = str(payload.get("patch", "")).strip()
+                                    if not diff:
+                                        raw_patch_id = payload.get("patch_id")
+                                        patch_id = str(raw_patch_id).strip() if raw_patch_id else ""
+                                        diff = _load_patch_from_queue(queue_dir, patch_id)
                                     if task or diff:
                                         doc_text = f"{task}\n{context}\n{diff}".strip()
                                         new_docs += store.ingest_text("episode", episodes_path.as_posix(), doc_text, quality=0.9)
@@ -358,27 +410,30 @@ def collect_samples(base_dir: Path, allowlist: List[str], settings: dict, ingest
 
     # Episodes -> gold samples
     episodes_path = base_dir / "data" / "episodes" / "agent.jsonl"
+    queue_dir = _resolve_queue_dir(base_dir, settings)
+    seen_episode_hashes: set[str] = set()
     for ep in _load_episodes(episodes_path):
         tests_ok = bool(ep.get("tests_ok"))
         tools_ok = bool(ep.get("tools_ok"))
         if not (tests_ok or tools_ok):
             continue
         task = str(ep.get("task", "")).strip()
-        context = str(ep.get("prompt", "")).strip()
+        context = _episode_prompt(ep)
         diff = str(ep.get("patch", "")).strip()
         if not diff:
+            raw_patch_id = ep.get("patch_id")
+            patch_id = str(raw_patch_id).strip() if raw_patch_id else ""
+            diff = _load_patch_from_queue(queue_dir, patch_id)
+        if not diff:
             continue
-        prompt = f"Fix the bug: {task}".strip()
+        prompt = f"Task: {task}".strip()
         if context:
-            prompt = f"{prompt}\nContext:\n{context}"
+            prompt = f"{prompt}\n\nContext:\n{context}"
         sample = Sample(prompt=prompt, response=diff, source_kind="episode")
-        signals = []
-        if tests_ok:
-            signals.append("tests_ok")
-        if tools_ok:
-            signals.append("tools_ok")
-        signal_label = "+".join(signals)
-        event_id = hashlib.sha256(f"{task}\n{context}\n{diff}\n{signal_label}".encode("utf-8")).hexdigest()
+        event_id = _episode_hash(task, context, diff, tests_ok, tools_ok)
+        if event_id in seen_episode_hashes:
+            continue
+        seen_episode_hashes.add(event_id)
         gold_samples.append(sample)
         quality = _quality_score(diff, "episode", max_repeat_ratio)
         novelty = _novelty_score(diff, recent_vecs)

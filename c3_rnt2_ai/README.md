@@ -7,7 +7,7 @@ Este repo implementa un prototipo modular para una “IA 120B-like” local comb
 - **BAD**: Blockwise Adaptive Decoding (draft+verify).
 - **Agente**: herramientas, memoria persistente, auto-entrenamiento y auto-mejora segura.
 
-## Instalacin
+## Instalacion
 ```bash
 python -m venv .venv
 . .venv/bin/activate  # en Windows: .venv\Scripts\activate
@@ -24,7 +24,7 @@ Para HF + entrenamiento QLoRA:
 pip install -e .[hf,train]
 ```
 
-Embeddings CPU opcionales (RAG):
+Embeddings CPU opcionales (RAG, incluye FAISS si esta disponible):
 ```bash
 pip install -e .[rag]
 ```
@@ -63,15 +63,17 @@ Requiere: pip install .[hf]
 
 ## Dependencias HF / RAG
 ```bash
-pip install -e .[hf,train,rag]
+pip install -e .[hf,train]
+pip install -e .[rag]
 ```
-FAISS (opcional):
-```bash
-pip install faiss-cpu
-```
+Si `faiss-cpu` no esta disponible en tu plataforma, el sistema funciona sin FAISS.
 
-## Base 100% (6 comandos)
-Flujo minimo reproducible:
+## Minimo reproducible Qwen-8B
+Prerequisito:
+```bash
+pip install -e .[hf,train]
+```
+Flujo minimo:
 ```bash
 python -m c3rnt2 doctor --deep --profile qwen8b_base
 python -m c3rnt2 serve --profile qwen8b_base

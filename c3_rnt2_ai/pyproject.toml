@@ -15,7 +15,6 @@ dependencies = [
   "requests>=2.31",
   "zstandard>=0.22",
   "lz4>=4.3",
-  "faiss-cpu>=1.7",
   "tqdm>=4.66"
 ]
 
@@ -24,7 +23,7 @@ api = ["fastapi>=0.110", "uvicorn>=0.23"]
 triton = ["triton>=2.1"]
 hf = ["transformers>=4.40", "accelerate>=0.27", "safetensors>=0.4", "bitsandbytes>=0.43"]
 train = ["peft>=0.10"]
-rag = ["sentence-transformers>=2.6"]
+rag = ["sentence-transformers>=2.6", "faiss-cpu>=1.7"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

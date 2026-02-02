@@ -27,6 +27,7 @@ class AgentTools:
         web_cfg: dict | None = None,
         agent_cfg: dict | None = None,
         self_patch_cfg: dict | None = None,
+        repo_root: Path | None = None,
     ):
         raw_cfg = dict(web_cfg or {})
         if "web" in raw_cfg:
@@ -46,6 +47,34 @@ class AgentTools:
         self.allow_content_types = self.web_cfg.get("allow_content_types")
         self.sandbox_root = sandbox_root or Path("data") / "workspaces"
         self.allow_git = bool(self.agent_cfg.get("allow_git", False))
+        self.repo_root = repo_root.resolve() if repo_root else None
+
+    def _allowed_bases(self) -> List[Path]:
+        bases: List[Path] = []
+        if self.repo_root:
+            bases.append(self.repo_root)
+        if self.sandbox_root:
+            bases.append(self.sandbox_root.resolve())
+        return bases
+
+    def _is_allowed_path(self, path: Path) -> bool:
+        for base in self._allowed_bases():
+            if path == base or base in path.parents:
+                return True
+        return False
+
+    def _resolve_safe_path(self, raw_path: str) -> Path | None:
+        if not raw_path:
+            return None
+        path = Path(raw_path)
+        if path.is_absolute():
+            candidate = path.resolve()
+            return candidate if self._is_allowed_path(candidate) else None
+        for base in self._allowed_bases():
+            candidate = (base / path).resolve()
+            if self._is_allowed_path(candidate):
+                return candidate
+        return None
 
     def _sanitize_text(self, text: str) -> str:
         text = re.sub(r"<script.*?>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
@@ -93,6 +122,76 @@ class AgentTools:
         out = (result.get("stdout", "") + result.get("stderr", "")).strip()
         return ToolResult(ok=bool(result.get("ok")), output=out)
 
+    def read_file(self, path: str, max_chars: int = 4000) -> ToolResult:
+        try:
+            target = self._resolve_safe_path(path)
+            if not target or not target.exists() or not target.is_file():
+                return ToolResult(ok=False, output="path not allowed")
+            text = target.read_text(encoding="utf-8", errors="ignore")
+            if max_chars and len(text) > max_chars:
+                text = text[:max_chars]
+            return ToolResult(ok=True, output=text)
+        except Exception as exc:
+            return ToolResult(ok=False, output=f"read failed: {exc}")
+
+    def list_tree(self, root: str = ".", max_entries: int = 200) -> ToolResult:
+        try:
+            base = self._resolve_safe_path(root)
+            if not base or not base.exists() or not base.is_dir():
+                return ToolResult(ok=False, output="path not allowed")
+            entries: List[str] = []
+            for path in sorted(base.rglob("*")):
+                if len(entries) >= max_entries:
+                    break
+                try:
+                    rel = path.relative_to(base)
+                except Exception:
+                    rel = path.name
+                entries.append(rel.as_posix())
+            return ToolResult(ok=True, output="\n".join(entries))
+        except Exception as exc:
+            return ToolResult(ok=False, output=f"list failed: {exc}")
+
+    def grep(self, pattern: str, path_glob: str = "**/*", max_hits: int = 50) -> ToolResult:
+        try:
+            if not pattern:
+                return ToolResult(ok=False, output="pattern required")
+            regex = re.compile(pattern)
+        except Exception as exc:
+            return ToolResult(ok=False, output=f"invalid pattern: {exc}")
+        try:
+            if Path(path_glob).is_absolute():
+                return ToolResult(ok=False, output="path_glob must be relative")
+            base = self.repo_root or self.sandbox_root.resolve()
+            if not self._is_allowed_path(base):
+                return ToolResult(ok=False, output="base path not allowed")
+            hits: List[str] = []
+            for path in sorted(base.glob(path_glob)):
+                if len(hits) >= max_hits:
+                    break
+                try:
+                    resolved = path.resolve()
+                except Exception:
+                    continue
+                if not resolved.is_file() or not self._is_allowed_path(resolved):
+                    continue
+                try:
+                    text = resolved.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    continue
+                for idx, line in enumerate(text.splitlines(), start=1):
+                    if regex.search(line):
+                        try:
+                            rel = resolved.relative_to(base)
+                        except Exception:
+                            rel = resolved
+                        hits.append(f"{rel.as_posix()}:{idx}:{line}")
+                        if len(hits) >= max_hits:
+                            break
+            return ToolResult(ok=True, output="\n".join(hits))
+        except Exception as exc:
+            return ToolResult(ok=False, output=f"grep failed: {exc}")
+
     def edit_repo(self, file_path: Path, new_text: str) -> ToolResult:
         try:
             self.sandbox_root.mkdir(parents=True, exist_ok=True)
@@ -120,6 +219,21 @@ class AgentTools:
             context = {"changes": {str(k): v for k, v in changes.items()}}
             if llm_context:
                 context.update(llm_context)
+            files = []
+            if isinstance(context.get("files"), list):
+                files.extend([str(f) for f in context.get("files") if f])
+            tool_calls = llm_context.get("tool_calls") if isinstance(llm_context, dict) else None
+            pytest_output = ""
+            if isinstance(tool_calls, list):
+                for call in reversed(tool_calls):
+                    if call.get("action") == "run_tests" and call.get("output"):
+                        pytest_output = str(call.get("output", ""))
+                        break
+            if pytest_output:
+                files.extend(self._extract_pytest_paths(pytest_output, repo_root))
+            files = self._limit_context_files(files, repo_root)
+            if files:
+                context["files"] = files
             proposal = propose_patch(
                 goal,
                 context,
@@ -130,6 +244,75 @@ class AgentTools:
             return ToolResult(ok=True, output=proposal.patch_id)
         except Exception as exc:
             return ToolResult(ok=False, output=f"propose failed: {exc}")
+
+    def _extract_pytest_paths(self, output: str, repo_root: Path) -> List[str]:
+        if not output:
+            return []
+        repo_root = repo_root.resolve()
+        pattern = re.compile(r"(?P<path>(?:[A-Za-z]:)?[\\w\\-./\\\\]+\\.py)")
+        found: List[str] = []
+        for match in pattern.finditer(output):
+            raw = match.group("path")
+            if not raw:
+                continue
+            path = Path(raw)
+            if path.is_absolute():
+                try:
+                    rel = path.resolve().relative_to(repo_root)
+                except Exception:
+                    continue
+                found.append(rel.as_posix())
+            else:
+                found.append(path.as_posix())
+        # Prefer tests then src
+        def _priority(p: str) -> tuple[int, str]:
+            if "tests" in p.replace("\\", "/").split("/"):
+                return (0, p)
+            if "src" in p.replace("\\", "/").split("/"):
+                return (1, p)
+            return (2, p)
+        deduped = []
+        seen = set()
+        for item in sorted(found, key=_priority):
+            norm = item.replace("\\", "/")
+            if norm in seen:
+                continue
+            seen.add(norm)
+            deduped.append(norm)
+        return deduped
+
+    def _limit_context_files(self, files: List[str], repo_root: Path, *, max_chars: int = 16000, max_file_chars: int = 4000) -> List[str]:
+        if not files:
+            return []
+        repo_root = repo_root.resolve()
+        selected: List[str] = []
+        used = 0
+        for item in files:
+            path = Path(item)
+            if path.is_absolute():
+                try:
+                    path = path.resolve().relative_to(repo_root)
+                except Exception:
+                    continue
+            full = (repo_root / path).resolve()
+            if repo_root not in full.parents and full != repo_root:
+                continue
+            if not full.exists() or not full.is_file():
+                continue
+            try:
+                size = full.stat().st_size
+            except Exception:
+                size = max_file_chars
+            est = min(int(size), max_file_chars)
+            if selected and used + est > max_chars:
+                continue
+            if not selected and est > max_chars:
+                est = max_chars
+            selected.append(path.as_posix())
+            used += est
+            if used >= max_chars:
+                break
+        return selected
 
     def sandbox_patch(self, repo_root: Path, patch_id: str) -> ToolResult:
         try:
