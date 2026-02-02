@@ -136,6 +136,7 @@ def normalize_settings(settings: dict) -> dict:
     server_cfg.setdefault("auto_reload_adapter", False)
     server_cfg.setdefault("reload_interval_s", 60)
     server_cfg.setdefault("maintenance_window_s", 10)
+    server_cfg.setdefault("block_during_training", False)
     normalized["server"] = server_cfg
 
     knowledge = normalized.get("knowledge", {}) or {}
@@ -218,6 +219,9 @@ def normalize_settings(settings: dict) -> dict:
     vx = normalized.get("vortex_model", {}) or {}
     core = normalized.get("core", {}) or {}
     core.setdefault("backend", "vortex")
+    core.setdefault("vram_threshold_mb", 1024)
+    core.setdefault("vram_floor_tokens", 32)
+    core.setdefault("vram_ceil_tokens", 512)
     if "tf32" not in core and core.get("allow_tf32") is not None:
         core["tf32"] = core.get("allow_tf32")
     normalized["core"] = core
@@ -244,8 +248,12 @@ def normalize_settings(settings: dict) -> dict:
     if cont:
         if "interval_minutes" not in cont and cont.get("run_interval_minutes") is not None:
             cont["interval_minutes"] = cont.get("run_interval_minutes")
+        if "run_interval_minutes" not in cont and cont.get("interval_minutes") is not None:
+            cont["run_interval_minutes"] = cont.get("interval_minutes")
         if "max_steps_per_tick" not in cont and cont.get("max_steps") is not None:
             cont["max_steps_per_tick"] = cont.get("max_steps")
+        if "max_steps" not in cont and cont.get("max_steps_per_tick") is not None:
+            cont["max_steps"] = cont.get("max_steps_per_tick")
         normalized["continuous"] = cont
 
     if lava:

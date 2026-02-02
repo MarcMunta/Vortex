@@ -321,6 +321,8 @@ def _run_self_train_tick(
 ) -> dict:
     allowlist = _resolve_allowlist(settings)
     new_docs = ingest_sources(base_dir, allowlist, settings)
+    server_cfg = settings.get("server", {}) or {}
+    block_during_training = bool(server_cfg.get("block_during_training", False))
     lock_path = base_dir / "data" / "locks" / "train.lock"
     lock = FileLock(lock_path)
     try:
@@ -331,12 +333,16 @@ def _run_self_train_tick(
         state = getattr(app, "state", SimpleNamespace())
         setattr(app, "state", state)
         state.training_active = True
-        if maintenance_window_s and maintenance_window_s > 0:
+        if block_during_training:
+            state.maintenance_until = float("inf")
+        elif maintenance_window_s and maintenance_window_s > 0:
             state.maintenance_until = time.time() + float(maintenance_window_s)
         result = train_hf_once(settings, base_dir, reuse_dataset=reuse_dataset)
     finally:
         try:
             app.state.training_active = False
+            if block_during_training and maintenance_window_s and maintenance_window_s > 0:
+                app.state.maintenance_until = time.time() + float(maintenance_window_s)
         except Exception:
             pass
         lock.release()

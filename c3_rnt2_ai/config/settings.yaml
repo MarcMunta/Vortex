@@ -182,6 +182,9 @@ profiles:
       hf_use_latest_adapter: true
       dtype: bf16
       backend_fallback: vortex
+      vram_threshold_mb: 1200
+      vram_floor_tokens: 32
+      vram_ceil_tokens: 512
     server:
       auto_reload_adapter: false
       reload_interval_s: 60
@@ -205,6 +208,9 @@ profiles:
 
   qwen8b_train:
     base_profile: qwen8b_base
+    server:
+      block_during_training: true
+      maintenance_window_s: 10
     hf_train:
       enabled: true
       model_name: "Qwen/Qwen2.5-8B-Instruct"

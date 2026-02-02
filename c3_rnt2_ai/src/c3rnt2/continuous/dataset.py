@@ -303,8 +303,8 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
     max_files_per_tick = int(ingest_cfg.get("max_files_per_tick", 200))
     max_bytes_per_file = int(ingest_cfg.get("max_bytes_per_file", 2_000_000))
     max_total_bytes_per_tick = int(ingest_cfg.get("max_total_bytes_per_tick", 10_000_000))
-    web_cfg = ingest_cfg.get("web", {}) or {}
-    web_cooldown = float(web_cfg.get("cooldown_minutes", 60))
+    ingest_web_cfg = ingest_cfg.get("web", {}) or {}
+    web_cooldown = float(ingest_web_cfg.get("cooldown_minutes", 60))
     knowledge_path = Path(continuous.get("knowledge_path", base_dir / "data" / "continuous" / "knowledge.sqlite"))
     knowledge_cfg = settings.get("knowledge", {}) or {}
     policy_cfg = knowledge_cfg.get("policy", {}) or {}
@@ -387,8 +387,8 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
 
     # Web docs (cache + cooldown)
     tools_cfg = settings.get("tools", {}) or {}
-    web_cfg = tools_cfg.get("web", {}) or {}
-    web_enabled = bool(web_cfg.get("enabled", False))
+    tools_web_cfg = tools_cfg.get("web", {}) or {}
+    web_enabled = bool(tools_web_cfg.get("enabled", False))
     if bool(continuous.get("ingest_web", True)) and allowlist and web_enabled:
         urls = continuous.get("ingest_urls", ["https://docs.python.org/3/", "https://pytorch.org/docs/stable/"])
         tools = AgentTools(allowlist=allowlist, web_cfg=tools_cfg)
@@ -405,7 +405,7 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
             if not doc.ok:
                 continue
             content = doc.output or ""
-            sanitize_cfg = web_cfg.get("sanitize", {}) or {}
+            sanitize_cfg = ingest_web_cfg.get("sanitize", {}) or {}
             max_chars = int(sanitize_cfg.get("max_chars", 2000))
             max_instr = float(sanitize_cfg.get("max_instruction_density", 0.04))
             max_repeat_lines = int(sanitize_cfg.get("max_repeat_lines", 2))

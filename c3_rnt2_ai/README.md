@@ -126,6 +126,10 @@ python -m c3rnt2 doctor --deep --profile rtx4080_16gb
 python -m c3rnt2 serve --profile rtx4080_16gb
 python -m c3rnt2 serve-self-train --profile qwen8b_train --host 0.0.0.0 --port 8000
 ```
+Comando recomendado (modo continuo seguro):
+```bash
+python -m c3rnt2 serve-self-train --profile qwen8b_train
+```
 Para activar RAG en el servidor:
 ```bash
 # en config/settings.yaml
@@ -159,6 +163,18 @@ tools:
   web:
     enabled: true
     allow_domains: ["docs.python.org", "pytorch.org", "github.com", "duckduckgo.com"]
+```
+Web learning seguro (ingest + sanitize):
+```yaml
+continuous:
+  ingest_web: true
+  ingest:
+    web:
+      cooldown_minutes: 60
+      sanitize:
+        max_chars: 2000
+        max_instruction_density: 0.04
+        max_repeat_lines: 2
 ```
 
 ## Feedback y entrenamiento

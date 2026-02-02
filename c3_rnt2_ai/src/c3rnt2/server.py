@@ -223,6 +223,18 @@ def _new_request_id(raw: str | None = None) -> str:
     return uuid.uuid4().hex
 
 
+def _retry_after_seconds(maintenance_until: float | None, *, default: int = 30) -> int:
+    if maintenance_until is None:
+        return default
+    try:
+        remaining = float(maintenance_until) - time.time()
+    except Exception:
+        return default
+    if remaining != remaining or remaining <= 0:
+        return default
+    return max(1, int(remaining))
+
+
 def _estimate_tokens(text: str, model: object | None = None) -> int:
     if not text:
         return 0
@@ -480,9 +492,17 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
         payload = await request.json()
-        if getattr(app.state, "training_active", False):
-            if time.time() < float(getattr(app.state, "maintenance_until", 0.0)):
-                raise HTTPException(status_code=503, detail="training in progress")
+        server_cfg = settings.get("server", {}) or {}
+        block_during_training = bool(server_cfg.get("block_during_training", False))
+        maintenance_until = float(getattr(app.state, "maintenance_until", 0.0))
+        training_active = bool(getattr(app.state, "training_active", False))
+        if block_during_training and (training_active or time.time() < maintenance_until):
+            retry_after = _retry_after_seconds(maintenance_until)
+            return JSONResponse(
+                status_code=503,
+                content={"ok": False, "error": "training_active"},
+                headers={"Retry-After": str(retry_after)},
+            )
         messages = _resolve_messages(payload)
         if not messages:
             raise HTTPException(status_code=400, detail="messages required")
@@ -502,6 +522,10 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             feats = build_features(prompt, decode_args["max_new_tokens"], settings)
             decision = router.decide(feats)
             chosen_backend = decision.backend
+        if training_active and not block_during_training:
+            fb = _resolve_fallback_backend(settings, chosen_backend)
+            if fb:
+                chosen_backend = fb
         selected_model = models.get(chosen_backend, model)
         stream_topk_override = None
         if decision is not None and hasattr(selected_model, "runtime_cfg"):
