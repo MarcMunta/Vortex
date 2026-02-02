@@ -24,6 +24,7 @@ from .continuous.dataset import retrieve_context_details
 from .continuous.registry import load_registry
 from .episodes import EpisodeIndex
 from .runtime.router import build_features, load_router, log_router_event
+from .runtime.vram_governor import decide_max_new_tokens
 from .utils.oom import is_oom_error, clear_cuda_cache
 
 
@@ -245,6 +246,16 @@ def _estimate_tokens(text: str, model: object | None = None) -> int:
         except Exception:
             pass
     return len(text.split())
+
+
+def _resolve_device_dtype(model: object, settings: dict) -> tuple[object | None, object | None]:
+    device = getattr(model, "device", None)
+    if device is None:
+        device = settings.get("core", {}).get("hf_device")
+    dtype = getattr(model, "dtype", None)
+    if dtype is None:
+        dtype = settings.get("core", {}).get("dtype")
+    return device, dtype
 
 
 def _append_jsonl(path: Path, payload: dict) -> int:
@@ -532,6 +543,8 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 enabled=bool(decision.stream_topk),
                 top_k=int(router_cfg.get("stream_topk_k", 64)),
             )
+        device, dtype = _resolve_device_dtype(selected_model, settings)
+        decode_args["max_new_tokens"] = decide_max_new_tokens(decode_args["max_new_tokens"], device, dtype, settings)
 
         if not stream:
             start = time.time()
@@ -999,6 +1012,8 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
             prompt = build_chat_prompt(messages, backend, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
             stream = bool(payload.get("stream", False))
             decode_args = _resolve_decode_args(settings, payload)
+            device, dtype = _resolve_device_dtype(model, settings)
+            decode_args["max_new_tokens"] = decide_max_new_tokens(decode_args["max_new_tokens"], device, dtype, settings)
             created = int(time.time())
             request_id = _new_request_id(payload.get("request_id"))
             resp_id = f"chatcmpl-{request_id}"

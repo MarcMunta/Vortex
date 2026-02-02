@@ -5,7 +5,7 @@ import json
 import re
 import subprocess
 from urllib.parse import quote_plus
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -18,6 +18,7 @@ from .sandbox import run_sandbox_command
 class ToolResult:
     ok: bool
     output: str
+    meta: dict[str, object] = field(default_factory=dict)
 
 
 class AgentTools:
@@ -109,9 +110,17 @@ class AgentTools:
             allow_content_types=self.allow_content_types,
         )
         if not result.ok:
-            return ToolResult(ok=False, output=result.error or "fetch failed")
+            return ToolResult(ok=False, output=result.error or "fetch failed", meta={"url": getattr(result, "url", url)})
         text = self._sanitize_text(result.text)
-        return ToolResult(ok=True, output=text)
+        meta = {
+            "url": getattr(result, "url", url),
+            "status": getattr(result, "status", None),
+            "from_cache": getattr(result, "from_cache", False),
+            "etag": getattr(result, "etag", None),
+            "last_modified": getattr(result, "last_modified", None),
+            "content_hash": getattr(result, "content_hash", None),
+        }
+        return ToolResult(ok=True, output=text, meta=meta)
 
     def fetch_page(self, url: str) -> ToolResult:
         return self.web_fetch(url)
@@ -180,7 +189,7 @@ class AgentTools:
         output = result.output
         if limit and len(output) > limit:
             output = output[:limit]
-        return ToolResult(ok=True, output=output)
+        return ToolResult(ok=True, output=output, meta=dict(result.meta))
 
     def run_tests(self, repo_path: Path) -> ToolResult:
         result = run_sandbox_command(repo_path, ["pytest", "-q"], self.sandbox_root, timeout_s=300)

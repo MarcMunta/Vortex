@@ -7,7 +7,7 @@ from c3rnt2.continuous.dataset import ingest_sources
 from c3rnt2.continuous.knowledge_store import KnowledgeStore
 
 
-def test_web_ingest_sanitize_truncates(tmp_path: Path, monkeypatch) -> None:
+def test_web_ingest_sanitize_chunks(tmp_path: Path, monkeypatch) -> None:
     class DummyTools:
         def __init__(self, *args, **kwargs):
             _ = args, kwargs
@@ -37,8 +37,8 @@ def test_web_ingest_sanitize_truncates(tmp_path: Path, monkeypatch) -> None:
     assert new_docs >= 1
     store = KnowledgeStore(knowledge_path)
     chunks = store.sample_chunks(limit=10, source_kinds=["web"])
-    assert len(chunks) == 1
-    assert len(chunks[0].text) == 50
+    assert len(chunks) >= 1
+    assert all(len(chunk.text) <= 50 for chunk in chunks)
 
 
 def test_web_ingest_sanitize_drops_instructional(tmp_path: Path, monkeypatch) -> None:

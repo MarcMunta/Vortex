@@ -46,3 +46,37 @@ def test_serve_self_train_mock_loop(tmp_path: Path, monkeypatch) -> None:
 
     lock_path = tmp_path / "data" / "locks" / "train.lock"
     assert lock_path.exists()
+
+
+def test_self_train_tick_sets_and_clears_training_active(tmp_path: Path, monkeypatch) -> None:
+    from c3rnt2 import __main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "ingest_sources", lambda base_dir, allowlist, settings: 0)
+
+    app = SimpleNamespace(state=SimpleNamespace())
+
+    def _fake_train(_settings, _base_dir, reuse_dataset=False):
+        assert app.state.training_active is True
+        return SimpleNamespace(
+            ok=True,
+            run_id="r1",
+            adapter_dir=None,
+            loss=0.0,
+            steps=1,
+            samples=1,
+            tokens_per_sec=1.0,
+        )
+
+    monkeypatch.setattr(main_mod, "train_hf_once", _fake_train)
+
+    settings = {"server": {"block_during_training": True}}
+    result = main_mod._run_self_train_tick(
+        app,
+        settings,
+        tmp_path,
+        reuse_dataset=False,
+        maintenance_window_s=0.0,
+        reload_fn=None,
+    )
+    assert result.get("ok") is True
+    assert app.state.training_active is False

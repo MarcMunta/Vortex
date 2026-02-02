@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Callable, Iterable, List, Optional, Tuple
 
 import torch
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
@@ -14,6 +15,7 @@ from ..continuous.types import Sample
 from ..continuous.formatting import format_chat_sample
 from ..continuous.anchors import load_anchors, write_default_anchors
 from .dataset_builder import build_sft_dataset
+from ..utils.oom import is_oom_error, clear_cuda_cache
 
 
 @dataclass
@@ -309,6 +311,130 @@ def _repeat_ratio(text: str) -> float:
     return 1.0 - (unique / max(1, len(words)))
 
 
+def _run_training_steps(
+    model,
+    tokenizer,
+    texts: List[str],
+    weights: List[float],
+    *,
+    cfg: dict,
+    device: str,
+    torch_dtype,
+    micro_batch_size: int,
+    grad_accum_steps: int,
+) -> tuple[float, int, float, float | None]:
+    dataset = SFTDataset(texts, tokenizer=tokenizer, max_length=int(cfg.get("max_seq_len", 1024)))
+    sampler = None
+    if weights:
+        sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+    loader = DataLoader(
+        dataset,
+        batch_size=max(1, int(micro_batch_size)),
+        shuffle=sampler is None,
+        sampler=sampler,
+        collate_fn=lambda b: _collate_fn(b, tokenizer.pad_token_id),
+    )
+
+    lr = float(cfg.get("lr", 2e-4))
+    optim_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = None
+    if device.startswith("cuda"):
+        try:
+            optimizer = torch.optim.AdamW(optim_params, lr=lr, fused=True)
+        except Exception:
+            optimizer = None
+    if optimizer is None:
+        optimizer = torch.optim.AdamW(optim_params, lr=lr)
+    grad_accum = max(1, int(grad_accum_steps))
+    max_steps = int(cfg.get("max_steps", 50))
+    if max_steps <= 0:
+        max_steps = 1
+
+    model.train()
+    model_device = next(model.parameters()).device
+    start = time.time()
+    total_loss = 0.0
+    steps = 0
+    tokens_seen = 0
+    optimizer.zero_grad(set_to_none=True)
+    if device.startswith("cuda"):
+        torch.cuda.reset_peak_memory_stats()
+    use_autocast = device.startswith("cuda")
+    grad_clip = float(cfg.get("grad_clip", 1.0))
+    for batch in loader:
+        batch = {k: v.to(model_device) for k, v in batch.items() if v is not None}
+        with torch.autocast(device_type="cuda", dtype=torch_dtype, enabled=use_autocast):
+            outputs = model(**batch)
+            raw_loss = outputs.loss
+            loss = raw_loss / max(1, grad_accum)
+        loss.backward()
+        tokens_seen += int(batch["input_ids"].numel())
+        steps += 1
+        total_loss += float(raw_loss.item())
+        if steps % grad_accum == 0:
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(optim_params, grad_clip)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+        if steps >= max_steps:
+            break
+    if steps % grad_accum != 0:
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(optim_params, grad_clip)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+
+    avg_loss = total_loss / max(1, steps)
+    elapsed = max(1e-6, time.time() - start)
+    tokens_per_sec = tokens_seen / elapsed
+    vram_peak = None
+    if device.startswith("cuda"):
+        try:
+            vram_peak = float(torch.cuda.max_memory_allocated() / (1024**2))
+        except Exception:
+            vram_peak = None
+    return avg_loss, steps, tokens_per_sec, vram_peak
+
+
+def auto_tune_batch(micro_batch_size: int, grad_accum_steps: int) -> tuple[int, int]:
+    target = max(1, int(micro_batch_size) * int(grad_accum_steps))
+    if micro_batch_size <= 1:
+        return int(micro_batch_size), max(1, int(grad_accum_steps))
+    new_micro = max(1, int(micro_batch_size) // 2)
+    new_grad = max(1, int(math.ceil(target / max(1, new_micro))))
+    return new_micro, new_grad
+
+
+def _auto_tune_train(
+    train_fn: Callable[[int, int], Tuple[float, int, float, float | None]],
+    micro_batch_size: int,
+    grad_accum_steps: int,
+    *,
+    max_retries: int,
+    enabled: bool = True,
+) -> tuple[Tuple[float, int, float, float | None], int, int]:
+    attempts = 0
+    current_micro = int(micro_batch_size)
+    current_grad = int(grad_accum_steps)
+    while True:
+        try:
+            return train_fn(current_micro, current_grad), current_micro, current_grad
+        except RuntimeError as exc:
+            if not enabled or not is_oom_error(exc):
+                raise
+            if attempts >= max_retries:
+                raise
+            new_micro, new_grad = auto_tune_batch(current_micro, current_grad)
+            if new_micro == current_micro and new_grad == current_grad:
+                raise
+            print(
+                f"hf_qlora auto_tune_batch: oom attempt={attempts + 1} micro={current_micro} grad={current_grad} -> micro={new_micro} grad={new_grad}"
+            )
+            current_micro, current_grad = new_micro, new_grad
+            attempts += 1
+            clear_cuda_cache()
+
+
 def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> HfTrainResult:
     cfg = settings.get("hf_train", {}) or {}
     model_name = cfg.get("model_name") or settings.get("core", {}).get("hf_model")
@@ -466,7 +592,6 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
         except Exception:
             pass
 
-    max_length = int(cfg.get("max_seq_len", 1024))
     default_system = cfg.get("default_system") or settings.get("core", {}).get("hf_system_prompt")
     use_weighted = bool(cfg.get("use_weighted_sampling", False))
     weights = _compute_sample_weights(samples, settings) if use_weighted else []
@@ -475,86 +600,51 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
     else:
         texts = build_sft_texts(samples, tokenizer=tokenizer, default_system=default_system)
     if bool(cfg.get("pack_samples", False)):
-        texts = _pack_texts(texts, tokenizer, max_tokens=max_length)
+        texts = _pack_texts(texts, tokenizer, max_tokens=int(cfg.get("max_seq_len", 1024)))
         weights = []
     if bool(cfg.get("bucket_by_length", True)):
         if weights:
             texts, weights = _bucket_by_length_with_weights(texts, weights, tokenizer)
         else:
             texts = _bucket_by_length(texts, tokenizer)
-    dataset = SFTDataset(texts, tokenizer=tokenizer, max_length=max_length)
     micro_batch = max(1, int(cfg.get("micro_batch_size", 1)))
-    sampler = None
-    if use_weighted and weights:
-        sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
-    loader = DataLoader(
-        dataset,
-        batch_size=micro_batch,
-        shuffle=sampler is None,
-        sampler=sampler,
-        collate_fn=lambda b: _collate_fn(b, tokenizer.pad_token_id),
-    )
+    grad_accum = max(1, int(cfg.get("grad_accum_steps", 4)))
+    auto_tune_enabled = bool(cfg.get("auto_tune_batch", True))
+    auto_tune_retries = max(0, int(cfg.get("auto_tune_retries", 2)))
 
-    lr = float(cfg.get("lr", 2e-4))
-    optim_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = None
-    if device.startswith("cuda"):
-        try:
-            optimizer = torch.optim.AdamW(optim_params, lr=lr, fused=True)
-        except Exception:
-            optimizer = None
-    if optimizer is None:
-        optimizer = torch.optim.AdamW(optim_params, lr=lr)
-    grad_accum = int(cfg.get("grad_accum_steps", 4))
-    max_steps = int(cfg.get("max_steps", 50))
-    if max_steps <= 0:
-        max_steps = 1
-
-    model.train()
-    model_device = next(model.parameters()).device
-    start = time.time()
-    total_loss = 0.0
-    steps = 0
-    tokens_seen = 0
-    optimizer.zero_grad(set_to_none=True)
-    if device.startswith("cuda"):
-        torch.cuda.reset_peak_memory_stats()
-    use_autocast = device.startswith("cuda")
-    grad_clip = float(cfg.get("grad_clip", 1.0))
-    for batch in loader:
-        batch = {k: v.to(model_device) for k, v in batch.items() if v is not None}
-        with torch.autocast(device_type="cuda", dtype=torch_dtype, enabled=use_autocast):
-            outputs = model(**batch)
-            raw_loss = outputs.loss
-            loss = raw_loss / max(1, grad_accum)
-        loss.backward()
-        tokens_seen += int(batch["input_ids"].numel())
-        steps += 1
-        total_loss += float(raw_loss.item())
-        if steps % grad_accum == 0:
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(optim_params, grad_clip)
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-        if steps >= max_steps:
-            break
-    if steps % grad_accum != 0:
-        if grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(optim_params, grad_clip)
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
-
-    avg_loss = total_loss / max(1, steps)
-    elapsed = max(1e-6, time.time() - start)
-    tokens_per_sec = tokens_seen / elapsed
+    try:
+        (avg_loss, steps, tokens_per_sec, vram_peak), micro_batch, grad_accum = _auto_tune_train(
+            lambda mb, ga: _run_training_steps(
+                model,
+                tokenizer,
+                texts,
+                weights if use_weighted else [],
+                cfg=cfg,
+                device=device,
+                torch_dtype=torch_dtype,
+                micro_batch_size=mb,
+                grad_accum_steps=ga,
+            ),
+            micro_batch,
+            grad_accum,
+            max_retries=auto_tune_retries,
+            enabled=auto_tune_enabled,
+        )
+    except RuntimeError as exc:
+        if is_oom_error(exc):
+            return HfTrainResult(
+                ok=False,
+                run_id="",
+                adapter_dir=None,
+                loss=None,
+                steps=0,
+                samples=0,
+                tokens_per_sec=None,
+                error="oom",
+            )
+        raise
 
     model.save_pretrained(adapter_dir)
-    vram_peak = None
-    if device.startswith("cuda"):
-        try:
-            vram_peak = float(torch.cuda.max_memory_allocated() / (1024**2))
-        except Exception:
-            vram_peak = None
     meta = {
         "run_id": run_id,
         "loss": avg_loss,

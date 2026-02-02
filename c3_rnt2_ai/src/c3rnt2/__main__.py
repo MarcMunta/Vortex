@@ -34,6 +34,7 @@ from .learning_loop.trainer import train_qlora
 from .learning_loop.evaluator import evaluate_adapter, log_eval
 from .learning_loop.promoter import promote_latest
 from .agent.runner import run_agent
+from .runtime.vram_governor import decide_max_new_tokens
 
 
 def _load_and_validate(profile: str | None, override: Callable[[dict], dict] | None = None) -> dict:
@@ -174,6 +175,9 @@ def cmd_chat(args: argparse.Namespace) -> None:
         messages = [{"role": "user", "content": prompt}]
         prompt_text = build_chat_prompt(messages, backend, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
         max_new = args.max_new_tokens or int(decode_cfg.get("max_new_tokens", 64))
+        device = getattr(model, "device", None) or settings.get("core", {}).get("hf_device")
+        dtype = getattr(model, "dtype", None) or settings.get("core", {}).get("dtype")
+        max_new = decide_max_new_tokens(max_new, device, dtype, settings)
         temperature = args.temperature if args.temperature is not None else float(decode_cfg.get("temperature", 1.0))
         top_p = args.top_p if args.top_p is not None else float(decode_cfg.get("top_p", 1.0))
         repetition_penalty = float(decode_cfg.get("repetition_penalty", 1.0))

@@ -130,6 +130,21 @@ def normalize_settings(settings: dict) -> dict:
 
     agent = normalized.get("agent", {}) or {}
     agent.setdefault("max_iters", 5)
+    agent.setdefault(
+        "tools_enabled",
+        [
+            "open_docs",
+            "search_web",
+            "read_file",
+            "grep",
+            "list_tree",
+            "run_tests",
+            "propose_patch",
+            "sandbox_patch",
+            "apply_patch",
+            "summarize_diff",
+        ],
+    )
     normalized["agent"] = agent
 
     server_cfg = normalized.get("server", {}) or {}
@@ -169,6 +184,8 @@ def normalize_settings(settings: dict) -> dict:
     hf_train.setdefault("grad_accum_steps", 4)
     hf_train.setdefault("max_steps", 50)
     hf_train.setdefault("lr", 2e-4)
+    hf_train.setdefault("auto_tune_batch", True)
+    hf_train.setdefault("auto_tune_retries", 2)
     hf_train.setdefault("load_in_4bit", True)
     hf_train.setdefault("load_in_8bit", False)
     hf_train.setdefault("lora_rank", 8)
@@ -222,6 +239,7 @@ def normalize_settings(settings: dict) -> dict:
     core.setdefault("vram_threshold_mb", 1024)
     core.setdefault("vram_floor_tokens", 32)
     core.setdefault("vram_ceil_tokens", 512)
+    core.setdefault("vram_safety_margin_mb", 512)
     if "tf32" not in core and core.get("allow_tf32") is not None:
         core["tf32"] = core.get("allow_tf32")
     normalized["core"] = core

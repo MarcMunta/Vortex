@@ -88,16 +88,35 @@ def run_agent(
     max_iters: int = 5,
     action_provider: Callable[[List[dict]], Action] | None = None,
 ) -> dict:
+    supported_tools = [
+        "open_docs",
+        "search_web",
+        "read_file",
+        "grep",
+        "list_tree",
+        "run_tests",
+        "propose_patch",
+        "sandbox_patch",
+        "apply_patch",
+        "summarize_diff",
+    ]
+    agent_cfg = settings.get("agent", {}) or {}
+    tools_enabled = agent_cfg.get("tools_enabled")
+    if tools_enabled is None:
+        allowed_tools = set(supported_tools)
+    else:
+        allowed_tools = {str(item) for item in tools_enabled if item}
+    allowed_tools = {tool for tool in allowed_tools if tool in supported_tools}
+    allowed_prompt_tools = ", ".join(sorted(allowed_tools) + ["finish"])
     system_prompt = (
         "You are an autonomous coding agent. "
         "You must respond with a single JSON object Action{type,args}. "
-        "Valid types: open_docs, search_web, read_file, grep, list_tree, run_tests, propose_patch, sandbox_patch, apply_patch, summarize_diff, finish."
+        f"Valid types: {allowed_prompt_tools}."
     )
     messages: List[dict] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task},
     ]
-    agent_cfg = settings.get("agent", {}) or {}
     tools_cfg = settings.get("tools", {}) or {}
     allowlist = tools_cfg.get("web", {}).get("allow_domains", agent_cfg.get("web_allowlist", []))
     sandbox_root = Path(settings.get("selfimprove", {}).get("sandbox_root", "data/workspaces"))
@@ -145,7 +164,9 @@ def run_agent(
             break
 
         result: ToolResult
-        if action.type == "open_docs":
+        if action.type in supported_tools and action.type not in allowed_tools:
+            result = ToolResult(ok=False, output=f"tool_disabled:{action.type}")
+        elif action.type == "open_docs":
             result = tools.open_docs(str(action.args.get("url", "")))
         elif action.type == "search_web":
             result = tools.search_web(str(action.args.get("query", "")))

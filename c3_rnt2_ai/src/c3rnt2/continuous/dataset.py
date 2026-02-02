@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List
+from urllib.parse import urlsplit, urlunsplit
 
 from ..agent.memory import MemoryStore
 from ..agent.tools import AgentTools
@@ -240,6 +241,44 @@ def _instruction_density(text: str) -> float:
     return (keyword_hits + pattern_hits * 3) / max(1, len(tokens))
 
 
+def _canonicalize_url(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+    except Exception:
+        return url
+    scheme = (parts.scheme or "").lower()
+    netloc = (parts.netloc or "").lower()
+    path = parts.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+        if not path:
+            path = "/"
+    return urlunsplit((scheme, netloc, path, parts.query or "", ""))
+
+
+def _chunk_web_text(text: str, max_chars: int) -> List[str]:
+    cleaned = text.strip()
+    if not cleaned:
+        return []
+    if max_chars <= 0 or len(cleaned) <= max_chars:
+        return [cleaned]
+    chunk_size = min(800, max_chars)
+    if chunk_size <= 0:
+        chunk_size = 800
+    overlap = 120 if chunk_size > 120 else max(0, chunk_size // 6)
+    chunks: List[str] = []
+    start = 0
+    while start < len(cleaned):
+        end = min(len(cleaned), start + chunk_size)
+        chunk = cleaned[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(cleaned):
+            break
+        start = max(0, end - overlap)
+    return chunks
+
+
 def _sanitize_web_text(
     text: str,
     *,
@@ -392,9 +431,12 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
     if bool(continuous.get("ingest_web", True)) and allowlist and web_enabled:
         urls = continuous.get("ingest_urls", ["https://docs.python.org/3/", "https://pytorch.org/docs/stable/"])
         tools = AgentTools(allowlist=allowlist, web_cfg=tools_web_cfg)
-        for url in urls:
+        recent_chunks = store.sample_chunks(limit=50, source_kinds=["web"])
+        recent_vecs = [embed_text(chunk.text) for chunk in recent_chunks]
+        for raw_url in urls:
             if files_used >= max_files_per_tick or bytes_used >= max_total_bytes_per_tick:
                 break
+            url = _canonicalize_url(str(raw_url))
             key = f"web:{url}"
             meta = state.get_json(key, {})
             last_ts = float(meta.get("ts", 0.0))
@@ -411,7 +453,7 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
             max_repeat_lines = int(sanitize_cfg.get("max_repeat_lines", 2))
             content = _sanitize_web_text(
                 content,
-                max_chars=max_chars,
+                max_chars=0,
                 max_instruction_density=max_instr,
                 max_repeat_lines=max_repeat_lines,
             )
@@ -420,19 +462,42 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
             content_bytes = content.encode("utf-8", errors="ignore")
             content_hash = hashlib.sha256(content_bytes).hexdigest()
             if content_hash == last_hash:
-                state.set_json(key, {"ts": time.time(), "hash": last_hash})
+                etag = meta.get("etag")
+                last_modified = meta.get("last_modified")
+                if isinstance(doc.meta, dict):
+                    etag = doc.meta.get("etag") or etag
+                    last_modified = doc.meta.get("last_modified") or last_modified
+                state.set_json(key, {"ts": time.time(), "hash": last_hash, "etag": etag, "last_modified": last_modified})
                 continue
-            budget_left = max_total_bytes_per_tick - bytes_used
-            if budget_left <= 0:
-                break
-            max_bytes = min(max_bytes_per_file, budget_left)
-            if max_bytes > 0 and len(content_bytes) > max_bytes:
-                content_bytes = content_bytes[:max_bytes]
-                content = content_bytes.decode("utf-8", errors="ignore")
-            new_docs += store.ingest_text("web", url, content, quality=0.0)
-            bytes_used += len(content_bytes)
-            files_used += 1
-            state.set_json(key, {"ts": time.time(), "hash": content_hash})
+            chunks = _chunk_web_text(content, max_chars)
+            if not chunks:
+                continue
+            for idx, chunk in enumerate(chunks):
+                if files_used >= max_files_per_tick or bytes_used >= max_total_bytes_per_tick:
+                    break
+                vec = embed_text(chunk)
+                if recent_vecs:
+                    if max(_cosine_sim(vec, other) for other in recent_vecs) > 0.97:
+                        continue
+                budget_left = max_total_bytes_per_tick - bytes_used
+                if budget_left <= 0:
+                    break
+                chunk_bytes = chunk.encode("utf-8", errors="ignore")
+                max_bytes = min(max_bytes_per_file, budget_left)
+                if max_bytes > 0 and len(chunk_bytes) > max_bytes:
+                    chunk_bytes = chunk_bytes[:max_bytes]
+                    chunk = chunk_bytes.decode("utf-8", errors="ignore")
+                source_ref = url if len(chunks) == 1 else f"{url}#chunk={idx}"
+                new_docs += store.ingest_text("web", source_ref, chunk, quality=0.0)
+                bytes_used += len(chunk_bytes)
+                files_used += 1
+                recent_vecs.append(vec)
+            etag = meta.get("etag")
+            last_modified = meta.get("last_modified")
+            if isinstance(doc.meta, dict):
+                etag = doc.meta.get("etag") or etag
+                last_modified = doc.meta.get("last_modified") or last_modified
+            state.set_json(key, {"ts": time.time(), "hash": content_hash, "etag": etag, "last_modified": last_modified})
 
     # Episodes (incremental)
     episodes_path = base_dir / "data" / "episodes" / "agent.jsonl"

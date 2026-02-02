@@ -21,6 +21,9 @@ class WebFetchResult:
     text: str
     from_cache: bool
     error: str | None
+    etag: str | None = None
+    last_modified: str | None = None
+    content_hash: str | None = None
 
 
 class TokenBucket:
@@ -170,7 +173,7 @@ def web_fetch(
             text = str(cached.get("text", ""))
             status = int(cached.get("status", 200))
             _log_event(base_dir, {"url": url, "ok": True, "cached": True, "offline": True, "bytes": len(text), "status": status})
-            return WebFetchResult(ok=True, url=url, status=status, text=text, from_cache=True, error=None)
+            return WebFetchResult(ok=True, url=url, status=status, text=text, from_cache=True, error=None, etag=cached.get("etag"), last_modified=cached.get("last_modified"), content_hash=cached.get("content_hash"))
         _log_event(base_dir, {"url": url, "ok": False, "error": "network_disabled"})
         return WebFetchResult(ok=False, url=url, status=None, text="", from_cache=False, error="network_disabled")
 
@@ -203,7 +206,17 @@ def web_fetch(
         if use_cache:
             _write_cache(cache_dir, url, payload)
         _log_event(base_dir, {"url": url, "ok": True, "cached": True, "status": 304, "bytes": len(text)})
-        return WebFetchResult(ok=True, url=url, status=int(payload.get("status", 200)), text=text, from_cache=True, error=None)
+        return WebFetchResult(
+            ok=True,
+            url=url,
+            status=int(payload.get("status", 200)),
+            text=text,
+            from_cache=True,
+            error=None,
+            etag=payload.get("etag"),
+            last_modified=payload.get("last_modified"),
+            content_hash=payload.get("content_hash"),
+        )
     if status != 200:
         _log_event(base_dir, {"url": url, "ok": False, "status": status})
         return WebFetchResult(ok=False, url=url, status=status, text="", from_cache=False, error=f"http {status}")
@@ -243,4 +256,14 @@ def web_fetch(
     if use_cache:
         _write_cache(cache_dir, url, payload)
     _log_event(base_dir, {"url": url, "ok": True, "status": status, "bytes": len(text), "truncated": truncated})
-    return WebFetchResult(ok=True, url=url, status=status, text=text, from_cache=False, error=None)
+    return WebFetchResult(
+        ok=True,
+        url=url,
+        status=status,
+        text=text,
+        from_cache=False,
+        error=None,
+        etag=resp.headers.get("ETag"),
+        last_modified=resp.headers.get("Last-Modified"),
+        content_hash=content_hash,
+    )

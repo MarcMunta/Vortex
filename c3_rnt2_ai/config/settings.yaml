@@ -185,6 +185,7 @@ profiles:
       vram_threshold_mb: 1200
       vram_floor_tokens: 32
       vram_ceil_tokens: 512
+      vram_safety_margin_mb: 512
     server:
       auto_reload_adapter: false
       reload_interval_s: 60
@@ -218,6 +219,8 @@ profiles:
       dataset_path: data/registry/hf_train/sft_samples.jsonl
       state_path: data/registry/hf_train/state.json
       max_samples: 128
+      auto_tune_batch: true
+      auto_tune_retries: 2
       min_quality: 0.3
       prompt_template: "Context:\n{text}\nAnswer:"
       max_seq_len: 1024
