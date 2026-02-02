@@ -596,6 +596,8 @@ profiles:
 
   safe_selftrain_4080:
     base_profile: rtx4080_16gb_vortexx
+    server:
+      block_during_training: true
 
     continuous:
       enabled: true

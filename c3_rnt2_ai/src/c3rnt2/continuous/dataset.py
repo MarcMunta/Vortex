@@ -391,7 +391,7 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
     web_enabled = bool(tools_web_cfg.get("enabled", False))
     if bool(continuous.get("ingest_web", True)) and allowlist and web_enabled:
         urls = continuous.get("ingest_urls", ["https://docs.python.org/3/", "https://pytorch.org/docs/stable/"])
-        tools = AgentTools(allowlist=allowlist, web_cfg=tools_cfg)
+        tools = AgentTools(allowlist=allowlist, web_cfg=tools_web_cfg)
         for url in urls:
             if files_used >= max_files_per_tick or bytes_used >= max_total_bytes_per_tick:
                 break

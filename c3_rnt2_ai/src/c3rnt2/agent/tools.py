@@ -7,7 +7,7 @@ import subprocess
 from urllib.parse import quote_plus
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from ..tools.web_access import web_fetch
 from ..utils.locks import is_lock_held
@@ -32,12 +32,12 @@ class AgentTools:
         self_patch_cfg: dict | None = None,
         repo_root: Path | None = None,
     ):
-        raw_cfg = dict(web_cfg or {})
+        raw_cfg: dict[str, Any] = dict(web_cfg or {})
         if "web" in raw_cfg:
             raw_cfg = raw_cfg.get("web", {}) or {}
-        self.web_cfg: dict[str, object] = raw_cfg
-        self.agent_cfg: dict[str, object] = dict(agent_cfg or {})
-        self.self_patch_cfg: dict[str, object] = dict(self_patch_cfg or {})
+        self.web_cfg: dict[str, Any] = raw_cfg
+        self.agent_cfg: dict[str, Any] = dict(agent_cfg or {})
+        self.self_patch_cfg: dict[str, Any] = dict(self_patch_cfg or {})
         self.web_enabled = bool(self.web_cfg.get("enabled", False))
         allow_domains = self.web_cfg.get("allow_domains", allowlist) or []
         self.allowlist: list[str] = [str(item) for item in allow_domains if item]

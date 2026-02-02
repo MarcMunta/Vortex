@@ -81,6 +81,13 @@ def _apply_cli_overrides(settings: dict, args: argparse.Namespace) -> dict:
     return settings
 
 
+def _apply_serve_self_train_defaults(settings: dict) -> dict:
+    server_cfg = dict(settings.get("server", {}) or {})
+    server_cfg.setdefault("block_during_training", True)
+    settings["server"] = server_cfg
+    return settings
+
+
 def _resolve_fallback_backend(settings: dict, current: str) -> str | None:
     core = settings.get("core", {}) or {}
     fallback = core.get("backend_fallback") or core.get("hf_fallback")
@@ -332,7 +339,8 @@ def _run_self_train_tick(
 ) -> dict:
     allowlist = _resolve_allowlist(settings)
     new_docs = ingest_sources(base_dir, allowlist, settings)
-    _server_cfg = settings.get("server", {}) or {}
+    server_cfg = settings.get("server", {}) or {}
+    block_during_training = bool(server_cfg.get("block_during_training", False))
     lock_path = base_dir / "data" / "locks" / "train.lock"
     lock = FileLock(lock_path)
     try:
@@ -343,7 +351,7 @@ def _run_self_train_tick(
         state = getattr(app, "state", SimpleNamespace())
         setattr(app, "state", state)
         state.training_active = True
-        if maintenance_window_s and maintenance_window_s > 0:
+        if maintenance_window_s and maintenance_window_s > 0 and not block_during_training:
             state.maintenance_until = time.time() + float(maintenance_window_s)
         result = train_hf_once(settings, base_dir, reuse_dataset=reuse_dataset)
     finally:
@@ -364,7 +372,10 @@ def _run_self_train_tick(
 
 
 def cmd_serve_self_train(args: argparse.Namespace) -> None:
-    settings = _load_and_validate(args.profile, override=lambda s: _apply_cli_overrides(s, args))
+    settings = _load_and_validate(
+        args.profile,
+        override=lambda s: _apply_serve_self_train_defaults(_apply_cli_overrides(s, args)),
+    )
     base_dir = Path(".")
     interval_min = _resolve_interval_minutes(args.interval_minutes, settings)
     maintenance_window_s = float(args.maintenance_window_s or settings.get("server", {}).get("maintenance_window_s", 10))
