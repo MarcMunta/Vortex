@@ -11,3 +11,5 @@ class Sample:
     source_kind: str = "unknown"
     messages: list[dict[str, Any]] | None = None
     quality: float | None = None
+    ts: float | None = None
+    source_ref: str | None = None

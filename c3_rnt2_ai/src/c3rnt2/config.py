@@ -185,10 +185,11 @@ def normalize_settings(settings: dict) -> dict:
     hf_train.setdefault(
         "source_kind_weights",
         {
-            "chat_feedback": 2.0,
-            "chat_feedback_soft": 1.2,
+            "chat_feedback": 1.5,
+            "chat_feedback_soft": 0.7,
+            "episode": 1.2,
             "web": 0.8,
-            "episode": 1.5,
+            "logs": 0.8,
         },
     )
     hf_eval = hf_train.get("eval", {}) or {}

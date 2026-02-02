@@ -35,26 +35,31 @@ class AgentTools:
         raw_cfg = dict(web_cfg or {})
         if "web" in raw_cfg:
             raw_cfg = raw_cfg.get("web", {}) or {}
-        self.web_cfg = raw_cfg
-        self.agent_cfg = dict(agent_cfg or {})
-        self.self_patch_cfg = dict(self_patch_cfg or {})
+        self.web_cfg: dict[str, object] = raw_cfg
+        self.agent_cfg: dict[str, object] = dict(agent_cfg or {})
+        self.self_patch_cfg: dict[str, object] = dict(self_patch_cfg or {})
         self.web_enabled = bool(self.web_cfg.get("enabled", False))
-        self.allowlist = list(self.web_cfg.get("allow_domains", allowlist) or [])
+        allow_domains = self.web_cfg.get("allow_domains", allowlist) or []
+        self.allowlist: list[str] = [str(item) for item in allow_domains if item]
         if self.web_enabled:
             normalized = [str(item).lower().strip() for item in self.allowlist if item]
             if "duckduckgo.com" not in normalized:
                 self.allowlist.append("duckduckgo.com")
-        self.cache_root = Path(self.web_cfg.get("cache_dir") or cache_root or Path("data") / "web_cache")
+        self.cache_root: Path = Path(self.web_cfg.get("cache_dir") or cache_root or Path("data") / "web_cache")
         self.cache_root.mkdir(parents=True, exist_ok=True)
-        self.rate_limit_per_min = int(self.web_cfg.get("rate_limit_per_min", rate_limit_per_min))
-        self.max_bytes = int(self.web_cfg.get("max_bytes", 512_000))
-        self.timeout_s = int(self.web_cfg.get("timeout_s", 10))
+        self.rate_limit_per_min: int = int(self.web_cfg.get("rate_limit_per_min", rate_limit_per_min))
+        self.max_bytes: int = int(self.web_cfg.get("max_bytes", 512_000))
+        self.timeout_s: int = int(self.web_cfg.get("timeout_s", 10))
         cache_ttl = self.web_cfg.get("cache_ttl_s", None)
-        self.cache_ttl_s = int(cache_ttl) if cache_ttl is not None else None
-        self.allow_content_types = self.web_cfg.get("allow_content_types")
-        self.sandbox_root = sandbox_root or Path("data") / "workspaces"
+        self.cache_ttl_s: int | None = int(cache_ttl) if cache_ttl is not None else None
+        allow_content_types = self.web_cfg.get("allow_content_types")
+        if isinstance(allow_content_types, list):
+            self.allow_content_types: list[str] | None = [str(item) for item in allow_content_types if item]
+        else:
+            self.allow_content_types = None
+        self.sandbox_root: Path = sandbox_root or Path("data") / "workspaces"
         self.allow_git = bool(self.agent_cfg.get("allow_git", False))
-        self.repo_root = repo_root.resolve() if repo_root else None
+        self.repo_root: Path | None = repo_root.resolve() if repo_root else None
 
     def _allowed_bases(self) -> List[Path]:
         bases: List[Path] = []
@@ -97,7 +102,7 @@ class AgentTools:
             url,
             allowlist=self.allowlist,
             max_bytes=self.max_bytes,
-            timeout_s=self.timeout_s,
+            timeout_s=int(self.timeout_s),
             cache_dir=self.cache_root,
             rate_limit_per_min=self.rate_limit_per_min,
             cache_ttl_s=self.cache_ttl_s,
@@ -122,7 +127,7 @@ class AgentTools:
             url,
             allowlist=self.allowlist,
             max_bytes=self.max_bytes,
-            timeout_s=self.timeout_s,
+            timeout_s=int(self.timeout_s),
             cache_dir=self.cache_root,
             rate_limit_per_min=self.rate_limit_per_min,
             cache_ttl_s=self.cache_ttl_s,
@@ -184,8 +189,8 @@ class AgentTools:
 
     def read_file(self, path: str, max_chars: int = 4000) -> ToolResult:
         try:
-            target = self._resolve_safe_path(path)
-            if not target or not target.exists() or not target.is_file():
+            target: Path | None = self._resolve_safe_path(path)
+            if target is None or not target.exists() or not target.is_file():
                 return ToolResult(ok=False, output="path not allowed")
             text = target.read_text(encoding="utf-8", errors="ignore")
             if max_chars and len(text) > max_chars:
@@ -196,8 +201,8 @@ class AgentTools:
 
     def list_tree(self, root: str = ".", max_entries: int = 200) -> ToolResult:
         try:
-            base = self._resolve_safe_path(root)
-            if not base or not base.exists() or not base.is_dir():
+            base: Path | None = self._resolve_safe_path(root)
+            if base is None or not base.exists() or not base.is_dir():
                 return ToolResult(ok=False, output="path not allowed")
             entries: List[str] = []
             for path in sorted(base.rglob("*")):
@@ -271,7 +276,7 @@ class AgentTools:
         goal: str = "agent_patch",
         *,
         llm_generate_diff: bool = False,
-        llm_context: dict | None = None,
+        llm_context: dict[str, object] | None = None,
     ) -> ToolResult:
         try:
             safety_cfg = self.self_patch_cfg.get("safety", {}) if isinstance(self.self_patch_cfg, dict) else {}
@@ -282,17 +287,20 @@ class AgentTools:
             context: dict[str, object] = {"changes": {str(k): v for k, v in changes.items()}}
             if llm_context:
                 context.update(llm_context)
-            files = []
+            files: List[str] = []
             files_value = context.get("files")
             if isinstance(files_value, list):
                 files.extend([str(f) for f in files_value if f])
-            tool_calls = llm_context.get("tool_calls") if isinstance(llm_context, dict) else None
+            tool_calls: List[dict[str, object]] = []
+            if isinstance(llm_context, dict):
+                calls_value = llm_context.get("tool_calls")
+                if isinstance(calls_value, list):
+                    tool_calls = [item for item in calls_value if isinstance(item, dict)]
             pytest_output = ""
-            if isinstance(tool_calls, list):
-                for call in reversed(tool_calls):
-                    if call.get("action") == "run_tests" and call.get("output"):
-                        pytest_output = str(call.get("output", ""))
-                        break
+            for call in reversed(tool_calls):
+                if call.get("action") == "run_tests" and call.get("output"):
+                    pytest_output = str(call.get("output", ""))
+                    break
             if pytest_output:
                 files.extend(self._extract_pytest_paths(pytest_output, repo_root))
             files = self._limit_context_files(files, repo_root)

@@ -174,6 +174,8 @@ def _save_dataset(path: Path, samples: List[Sample]) -> None:
                 "source_kind": sample.source_kind,
                 "messages": sample.messages,
                 "quality": getattr(sample, "quality", None),
+                "ts": getattr(sample, "ts", None),
+                "source_ref": getattr(sample, "source_ref", None),
             }
             handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
 
@@ -191,6 +193,8 @@ def _load_dataset(path: Path) -> List[Sample]:
         except Exception:
             continue
         quality = payload.get("quality")
+        ts = payload.get("ts")
+        source_ref = payload.get("source_ref")
         samples.append(
             Sample(
                 prompt=str(payload.get("prompt", "")),
@@ -198,9 +202,29 @@ def _load_dataset(path: Path) -> List[Sample]:
                 source_kind=str(payload.get("source_kind", "unknown")),
                 messages=payload.get("messages"),
                 quality=float(quality) if quality is not None else None,
+                ts=float(ts) if ts is not None else None,
+                source_ref=str(source_ref) if source_ref is not None else None,
             )
         )
     return samples
+
+
+def _has_nonempty_jsonl(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        if path.stat().st_size <= 0:
+            return False
+    except Exception:
+        pass
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    return True
+    except Exception:
+        return False
+    return False
 
 
 def _compute_sample_weights(samples: List[Sample], settings: dict) -> List[float]:
@@ -213,7 +237,10 @@ def _compute_sample_weights(samples: List[Sample], settings: dict) -> List[float
         quality = getattr(sample, "quality", None)
         q = float(quality) if quality is not None else 1.0
         q = max(0.1, min(1.0, q))
-        sk = float(source_weights.get(sample.source_kind, 1.0))
+        sk_val = source_weights.get(sample.source_kind)
+        if sk_val is None and sample.source_kind == "logs":
+            sk_val = source_weights.get("web")
+        sk = float(sk_val) if sk_val is not None else 1.0
         weights.append(q * sk)
     return weights
 
@@ -314,7 +341,14 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
     min_quality = float(cfg.get("min_quality", 0.0))
     chunks = store.sample_chunks(limit=max_samples, min_quality=min_quality, since_ts=last_ts)
     episodes_path = base_dir / "data" / "episodes" / "agent.jsonl"
-    if not chunks and not episodes_path.exists() and not reuse_dataset:
+    chat_path = base_dir / "data" / "episodes" / "chat.jsonl"
+    feedback_path = base_dir / "data" / "episodes" / "feedback.jsonl"
+    training_path = base_dir / "data" / "episodes" / "training.jsonl"
+    has_episode_data = _has_nonempty_jsonl(episodes_path)
+    has_chat_data = _has_nonempty_jsonl(chat_path)
+    has_feedback_data = _has_nonempty_jsonl(feedback_path)
+    has_training_data = _has_nonempty_jsonl(training_path)
+    if not chunks and not reuse_dataset and not (has_episode_data or has_chat_data or has_feedback_data or has_training_data):
         return HfTrainResult(ok=False, run_id="", adapter_dir=None, loss=None, steps=0, samples=0, tokens_per_sec=None, error="no_samples")
 
     if reuse_dataset and dataset_path.exists():
@@ -324,9 +358,6 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
         queue_dir = Path(settings.get("self_patch", {}).get("queue_dir", "data/self_patch/queue"))
         if not queue_dir.is_absolute():
             queue_dir = base_dir / queue_dir
-        chat_path = base_dir / "data" / "episodes" / "chat.jsonl"
-        feedback_path = base_dir / "data" / "episodes" / "feedback.jsonl"
-        training_path = base_dir / "data" / "episodes" / "training.jsonl"
         build_sft_dataset(
             chunks=chunks,
             episodes_path=episodes_path,
