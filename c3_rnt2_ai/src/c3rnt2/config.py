@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -264,8 +265,9 @@ def normalize_settings(settings: dict) -> dict:
             lava[key] = core.get(key)
     cont = normalized.get("continuous", {}) or {}
     if cont:
-        if "interval_minutes" not in cont and cont.get("run_interval_minutes") is not None:
-            cont["interval_minutes"] = cont.get("run_interval_minutes")
+        if cont.get("run_interval_minutes") is not None:
+            warnings.warn("continuous.run_interval_minutes is deprecated; use continuous.interval_minutes", DeprecationWarning)
+            cont.setdefault("interval_minutes", cont.get("run_interval_minutes"))
         if "run_interval_minutes" not in cont and cont.get("interval_minutes") is not None:
             cont["run_interval_minutes"] = cont.get("interval_minutes")
         if "max_steps_per_tick" not in cont and cont.get("max_steps") is not None:
@@ -492,4 +494,6 @@ def load_settings(profile: str | None = None, settings_path: str | Path | None =
     resolved = resolve_profile(profile)
     if resolved not in profiles:
         raise KeyError(f"Profile '{resolved}' not found in {path}")
-    return normalize_settings(_resolve_profile(profiles, resolved, []))
+    settings = normalize_settings(_resolve_profile(profiles, resolved, []))
+    settings["_profile"] = resolved
+    return settings

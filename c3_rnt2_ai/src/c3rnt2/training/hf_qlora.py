@@ -27,6 +27,7 @@ class HfTrainResult:
     steps: int
     samples: int
     tokens_per_sec: float | None
+    vram_peak_mb: float | None
     error: str | None = None
 
 
@@ -439,13 +440,13 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
     cfg = settings.get("hf_train", {}) or {}
     model_name = cfg.get("model_name") or settings.get("core", {}).get("hf_model")
     if not model_name:
-        return HfTrainResult(ok=False, run_id="", adapter_dir=None, loss=None, steps=0, samples=0, tokens_per_sec=None, error="model_name missing")
+        return HfTrainResult(ok=False, run_id="", adapter_dir=None, loss=None, steps=0, samples=0, tokens_per_sec=None, vram_peak_mb=None, error="model_name missing")
 
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig  # type: ignore
         from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel  # type: ignore
     except Exception as exc:
-        return HfTrainResult(ok=False, run_id="", adapter_dir=None, loss=None, steps=0, samples=0, tokens_per_sec=None, error=f"hf deps missing: {exc}")
+        return HfTrainResult(ok=False, run_id="", adapter_dir=None, loss=None, steps=0, samples=0, tokens_per_sec=None, vram_peak_mb=None, error=f"hf deps missing: {exc}")
 
     reg_dir = _resolve_registry_dir(base_dir, settings)
     state_path = _resolve_state_path(base_dir, settings)
@@ -475,7 +476,7 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
     has_feedback_data = _has_nonempty_jsonl(feedback_path)
     has_training_data = _has_nonempty_jsonl(training_path)
     if not chunks and not reuse_dataset and not (has_episode_data or has_chat_data or has_feedback_data or has_training_data):
-        return HfTrainResult(ok=False, run_id="", adapter_dir=None, loss=None, steps=0, samples=0, tokens_per_sec=None, error="no_samples")
+        return HfTrainResult(ok=False, run_id="", adapter_dir=None, loss=None, steps=0, samples=0, tokens_per_sec=None, vram_peak_mb=None, error="no_samples")
 
     if reuse_dataset and dataset_path.exists():
         samples = _load_dataset(dataset_path)
@@ -502,7 +503,7 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
         samples = _load_dataset(dataset_path)
 
     if not samples:
-        return HfTrainResult(ok=False, run_id="", adapter_dir=None, loss=None, steps=0, samples=0, tokens_per_sec=None, error="empty_dataset")
+        return HfTrainResult(ok=False, run_id="", adapter_dir=None, loss=None, steps=0, samples=0, tokens_per_sec=None, vram_peak_mb=None, error="empty_dataset")
 
     run_id = time.strftime("%Y%m%d_%H%M%S")
     adapter_dir = reg_dir / run_id / "adapter"
@@ -640,6 +641,7 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
                 steps=0,
                 samples=0,
                 tokens_per_sec=None,
+                vram_peak_mb=None,
                 error="oom",
             )
         raise
@@ -720,6 +722,7 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
         steps=steps,
         samples=len(samples),
         tokens_per_sec=tokens_per_sec,
+        vram_peak_mb=vram_peak,
     )
 
 

@@ -10,7 +10,10 @@ def test_serve_self_train_mock_loop(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
 
     def _fake_load_and_validate(_profile, override=None):
-        settings = {"continuous": {"run_interval_minutes": 0.01}, "core": {"backend": "hf"}}
+        settings = {
+            "continuous": {"interval_minutes": 0.01, "ingest_web": False, "trigger": {"enabled": False}},
+            "core": {"backend": "hf"},
+        }
         return override(settings) if override else settings
 
     monkeypatch.setattr(main_mod, "_load_and_validate", _fake_load_and_validate)
@@ -69,7 +72,7 @@ def test_self_train_tick_sets_and_clears_training_active(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(main_mod, "train_hf_once", _fake_train)
 
-    settings = {"server": {"block_during_training": True}}
+    settings = {"server": {"block_during_training": True}, "continuous": {"ingest_web": False, "trigger": {"enabled": False}}}
     result = main_mod._run_self_train_tick(
         app,
         settings,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -17,7 +18,7 @@ except Exception:  # pragma: no cover
     torch = None
 
 from .config import load_settings, resolve_profile, validate_profile
-from .continuous.dataset import ingest_sources
+from .continuous.dataset import ingest_sources, collect_samples
 from .continuous.bootstrap import run_bootstrap
 from .device import detect_device
 from .doctor import check_deps, run_deep_checks
@@ -52,6 +53,42 @@ def _resolve_allowlist(settings: dict) -> list[str]:
         return list(web_cfg.get("allow_domains"))
     agent_cfg = settings.get("agent", {}) or {}
     return list(agent_cfg.get("web_allowlist", []))
+
+
+def _supported_agent_tools() -> set[str]:
+    return {
+        "open_docs",
+        "search_web",
+        "read_file",
+        "grep",
+        "list_tree",
+        "run_tests",
+        "propose_patch",
+        "sandbox_patch",
+        "apply_patch",
+        "summarize_diff",
+    }
+
+
+def _strict_web_ingest(settings: dict) -> bool:
+    cont = settings.get("continuous", {}) or {}
+    strict_flag = cont.get("strict_web_ingest")
+    if strict_flag is not None:
+        return bool(strict_flag)
+    if bool(settings.get("hf_train", {}).get("enabled", False)):
+        return True
+    profile_name = settings.get("_profile")
+    return bool(profile_name == "safe_selftrain_4080")
+
+
+def _check_web_ingest(settings: dict, allowlist: list[str]) -> tuple[bool, str | None, bool]:
+    cont = settings.get("continuous", {}) or {}
+    ingest_web = bool(cont.get("ingest_web", True))
+    tools_web = settings.get("tools", {}).get("web", {}) or {}
+    web_enabled = bool(tools_web.get("enabled", False))
+    if ingest_web and allowlist and not web_enabled:
+        return False, "ingest_web enabled but tools.web.enabled=false", _strict_web_ingest(settings)
+    return True, None, False
 
 
 def _self_patch_queue_dir(base_dir: Path, settings: dict) -> Path:
@@ -117,6 +154,85 @@ def _run_module(module: str, extra_args: list[str]) -> None:
     subprocess.run(cmd, check=True)
 
 
+def _check_path_writable(base_dir: Path, path_value: str | Path | None) -> tuple[bool, str]:
+    if not path_value:
+        return True, ""
+    path = Path(path_value)
+    if not path.is_absolute():
+        path = base_dir / path
+    target = path
+    is_file = path.suffix != ""
+    check = path.parent if is_file else path
+    while not check.exists() and check.parent != check:
+        check = check.parent
+    if not check.exists():
+        return False, f"{target} parent missing"
+    if not os.access(check, os.W_OK):
+        return False, f"{target} parent not writable"
+    return True, ""
+
+
+def _run_doctor_checks(settings: dict, base_dir: Path) -> dict:
+    errors: list[str] = []
+    warnings: list[str] = []
+    info: dict[str, object] = {}
+
+    supported = _supported_agent_tools()
+    tools_enabled = settings.get("agent", {}).get("tools_enabled")
+    if tools_enabled is None:
+        tools_enabled = list(supported)
+    bad_tools = [str(t) for t in tools_enabled if str(t) not in supported]
+    if bad_tools:
+        errors.append(f"unsupported tools_enabled: {bad_tools}")
+    info["tools_enabled"] = list(tools_enabled)
+
+    allowlist = _resolve_allowlist(settings)
+    cont_cfg = settings.get("continuous", {}) or {}
+    if bool(cont_cfg.get("ingest_web", True)) and not allowlist:
+        return {"ok": False, "error": "ingest_web enabled but allow_domains empty", "skipped": "web_ingest_unavailable"}
+    web_ok, web_msg, strict = _check_web_ingest(settings, allowlist)
+    if not web_ok:
+        if strict:
+            errors.append(web_msg or "web_ingest_invalid")
+        else:
+            warnings.append(web_msg or "web_ingest_invalid")
+    info["web_ingest"] = {"ok": web_ok, "strict": strict, "allowlist": allowlist}
+    cont = settings.get("continuous", {}) or {}
+    if bool(cont.get("ingest_web", True)) and not allowlist:
+        errors.append("ingest_web enabled but allow_domains is empty")
+
+    tools_web = settings.get("tools", {}).get("web", {}) or {}
+    hf_train = settings.get("hf_train", {}) or {}
+    paths = []
+    if cont.get("knowledge_path"):
+        paths.append(("continuous.knowledge_path", cont.get("knowledge_path")))
+    if tools_web.get("cache_dir"):
+        paths.append(("tools.web.cache_dir", tools_web.get("cache_dir")))
+    if hf_train.get("registry_dir"):
+        paths.append(("hf_train.registry_dir", hf_train.get("registry_dir")))
+    for label, value in paths:
+        ok, msg = _check_path_writable(base_dir, value)
+        if not ok:
+            errors.append(f"{label}: {msg}")
+
+    try:
+        model = load_inference_model(settings)
+        info["model_load_ok"] = True
+        del model
+    except Exception as exc:
+        errors.append(f"model_load_failed: {exc}")
+
+    decode_cfg = settings.get("decode", {}) or {}
+    requested = int(decode_cfg.get("max_new_tokens", 64))
+    core = settings.get("core", {}) or {}
+    device = core.get("hf_device", core.get("device", None))
+    dtype = core.get("dtype")
+    decided = decide_max_new_tokens(requested, device, dtype, settings)
+    info["vram_governor"] = {"requested": requested, "decided": decided, "device": device, "dtype": dtype}
+
+    return {"ok": not errors, "errors": errors, "warnings": warnings, "info": info}
+
+
 def cmd_doctor(args: argparse.Namespace) -> None:
     info = detect_device()
     print(
@@ -147,9 +263,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         print({"settings_ok": True, "profile": resolve_profile(args.profile)})
     except Exception as exc:
         print({"warning": "settings_invalid", "error": str(exc)})
-        if not args.deep:
-            return
-        settings = load_settings(args.profile)
+        sys.exit(1)
+
+    report = _run_doctor_checks(settings, base_dir)
+    print(report)
+    if not report.get("ok", False):
+        sys.exit(1)
 
     if args.deep:
         try:
@@ -157,6 +276,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             print({"deep": deep_result})
         except Exception as exc:
             print({"deep": {"deep_ok": False, "error": str(exc)}})
+            sys.exit(1)
 
 
 def cmd_chat(args: argparse.Namespace) -> None:
@@ -342,7 +462,33 @@ def _run_self_train_tick(
     reload_fn: Callable | None = None,
 ) -> dict:
     allowlist = _resolve_allowlist(settings)
-    new_docs = ingest_sources(base_dir, allowlist, settings)
+    cont_cfg = settings.get("continuous", {}) or {}
+    if bool(cont_cfg.get("ingest_web", True)) and not allowlist:
+        return {"ok": False, "error": "ingest_web enabled but allow_domains empty", "skipped": "web_ingest_unavailable"}
+    web_ok, web_msg, strict = _check_web_ingest(settings, allowlist)
+    if not web_ok:
+        if strict:
+            return {"ok": False, "error": web_msg or "web_ingest_invalid", "skipped": "web_ingest_unavailable"}
+        print(f"WARN {web_msg}")
+    try:
+        new_docs = ingest_sources(base_dir, allowlist, settings)
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc), "skipped": "web_ingest_unavailable"}
+
+    if not web_ok:
+        return {"ok": False, "error": web_msg or "web_ingest_invalid", "new_docs": new_docs, "skipped": "web_ingest_unavailable"}
+
+    collected = collect_samples(base_dir, allowlist, settings, ingest=False)
+    stats = collected.stats
+    stats.new_docs = int(new_docs)
+    trigger_cfg = settings.get("continuous", {}).get("trigger", {})
+    if bool(trigger_cfg.get("enabled", True)):
+        min_new_docs = int(trigger_cfg.get("min_new_docs", 1))
+        min_novelty = float(trigger_cfg.get("min_novelty", 0.2))
+        min_successes = int(trigger_cfg.get("min_successes", 0))
+        if stats.new_docs < min_new_docs and stats.novelty_avg < min_novelty and stats.successes <= min_successes:
+            return {"ok": True, "skipped": "signal_low", "new_docs": new_docs, "stats": stats.__dict__}
+
     server_cfg = settings.get("server", {}) or {}
     block_during_training = bool(server_cfg.get("block_during_training", False))
     lock_path = base_dir / "data" / "locks" / "train.lock"
@@ -357,7 +503,13 @@ def _run_self_train_tick(
         state.training_active = True
         if maintenance_window_s and maintenance_window_s > 0 and not block_during_training:
             state.maintenance_until = time.time() + float(maintenance_window_s)
-        result = train_hf_once(settings, base_dir, reuse_dataset=reuse_dataset)
+        try:
+            result = train_hf_once(settings, base_dir, reuse_dataset=reuse_dataset)
+        except Exception as exc:
+            result = None
+            error = str(exc)
+        else:
+            error = None
     finally:
         try:
             app.state.training_active = False
@@ -366,13 +518,24 @@ def _run_self_train_tick(
         except Exception:
             pass
         lock.release()
+    if error:
+        return {"ok": False, "error": error, "new_docs": new_docs, "stats": stats.__dict__}
     reload_result = None
-    if reload_fn is not None and result.ok:
+    if reload_fn is not None and result and result.ok:
         try:
             reload_result = reload_fn(app, base_dir, settings, force=True)
         except Exception as exc:
             reload_result = {"ok": False, "error": str(exc)}
-    return {"ok": True, "new_docs": new_docs, "train": result.__dict__, "reload": reload_result}
+    metrics = {
+        "docs_new": new_docs,
+        "samples_used": getattr(result, "samples", None) if result else None,
+        "steps": getattr(result, "steps", None) if result else None,
+        "loss": getattr(result, "loss", None) if result else None,
+        "tokens_per_sec": getattr(result, "tokens_per_sec", None) if result else None,
+        "vram_peak_mb": getattr(result, "vram_peak_mb", None) if result else None,
+    }
+    print({"self_train_metrics": metrics})
+    return {"ok": True, "new_docs": new_docs, "train": result.__dict__ if result else None, "reload": reload_result, "stats": stats.__dict__}
 
 
 def cmd_serve_self_train(args: argparse.Namespace) -> None:

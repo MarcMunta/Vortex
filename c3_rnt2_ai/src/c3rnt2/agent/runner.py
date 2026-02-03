@@ -222,7 +222,10 @@ def run_agent(
         elif action.type == "summarize_diff":
             result = tools.summarize_diff(base_dir)
         else:
-            result = ToolResult(ok=False, output=f"unknown action: {action.type}")
+            if action.type != "finish":
+                result = ToolResult(ok=False, output=f"tool_unsupported:{action.type}")
+            else:
+                result = ToolResult(ok=False, output="unknown action")
 
         tool_calls.append({"action": action.type, "args": action.args, "ok": result.ok, "output": result.output[:1000]})
         messages.append({"role": "tool", "content": result.output[:2000]})

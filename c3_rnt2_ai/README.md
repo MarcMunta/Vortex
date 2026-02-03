@@ -139,6 +139,25 @@ rag:
   max_chars: 1200
 ```
 
+## Doctor (smoke test de perfil)
+```bash
+python -m c3rnt2 doctor --profile rtx4080_16gb
+python -m c3rnt2 doctor --profile safe_selftrain_4080
+```
+
+## Web seguro (allowlist)
+```yaml
+tools:
+  web:
+    enabled: true
+    allow_domains: ["docs.python.org", "pytorch.org", "github.com"]
+```
+
+## Benchmark vortexx_next
+```bash
+python scripts/bench_generate.py --profile rtx4080_16gb_vortexx_next --max-new-tokens 512
+```
+
 ## Learning loop (incremental)
 ```bash
 python -m c3rnt2 learn ingest --profile qwen8b_train

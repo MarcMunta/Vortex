@@ -279,6 +279,19 @@ def _chunk_web_text(text: str, max_chars: int) -> List[str]:
     return chunks
 
 
+def _strict_web_ingest(settings: dict) -> bool:
+    cont = settings.get("continuous", {}) or {}
+    strict_flag = cont.get("strict_web_ingest")
+    if strict_flag is not None:
+        return bool(strict_flag)
+    if bool(settings.get("hf_train", {}).get("enabled", False)):
+        return True
+    profile_name = settings.get("_profile")
+    if profile_name and str(profile_name) == "safe_selftrain_4080":
+        return True
+    return False
+
+
 def _sanitize_web_text(
     text: str,
     *,
@@ -428,7 +441,13 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
     tools_cfg = settings.get("tools", {}) or {}
     tools_web_cfg = tools_cfg.get("web", {}) or {}
     web_enabled = bool(tools_web_cfg.get("enabled", False))
-    if bool(continuous.get("ingest_web", True)) and allowlist and web_enabled:
+    ingest_web_enabled = bool(continuous.get("ingest_web", True))
+    if ingest_web_enabled and allowlist and not web_enabled:
+        message = "ingest_web enabled but tools.web.enabled=false; skipping web ingest"
+        if _strict_web_ingest(settings):
+            raise RuntimeError(message)
+        print(f"WARN {message}")
+    if ingest_web_enabled and allowlist and web_enabled:
         urls = continuous.get("ingest_urls", ["https://docs.python.org/3/", "https://pytorch.org/docs/stable/"])
         tools = AgentTools(allowlist=allowlist, web_cfg=tools_web_cfg)
         recent_chunks = store.sample_chunks(limit=50, source_kinds=["web"])

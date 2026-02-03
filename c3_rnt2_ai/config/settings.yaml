@@ -71,7 +71,7 @@ profiles:
         quality: 1.0
     agent:
       web_allowlist: ["github.com", "docs.python.org", "pytorch.org", "duckduckgo.com"]
-      tools_enabled: ["run_tests", "search_web", "edit_repo", "open_docs"]
+      tools_enabled: ["run_tests", "search_web", "open_docs", "propose_patch", "sandbox_patch", "apply_patch", "summarize_diff", "read_file", "grep", "list_tree"]
     tools:
       web:
         enabled: false
@@ -104,7 +104,7 @@ profiles:
       allowed_paths: ["src/", "tests/"]
       forbidden_globs: [".env", ".env.*", "data/**", "*.key", "*.pem", "*.p12", "*.sqlite", "*.db", "keys/**", "secrets/**", "src/c3rnt2/self_patch/**", "src/c3rnt2/selfimprove/**"]
     continuous:
-      run_interval_minutes: 30
+      interval_minutes: 30
       adapter_rank: 4
       max_steps: 50
       knowledge_path: data/continuous/knowledge.sqlite
@@ -372,7 +372,7 @@ profiles:
         error: 5.0
         quality: 1.0
     continuous:
-      run_interval_minutes: 30
+      interval_minutes: 30
       adapter_rank: 4
       max_steps: 50
     selfimprove:
@@ -434,7 +434,7 @@ profiles:
       smoothness: 1.0
     agent:
       web_allowlist: ["github.com", "docs.python.org", "pytorch.org", "duckduckgo.com"]
-      tools_enabled: ["run_tests", "search_web", "edit_repo", "open_docs"]
+      tools_enabled: ["run_tests", "search_web", "open_docs", "propose_patch", "sandbox_patch", "apply_patch", "summarize_diff", "read_file", "grep", "list_tree"]
     tools:
       web:
         enabled: false
@@ -456,7 +456,7 @@ profiles:
       allowed_paths: ["src/", "tests/"]
       forbidden_globs: [".env", ".env.*", "data/**", "*.key", "*.pem", "*.p12", "*.sqlite", "*.db", "keys/**", "secrets/**", "src/c3rnt2/self_patch/**", "src/c3rnt2/selfimprove/**"]
     continuous:
-      run_interval_minutes: 30
+      interval_minutes: 30
       adapter_rank: 4
       max_steps: 50
     selfimprove:
