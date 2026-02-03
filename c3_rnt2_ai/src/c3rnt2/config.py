@@ -276,6 +276,12 @@ def normalize_settings(settings: dict) -> dict:
             cont["max_steps_per_tick"] = cont.get("max_steps")
         if "max_steps" not in cont and cont.get("max_steps_per_tick") is not None:
             cont["max_steps"] = cont.get("max_steps_per_tick")
+        web_disc = cont.get("web_discovery", {}) or {}
+        web_disc.setdefault("enabled", False)
+        web_disc.setdefault("seed_queries", [])
+        web_disc.setdefault("max_urls_per_tick", 10)
+        web_disc.setdefault("max_total_urls", 200)
+        cont["web_discovery"] = web_disc
         normalized["continuous"] = cont
 
     autopilot = normalized.get("autopilot", {}) or {}
@@ -293,6 +299,7 @@ def normalize_settings(settings: dict) -> dict:
     autopilot.setdefault("autopatch_on_test_fail", True)
     autopilot.setdefault("autopatch_on_doctor_fail", True)
     autopilot.setdefault("autopatch_require_eval", True)
+    autopilot.setdefault("restart_after_patch", False)
     autopilot.setdefault("todo_regex", r"TODO\((P1|PRIORITY)\)|TODO!|TODO:HIGH|TODO:CRITICAL")
     normalized["autopilot"] = autopilot
 

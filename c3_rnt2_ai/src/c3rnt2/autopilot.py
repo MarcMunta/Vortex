@@ -9,7 +9,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .continuous.dataset import ingest_sources
 from .continuous.knowledge_store import KnowledgeStore, EmbeddingBackend
@@ -25,6 +25,9 @@ class AutopilotResult:
     ok: bool
     steps: dict[str, Any]
     error: str | None = None
+
+
+TrainRunner = Callable[[str, bool, int | None], dict]
 
 
 def _state_path(base_dir: Path) -> Path:
@@ -83,13 +86,42 @@ def _ingest_web(base_dir: Path, settings: dict, state: dict) -> dict[str, Any]:
     if not allowlist:
         return {"ok": False, "error": "allow_domains required"}
     cont = settings.get("continuous", {}) or {}
-    urls = cont.get("ingest_urls", [])
+    discovery = None
+    disc_cfg = cont.get("web_discovery", {}) or {}
+    if bool(disc_cfg.get("enabled", False)):
+        try:
+            from .tools.web_discovery import discover_urls
+
+            discovery = discover_urls(settings, base_dir=base_dir, state=state)
+        except Exception as exc:
+            discovery = {"ok": False, "error": str(exc)}
+    urls = list(cont.get("ingest_urls", []))
+    discovered = list(state.get("discovered_urls", []) or [])
+    max_disc = int(disc_cfg.get("max_urls_per_tick", 10)) if disc_cfg else 0
+    if max_disc > 0 and discovered:
+        urls.extend(discovered[:max_disc])
+    if urls:
+        seen: set[str] = set()
+        merged: list[str] = []
+        for raw in urls:
+            u = str(raw)
+            if u in seen:
+                continue
+            seen.add(u)
+            merged.append(u)
+        urls = merged
     if not urls:
-        return {"ok": False, "error": "ingest_urls empty"}
+        payload: dict[str, Any] = {"ok": False, "error": "ingest_urls empty"}
+        if discovery is not None:
+            payload["discovery"] = discovery
+        return payload
 
     items = ingest_urls(urls, allowlist, base_dir=base_dir, settings=settings, state=state)
     if not items:
-        return {"ok": True, "ingested": 0}
+        payload = {"ok": True, "ingested": 0}
+        if discovery is not None:
+            payload["discovery"] = discovery
+        return payload
 
     knowledge_path = Path(cont.get("knowledge_path", base_dir / "data" / "continuous" / "knowledge.sqlite"))
     knowledge_cfg = settings.get("knowledge", {}) or {}
@@ -104,7 +136,10 @@ def _ingest_web(base_dir: Path, settings: dict, state: dict) -> dict[str, Any]:
     ingested = 0
     for item in items:
         ingested += store.ingest_text("web", item.source_ref, item.text, quality=0.0)
-    return {"ok": True, "ingested": ingested, "items": len(items)}
+    payload = {"ok": True, "ingested": ingested, "items": len(items)}
+    if discovery is not None:
+        payload["discovery"] = discovery
+    return payload
 
 
 def _append_training_from_web(base_dir: Path, state: dict, max_items: int) -> dict[str, Any]:
@@ -243,6 +278,13 @@ def _request_reload(base_dir: Path, adapter_path: str | None) -> None:
     path = base_dir / "data" / "state" / "reload.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"ts": time.time(), "adapter_path": str(adapter_path), "requested_by": "autopilot"}
+    path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+
+
+def _request_restart(base_dir: Path, reason: str) -> None:
+    path = base_dir / "data" / "state" / "restart.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"ts": time.time(), "reason": reason, "requested_by": "autopilot"}
     path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
 
 
@@ -445,6 +487,7 @@ def run_autopilot_tick(
     no_web: bool = False,
     mock: bool = False,
     force: bool = False,
+    train_runner: TrainRunner | None = None,
 ) -> AutopilotResult:
     autopilot_cfg = settings.get("autopilot", {}) or {}
     if not force and not bool(autopilot_cfg.get("enabled", False)):
@@ -473,6 +516,7 @@ def run_autopilot_tick(
         max_steps = autopilot_cfg.get("train_max_steps")
         training_jsonl_max = int(autopilot_cfg.get("training_jsonl_max_items", 500))
         min_improvement = float(autopilot_cfg.get("min_improvement", settings.get("hf_train", {}).get("eval", {}).get("min_improvement", 0.0)))
+        restart_after_patch = bool(autopilot_cfg.get("restart_after_patch", False))
 
         # ingest (web + logs/episodes)
         if no_web:
@@ -508,7 +552,8 @@ def run_autopilot_tick(
                 steps["train"] = {"ok": False, "skipped": "lock_held"}
             else:
                 profile = settings.get("_profile") or os.getenv("C3RNT2_PROFILE") or "dev_small"
-                train_result = _train_subprocess(str(profile), reuse_dataset=reuse_dataset, max_steps=int(max_steps) if max_steps else None)
+                runner = train_runner or _train_subprocess
+                train_result = runner(str(profile), reuse_dataset=reuse_dataset, max_steps=int(max_steps) if max_steps else None)
                 steps["train"] = train_result
                 state["last_train_ts"] = time.time()
         else:
@@ -568,7 +613,14 @@ def run_autopilot_tick(
             "eval_ok": steps.get("eval_short", {}).get("ok") if isinstance(steps.get("eval_short"), dict) else None,
             "promoted": steps.get("promote", {}).get("promoted") if isinstance(steps.get("promote"), dict) else None,
         }
+        restart_requested = False
+        if restart_after_patch and isinstance(steps.get("autopatch"), dict) and bool(steps["autopatch"].get("promoted")):
+            _request_restart(base_dir, reason="autopatch_promoted")
+            steps["restart"] = {"ok": True, "requested": True, "exit_code": 23}
+            restart_requested = True
         _log_event(base_dir, {"ok": True, "steps": steps, "summary": summary})
+        if restart_requested:
+            raise SystemExit(23)
         return AutopilotResult(ok=True, steps=steps)
     finally:
         lock.release()

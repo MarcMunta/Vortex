@@ -112,6 +112,10 @@ profiles:
       ingest_urls:
         - "https://docs.python.org/3/"
         - "https://pytorch.org/docs/stable/"
+      web_discovery:
+        enabled: false
+        seed_queries: []
+        max_urls_per_tick: 10
       ingest:
         max_files_per_tick: 100
         max_bytes_per_file: 1048576
@@ -261,10 +265,11 @@ profiles:
       backend: hf
       hf_model: "Qwen/Qwen2.5-8B-Instruct"
     server:
-      train_strategy: subprocess
+      train_strategy: unload_reload
       block_during_training: true
       auto_reload_adapter: true
       reload_interval_s: 30
+      maintenance_window_s: 10
     tools:
       web:
         enabled: true

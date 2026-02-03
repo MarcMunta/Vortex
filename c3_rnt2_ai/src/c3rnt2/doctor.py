@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import time
 from copy import deepcopy
@@ -57,27 +58,39 @@ def run_deep_checks(settings: dict, base_dir: Path) -> dict[str, Any]:
         report["deep_ok"] = False
         report["model_error"] = "torch not available"
     else:
-        from .model_loader import load_inference_model
+        backend = str((settings.get("core", {}) or {}).get("backend", "vortex")).lower()
+        full_model = os.getenv("C3RNT2_DOCTOR_FULL_MODEL", "").strip().lower() in {"1", "true", "yes"}
 
-        local_settings = deepcopy(settings)
-        core_cfg = dict(local_settings.get("core", {}) or {})
-        if core_cfg.get("cuda_graphs"):
-            core_cfg["cuda_graphs"] = False
-            local_settings["core"] = core_cfg
-        if core_cfg.get("compile") or core_cfg.get("compile_step") or core_cfg.get("compile_local_mixer_step"):
+        if backend == "hf" and not full_model:
+            report["model_load_mode"] = "dry"
             try:
-                import triton  # type: ignore  # noqa: F401
-            except Exception:
-                core_cfg["compile"] = False
-                core_cfg["compile_step"] = False
-                core_cfg["compile_local_mixer_step"] = False
+                __import__("transformers")
+                report["model_loaded"] = False
+            except Exception as exc:
+                report["deep_ok"] = False
+                report["model_error"] = f"transformers not available: {exc}"
+        else:
+            from .model_loader import load_inference_model
+
+            local_settings = deepcopy(settings)
+            core_cfg = dict(local_settings.get("core", {}) or {})
+            if core_cfg.get("cuda_graphs"):
+                core_cfg["cuda_graphs"] = False
                 local_settings["core"] = core_cfg
-        try:
-            model = load_inference_model(local_settings)
-            model_loaded = True
-        except Exception as exc:
-            report["deep_ok"] = False
-            report["model_error"] = str(exc)
+            if core_cfg.get("compile") or core_cfg.get("compile_step") or core_cfg.get("compile_local_mixer_step"):
+                try:
+                    import triton  # type: ignore  # noqa: F401
+                except Exception:
+                    core_cfg["compile"] = False
+                    core_cfg["compile_step"] = False
+                    core_cfg["compile_local_mixer_step"] = False
+                    local_settings["core"] = core_cfg
+            try:
+                model = load_inference_model(local_settings)
+                model_loaded = True
+            except Exception as exc:
+                report["deep_ok"] = False
+                report["model_error"] = str(exc)
 
     if model_loaded:
         prompt = "def add(a, b):"

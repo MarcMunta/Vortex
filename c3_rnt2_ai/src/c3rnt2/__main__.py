@@ -25,7 +25,7 @@ from .doctor import check_deps, run_deep_checks
 from .model_loader import load_inference_model
 from .prompting.chat_format import build_chat_prompt
 from .server import run_server
-from .utils.locks import LockUnavailable, acquire_exclusive_lock, FileLock
+from .utils.locks import LockUnavailable, acquire_exclusive_lock, FileLock, is_lock_held
 from .agent.agent_loop import run_demo_agent
 from .training.hf_qlora import train_once as train_hf_once
 from .utils.oom import is_oom_error, clear_cuda_cache
@@ -134,11 +134,14 @@ def _unload_models_for_train(app: object) -> None:
     state = getattr(app, "state", None)
     if state is None:
         return
-    try:
-        state.model = None
-        state.models = {}
-    except Exception:
-        pass
+    lock = getattr(state, "model_lock", None)
+    ctx = lock.write_lock() if lock and hasattr(lock, "write_lock") else nullcontext()
+    with ctx:
+        try:
+            state.model = None
+            state.models = {}
+        except Exception:
+            pass
     if torch is not None and torch.cuda.is_available():
         try:
             torch.cuda.empty_cache()
@@ -150,11 +153,14 @@ def _reload_models_for_app(app: object, settings: dict) -> None:
     state = getattr(app, "state", None)
     if state is None:
         return
-    model = load_inference_model(settings)
-    backend = str(settings.get("core", {}).get("backend", "vortex")).lower()
-    label = "hf" if backend == "hf" else "core"
-    state.model = model
-    state.models = {label: model}
+    lock = getattr(state, "model_lock", None)
+    ctx = lock.write_lock() if lock and hasattr(lock, "write_lock") else nullcontext()
+    with ctx:
+        model = load_inference_model(settings)
+        backend = str(settings.get("core", {}).get("backend", "vortex")).lower()
+        label = "hf" if backend == "hf" else "core"
+        state.model = model
+        state.models = {label: model}
 
 
 def _self_patch_queue_dir(base_dir: Path, settings: dict) -> Path:
@@ -286,10 +292,17 @@ def _run_doctor_checks(settings: dict, base_dir: Path) -> dict:
         if not ok:
             errors.append(f"{label}: {msg}")
 
+    backend = str((settings.get("core", {}) or {}).get("backend", "vortex")).lower()
     try:
-        model = load_inference_model(settings)
+        # Dry checks only: avoid pulling large HF weights during "doctor".
+        if backend == "hf":
+            __import__("transformers")
+        elif backend == "tensorrt":
+            __import__("tensorrt")
+        else:
+            __import__("torch")
         info["model_load_ok"] = True
-        del model
+        info["model_load_mode"] = "dry"
     except Exception as exc:
         errors.append(f"model_load_failed: {exc}")
 
@@ -337,6 +350,21 @@ def _run_doctor_deep_checks(settings: dict, base_dir: Path) -> dict:
         if auto_res.steps.get("skipped") != "disabled":
             errors.append("autopilot_disabled_not_respected")
 
+    try:
+        # Exercise serve-autopilot loop logic (mock) without spinning up uvicorn.
+        ap_settings = json.loads(json.dumps(deep_settings))
+        ap_settings.setdefault("autopilot", {})["enabled"] = True
+        ap_settings["autopilot"]["train_cooldown_minutes"] = 0
+
+        def _dummy_train(_profile: str, reuse_dataset: bool, max_steps: int | None):
+            _ = _profile, reuse_dataset, max_steps
+            return {"ok": False, "ok_train": False, "ok_eval": False, "error": "dummy_train"}
+
+        tick = run_autopilot_tick(ap_settings, base_dir, no_web=True, mock=False, force=True, train_runner=_dummy_train)
+        info["serve_autopilot_mock_once"] = {"ok": tick.ok, "steps": tick.steps, "error": tick.error}
+    except Exception as exc:
+        errors.append(f"serve_autopilot_mock_failed: {exc}")
+
     strategy = str((settings.get("server", {}) or {}).get("train_strategy", "subprocess")).lower()
     if strategy == "subprocess":
         try:
@@ -346,6 +374,9 @@ def _run_doctor_deep_checks(settings: dict, base_dir: Path) -> dict:
             errors.append(f"train_strategy_subprocess_import_failed: {exc}")
     else:
         info["train_strategy_check"] = f"{strategy}_ok"
+
+    if is_lock_held(base_dir, "serve") and strategy in {"subprocess", "subprocess_unload"}:
+        info["train_strategy_warning"] = "server_lock_held + subprocess strategy may OOM (prefer unload_reload/subprocess_unload)"
 
     return {"ok": not errors, "errors": errors, "info": info}
 
@@ -630,6 +661,7 @@ def _run_self_train_tick(
     train_strategy = str(server_cfg.get("train_strategy", "subprocess")).lower()
     lock_path = base_dir / "data" / "locks" / "train.lock"
     lock = FileLock(lock_path)
+    did_unload = False
     try:
         lock.acquire(blocking=False)
     except LockUnavailable:
@@ -641,12 +673,12 @@ def _run_self_train_tick(
         if maintenance_window_s and maintenance_window_s > 0 and not block_during_training:
             state.maintenance_until = time.time() + float(maintenance_window_s)
         try:
-            if train_strategy == "subprocess":
+            if train_strategy in {"unload_reload", "subprocess_unload"}:
+                _unload_models_for_train(app)
+                did_unload = True
+            if train_strategy in {"subprocess", "subprocess_unload"}:
                 result_dict = _run_train_subprocess(settings, reuse_dataset=reuse_dataset)
                 result = _coerce_train_result(result_dict)
-            elif train_strategy == "unload_reload":
-                _unload_models_for_train(app)
-                result = _run_train_inprocess(settings, base_dir, reuse_dataset, train_fn=train_fn)
             else:
                 result = _run_train_inprocess(settings, base_dir, reuse_dataset, train_fn=train_fn)
         except Exception as exc:
@@ -655,20 +687,30 @@ def _run_self_train_tick(
         else:
             error = None
     finally:
-        try:
-            app.state.training_active = False
-            if maintenance_window_s and maintenance_window_s > 0:
-                app.state.maintenance_until = time.time() + float(maintenance_window_s)
-        except Exception:
-            pass
         lock.release()
-    if error:
-        return {"ok": False, "error": error, "new_docs": new_docs, "stats": stats.__dict__}
-    if train_strategy == "unload_reload":
+    reload_error = None
+    if did_unload:
         try:
             _reload_models_for_app(app, settings)
         except Exception as exc:
-            return {"ok": False, "error": f"reload_model_failed: {exc}", "new_docs": new_docs, "stats": stats.__dict__}
+            reload_error = f"reload_model_failed: {exc}"
+    try:
+        if reload_error:
+            # Keep the server blocked if we failed to restore the model.
+            app.state.training_active = True
+        else:
+            app.state.training_active = False
+        if maintenance_window_s and maintenance_window_s > 0:
+            app.state.maintenance_until = time.time() + float(maintenance_window_s)
+    except Exception:
+        pass
+    if error:
+        message = error
+        if reload_error:
+            message = f"{message}; {reload_error}"
+        return {"ok": False, "error": message, "new_docs": new_docs, "stats": stats.__dict__}
+    if reload_error:
+        return {"ok": False, "error": reload_error, "new_docs": new_docs, "stats": stats.__dict__}
     reload_result = None
     if reload_fn is not None and result and bool(getattr(result, "ok_eval", getattr(result, "eval_ok", getattr(result, "ok", False)))):
         try:
@@ -741,6 +783,170 @@ def cmd_serve_self_train(args: argparse.Namespace) -> None:
             reload_fn=reload_fn,
         )
         print({"self_train": result})
+        if once:
+            break
+        time.sleep(max(5.0, interval_min * 60.0))
+
+
+def _run_autopilot_train_with_server(
+    app: object,
+    settings: dict,
+    base_dir: Path,
+    *,
+    profile: str,
+    reuse_dataset: bool,
+    max_steps: int | None,
+) -> dict:
+    server_cfg = settings.get("server", {}) or {}
+    train_strategy = str(server_cfg.get("train_strategy", "subprocess")).lower()
+    block_during_training = bool(server_cfg.get("block_during_training", False))
+    maintenance_window_s = float(server_cfg.get("maintenance_window_s", 10))
+
+    state = getattr(app, "state", SimpleNamespace())
+    setattr(app, "state", state)
+
+    did_unload = False
+    reload_error = None
+    payload: dict = {"ok": False, "ok_train": False, "ok_eval": False, "error": "train_not_started"}
+    try:
+        state.training_active = True
+        if maintenance_window_s and maintenance_window_s > 0 and not block_during_training:
+            state.maintenance_until = time.time() + float(maintenance_window_s)
+
+        if train_strategy in {"unload_reload", "subprocess_unload"}:
+            _unload_models_for_train(app)
+            did_unload = True
+
+        if train_strategy in {"subprocess", "subprocess_unload"}:
+            cmd = [sys.executable, "-m", "c3rnt2", "train-once", "--profile", str(profile)]
+            if reuse_dataset:
+                cmd.append("--reuse-dataset")
+            env = dict(os.environ)
+            if max_steps is not None and int(max_steps) > 0:
+                env["C3RNT2_TRAIN_MAX_STEPS"] = str(int(max_steps))
+            result = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env)
+            if result.returncode != 0:
+                payload = {"ok": False, "ok_train": False, "ok_eval": False, "error": result.stderr.strip() or "train subprocess failed"}
+            else:
+                parsed = None
+                for line in reversed(result.stdout.splitlines()):
+                    line = line.strip()
+                    if line.startswith("{") and line.endswith("}"):
+                        try:
+                            parsed = json.loads(line)
+                            break
+                        except Exception:
+                            continue
+                payload = parsed if isinstance(parsed, dict) else {"ok": False, "ok_train": False, "ok_eval": False, "error": "train subprocess output not parseable"}
+        else:
+            lock_path = base_dir / "data" / "locks" / "train.lock"
+            tlock = FileLock(lock_path)
+            try:
+                tlock.acquire(blocking=False)
+            except LockUnavailable:
+                payload = {"ok": False, "ok_train": False, "ok_eval": False, "error": "train_lock_unavailable"}
+            else:
+                try:
+                    train_settings = settings
+                    if max_steps is not None and int(max_steps) > 0:
+                        train_settings = json.loads(json.dumps(settings))
+                        hf_cfg = dict(train_settings.get("hf_train", {}) or {})
+                        hf_cfg["max_steps"] = int(max_steps)
+                        train_settings["hf_train"] = hf_cfg
+                    result_obj = train_hf_once(train_settings, base_dir, reuse_dataset=reuse_dataset)
+                    payload = dict(result_obj.__dict__)
+                    adapter_dir = payload.get("adapter_dir")
+                    if adapter_dir is not None:
+                        payload["adapter_dir"] = str(adapter_dir)
+                except Exception as exc:
+                    payload = {"ok": False, "ok_train": False, "ok_eval": False, "error": str(exc)}
+                finally:
+                    tlock.release()
+    finally:
+        if did_unload:
+            try:
+                _reload_models_for_app(app, settings)
+            except Exception as exc:
+                reload_error = f"reload_model_failed: {exc}"
+        try:
+            if reload_error:
+                state.training_active = True
+            else:
+                state.training_active = False
+            if maintenance_window_s and maintenance_window_s > 0:
+                state.maintenance_until = time.time() + float(maintenance_window_s)
+        except Exception:
+            pass
+
+    if reload_error:
+        prev = str(payload.get("error") or "")
+        payload["ok"] = False
+        payload["error"] = f"{prev}; {reload_error}".strip("; ").strip()
+    return payload
+
+
+def cmd_serve_autopilot(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(
+        args.profile,
+        override=lambda s: _apply_serve_self_train_defaults(_apply_cli_overrides(s, args)),
+    )
+    base_dir = Path(".")
+    interval_min = float(args.interval_minutes) if args.interval_minutes is not None else float((settings.get("autopilot", {}) or {}).get("interval_minutes", settings.get("continuous", {}).get("interval_minutes", 30)))
+    once = bool(args.once)
+    no_web = bool(args.no_web)
+    force = bool(args.force)
+
+    if args.mock:
+        settings.setdefault("server", {})["train_strategy"] = "inprocess"
+
+        class _DummyLock:
+            def read_lock(self):
+                return nullcontext()
+
+            def write_lock(self):
+                return nullcontext()
+
+        app = SimpleNamespace(state=SimpleNamespace(model_lock=_DummyLock(), models={}, model=None, training_active=False, maintenance_until=0.0))
+    else:
+        try:
+            from .server import create_app
+        except Exception as exc:
+            print({"ok": False, "error": f"server_unavailable: {exc}"})
+            return
+        app = create_app(settings, base_dir=base_dir)
+
+        def _serve():
+            import uvicorn  # type: ignore
+
+            uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+        thread = threading.Thread(target=_serve, daemon=True)
+        thread.start()
+
+    profile_name = settings.get("_profile") or os.getenv("C3RNT2_PROFILE") or resolve_profile(None)
+
+    def _train_runner(_profile: str, reuse_dataset: bool, max_steps: int | None):
+        # Ignore the incoming profile arg and use the resolved one for consistency.
+        _ = _profile
+        return _run_autopilot_train_with_server(
+            app,
+            settings,
+            base_dir,
+            profile=str(profile_name),
+            reuse_dataset=reuse_dataset,
+            max_steps=max_steps,
+        )
+
+    while True:
+        result = run_autopilot_tick(
+            settings,
+            base_dir,
+            no_web=no_web,
+            mock=bool(args.mock),
+            force=force,
+            train_runner=_train_runner,
+        )
+        print({"serve_autopilot": {"ok": result.ok, "steps": result.steps, "error": result.error}})
         if once:
             break
         time.sleep(max(5.0, interval_min * 60.0))
@@ -997,6 +1203,20 @@ def main() -> None:
     serve_self.add_argument("--maintenance-window-s", type=float, default=None)
     serve_self.add_argument("--mock", action="store_true")
     serve_self.set_defaults(func=cmd_serve_self_train)
+
+    serve_auto = sub.add_parser("serve-autopilot")
+    serve_auto.add_argument("--profile", default=None)
+    serve_auto.add_argument("--backend", default=None)
+    serve_auto.add_argument("--model", default=None)
+    serve_auto.add_argument("--device", default=None)
+    serve_auto.add_argument("--host", default="0.0.0.0")
+    serve_auto.add_argument("--port", type=int, default=8000)
+    serve_auto.add_argument("--once", action="store_true")
+    serve_auto.add_argument("--interval-minutes", type=float, default=None)
+    serve_auto.add_argument("--no-web", action="store_true")
+    serve_auto.add_argument("--mock", action="store_true")
+    serve_auto.add_argument("--force", action="store_true")
+    serve_auto.set_defaults(func=cmd_serve_autopilot)
 
     bench = sub.add_parser("bench")
     bench.add_argument("--profile", default=None)
