@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -15,6 +16,46 @@ if str(SRC) not in sys.path:
 from c3rnt2.config import load_settings  # type: ignore[import-not-found]
 from c3rnt2.model.bad_decode import bad_decode, _sample_logits_topk, _RepetitionTracker, _NgramTracker  # type: ignore[import-not-found]
 from c3rnt2.model.core_transformer import CoreTransformer  # type: ignore[import-not-found]
+
+def _rss_mb() -> float | None:
+    # Best-effort RSS, no extra deps.
+    try:
+        if sys.platform.startswith("win"):
+            import ctypes
+            import ctypes.wintypes as wintypes
+
+            class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            counters = PROCESS_MEMORY_COUNTERS()
+            counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+            hproc = ctypes.windll.kernel32.GetCurrentProcess()
+            if ctypes.windll.psapi.GetProcessMemoryInfo(hproc, ctypes.byref(counters), counters.cb) == 0:
+                return None
+            return float(counters.WorkingSetSize) / (1024.0**2)
+    except Exception:
+        pass
+    try:
+        import resource
+
+        rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        # Linux reports KiB, macOS reports bytes.
+        if rss > 10_000_000:
+            return rss / (1024.0**2)
+        return rss / 1024.0
+    except Exception:
+        return None
 
 
 def main() -> None:
@@ -80,6 +121,7 @@ def main() -> None:
 
     tok_start = time.time()
     _ids, _total = core.encode_prompt(args.prompt)
+    ctx_len = len(_ids)
     time_tokenizer_ms = (time.time() - tok_start) * 1000.0
 
     stream_topk = bool(settings.get("runtime", {}).get("paged_lm_head_stream_topk", False))
@@ -242,12 +284,27 @@ def main() -> None:
         result["prefetch_hits"] = stats_dict.get("prefetch_hits", 0)
         result["bytes_compressed_read"] = stats_dict.get("bytes_compressed_read", 0)
     if torch.cuda.is_available():
-        result["vram_peak_gb"] = round(torch.cuda.max_memory_allocated() / (1024**3), 3)
-    print(result)
+        result["vram_peak_mb"] = round(torch.cuda.max_memory_allocated() / (1024**2), 3)
+    result["ram_mb"] = round(_rss_mb(), 3) if _rss_mb() is not None else None
+
+    bench = {
+        "ts": time.time(),
+        "profile": profile,
+        "backend": str((settings.get("core", {}) or {}).get("backend", "vortex")).lower(),
+        "adapter": getattr(core, "adapter_path", None),
+        "ctx_len": int(ctx_len),
+        "max_new_tokens": int(args.max_new_tokens),
+        "tokens_per_sec": float(result.get("tokens_per_second", 0.0)),
+        "vram_peak_mb": result.get("vram_peak_mb"),
+        "ram_mb": result.get("ram_mb"),
+        "raw": result,
+    }
+
+    print(json.dumps(bench, ensure_ascii=True))
     bench_dir = ROOT / "data" / "bench"
     bench_dir.mkdir(parents=True, exist_ok=True)
-    latest = bench_dir / "latest.txt"
-    latest.write_text(str(result), encoding="utf-8")
+    (bench_dir / "latest.json").write_text(json.dumps(bench, ensure_ascii=True, indent=2), encoding="utf-8")
+    (bench_dir / "latest.txt").write_text(str(result), encoding="utf-8")
 
 
 if __name__ == "__main__":

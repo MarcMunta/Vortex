@@ -165,6 +165,7 @@ def discover_urls(settings: dict, *, base_dir: Path, state: dict) -> dict[str, A
     allow_domains = list(tools_web.get("allow_domains") or [])
     if not allow_domains:
         return {"ok": False, "error": "allow_domains required"}
+    search_domains = list(tools_web.get("search_domains") or [])
 
     max_bytes = int(tools_web.get("max_bytes", 512000))
     timeout_s = int(tools_web.get("timeout_s", 10))
@@ -178,35 +179,39 @@ def discover_urls(settings: dict, *, base_dir: Path, state: dict) -> dict[str, A
     _prune_seen(front, now=now, ttl_s=ttl_s)
 
     added = 0
+    seed_skipped = None
     # Seed frontier from DDG results if empty.
     if not front.get("queue"):
-        for query in seed_queries:
-            q = str(query).strip()
-            if not q:
-                continue
-            ddg_url = f"https://duckduckgo.com/html/?q={quote_plus(q)}"
-            fetch = web_fetch(
-                ddg_url,
-                allow_domains,
-                max_bytes=max_bytes,
-                timeout_s=timeout_s,
-                cache_dir=cache_dir,
-                rate_limit_per_min=rate_limit,
-                cache_ttl_s=cache_ttl_s,
-                allow_content_types=allow_types,
-            )
-            if not fetch.ok:
-                continue
-            for raw_url in _extract_urls_from_ddg_html(fetch.text):
-                canon = canonicalize_url(str(raw_url))
-                if not _allow_url(canon, allow_domains):
+        if not search_domains:
+            seed_skipped = "search_domains_empty"
+        else:
+            for query in seed_queries:
+                q = str(query).strip()
+                if not q:
                     continue
-                if _push(front, canon, now=now, cap=queue_cap):
-                    added += 1
+                ddg_url = f"https://duckduckgo.com/html/?q={quote_plus(q)}"
+                fetch = web_fetch(
+                    ddg_url,
+                    search_domains,
+                    max_bytes=max_bytes,
+                    timeout_s=timeout_s,
+                    cache_dir=cache_dir,
+                    rate_limit_per_min=rate_limit,
+                    cache_ttl_s=cache_ttl_s,
+                    allow_content_types=allow_types,
+                )
+                if not fetch.ok:
+                    continue
+                for raw_url in _extract_urls_from_ddg_html(fetch.text):
+                    canon = canonicalize_url(str(raw_url))
+                    if not _allow_url(canon, allow_domains):
+                        continue
+                    if _push(front, canon, now=now, cap=queue_cap):
+                        added += 1
+                    if queue_cap > 0 and len(front.get("queue", [])) >= queue_cap:
+                        break
                 if queue_cap > 0 and len(front.get("queue", [])) >= queue_cap:
                     break
-            if queue_cap > 0 and len(front.get("queue", [])) >= queue_cap:
-                break
 
     # Seed sitemaps (best effort; cached by web_fetch).
     last_sitemap = front.get("last_sitemap_ts", {}) or {}
@@ -265,4 +270,7 @@ def discover_urls(settings: dict, *, base_dir: Path, state: dict) -> dict[str, A
                 added += 1
 
     state["discovered_urls"] = batch
-    return {"ok": True, "added": added, "emitted": len(batch), "crawled": crawled, "queue": len(front.get("queue", []))}
+    out = {"ok": True, "added": added, "emitted": len(batch), "crawled": crawled, "queue": len(front.get("queue", []))}
+    if seed_skipped:
+        out["seed_skipped"] = seed_skipped
+    return out

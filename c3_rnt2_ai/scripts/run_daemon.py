@@ -9,12 +9,38 @@ from pathlib import Path
 
 
 RESTART_EXIT_CODE = 23
+ROLLBACK_WINDOW_S = 3600.0
+MAX_ROLLBACKS_PER_WINDOW = 2
 
 
 def _log(event: str, **fields) -> None:
     payload = {"ts": time.time(), "event": event}
     payload.update(fields)
     print(json.dumps(payload, ensure_ascii=True))
+
+
+def _latest_backup_tag(cwd: Path) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "describe", "--tags", "--match", "autopilot/backup-*", "--abbrev=0"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    tag = (proc.stdout or "").strip()
+    return tag or None
+
+
+def _rollback_to_tag(cwd: Path, tag: str) -> bool:
+    try:
+        proc = subprocess.run(["git", "reset", "--hard", str(tag)], cwd=str(cwd))
+    except Exception:
+        return False
+    return proc.returncode == 0
 
 
 def main() -> int:
@@ -54,6 +80,7 @@ def main() -> int:
         cmd.append("--force")
 
     _log("daemon_start", cmd=cmd, cwd=str(base_dir))
+    rollbacks: list[float] = []
     while True:
         start = time.time()
         try:
@@ -79,10 +106,25 @@ def main() -> int:
             _log("daemon_exit", exit_code=code, elapsed_sec=elapsed)
             return 0
 
-        _log("daemon_exit_error", exit_code=code, elapsed_sec=elapsed)
-        return code
+        # Non-restart failure: attempt rollback to last known-good tag, then restart.
+        now = time.time()
+        rollbacks = [t for t in rollbacks if (now - t) <= ROLLBACK_WINDOW_S]
+        if len(rollbacks) >= MAX_ROLLBACKS_PER_WINDOW:
+            _log("daemon_exit_error", exit_code=code, elapsed_sec=elapsed, rollback="rate_limited")
+            return code
+        tag = _latest_backup_tag(base_dir)
+        if not tag:
+            _log("daemon_exit_error", exit_code=code, elapsed_sec=elapsed, rollback="no_backup_tag")
+            return code
+        if not _rollback_to_tag(base_dir, tag):
+            _log("daemon_exit_error", exit_code=code, elapsed_sec=elapsed, rollback="reset_failed", tag=tag)
+            return code
+        rollbacks.append(now)
+        _log("daemon_rollback", exit_code=code, elapsed_sec=elapsed, tag=tag)
+        time.sleep(min(backoff_max, max(0.1, backoff)))
+        backoff = min(backoff_max, max(backoff * 2.0, 0.5))
+        continue
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

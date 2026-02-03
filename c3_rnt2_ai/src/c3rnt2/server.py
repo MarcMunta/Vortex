@@ -15,6 +15,11 @@ except Exception:  # pragma: no cover
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
+try:
+    from starlette.requests import Request as StarletteRequest  # type: ignore
+except Exception:  # pragma: no cover
+    StarletteRequest = Any  # type: ignore[misc,assignment]
+
 from .model.core_transformer import CoreTransformer
 from .model_loader import load_inference_model
 from .prompting.chat_format import build_chat_prompt
@@ -22,10 +27,47 @@ from .model.bad_decode import _sample_logits, _sample_logits_topk, _RepetitionTr
 from .continuous.lora import LoRAConfig, inject_lora, load_lora_state, resolve_target_modules
 from .continuous.dataset import retrieve_context_details
 from .continuous.registry import load_registry
+from .adapters.registry import AdapterRegistry
+from .adapters.router import AdapterRouter
 from .episodes import EpisodeIndex
 from .runtime.router import build_features, load_router, log_router_event
 from .runtime.vram_governor import decide_max_new_tokens
 from .utils.oom import is_oom_error, clear_cuda_cache
+
+
+def _select_hf_adapter_for_request(payload: dict, prompt: str, registry: AdapterRegistry, router: AdapterRouter) -> dict:
+    requested = payload.get("adapter")
+    if requested is not None:
+        name = str(requested).strip()
+        if not name:
+            return {"ok": False, "error": "adapter_invalid"}
+        if name not in registry.paths:
+            return {"ok": False, "error": "adapter_not_found", "adapter": name}
+        return {"ok": True, "adapter": name, "reason": "request"}
+    decision = router.select(prompt, registry.names)
+    return {"ok": True, "adapter": decision.selected_adapter, "reason": decision.reason, "score": decision.score}
+
+
+def _ensure_hf_adapter(model: object, registry: AdapterRegistry, adapter: str | None) -> dict:
+    if not adapter:
+        return {"ok": True, "adapter": None, "loaded": False}
+    path = registry.get_path(adapter)
+    if not path:
+        return {"ok": False, "error": "adapter_not_found", "adapter": adapter}
+    if not Path(path).exists():
+        return {"ok": False, "error": "adapter_path_missing", "adapter": adapter, "path": path}
+    if not hasattr(model, "add_adapter") or not hasattr(model, "set_adapter"):
+        return {"ok": False, "error": "model_no_adapter_support"}
+    try:
+        setattr(model, "adapter_max_loaded", int(registry.max_loaded))
+    except Exception:
+        pass
+    try:
+        model.add_adapter(adapter, path)
+        model.set_adapter(adapter)
+    except Exception as exc:
+        return {"ok": False, "error": f"adapter_load_failed: {exc}", "adapter": adapter, "path": path}
+    return {"ok": True, "adapter": adapter, "loaded": True, "path": path}
 
 
 def _maybe_load_adapter(model: CoreTransformer, settings: dict, base_dir: Path) -> None:
@@ -56,6 +98,10 @@ def _load_backend_model(settings: dict, base_dir: Path, backend: str):
         core["backend"] = "vortex"
     local["core"] = core
     model = load_inference_model(local)
+    try:
+        setattr(model, "base_dir", base_dir)
+    except Exception:
+        pass
     _maybe_load_adapter(model, local, base_dir)
     return model
 
@@ -520,7 +566,7 @@ def _inject_rag_context(
 
 def create_app(settings: dict, base_dir: Path) -> "FastAPI":
     try:
-        from fastapi import FastAPI, HTTPException, Request
+        from fastapi import FastAPI, HTTPException
         from fastapi.responses import JSONResponse, StreamingResponse
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(f"FastAPI not available: {exc}")
@@ -549,6 +595,8 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
     model_lock = RWLock()
     episode_lock = threading.Lock()
     episode_index = EpisodeIndex(base_dir / "data" / "episodes" / "index.sqlite")
+    adapters_registry = AdapterRegistry.from_settings(settings, base_dir=base_dir)
+    adapters_router = AdapterRouter.from_settings(settings)
     app.state.model = model
     app.state.models = models
     app.state.settings = settings
@@ -557,11 +605,13 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
     app.state.episode_index = episode_index
     app.state.router = router
     app.state.router_cfg = router_cfg
+    app.state.adapters_registry = adapters_registry
+    app.state.adapters_router = adapters_router
     app.state.training_active = False
     app.state.maintenance_until = 0.0
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(request: Request):
+    async def chat_completions(request: StarletteRequest):
         payload = await request.json()
         server_cfg = settings.get("server", {}) or {}
         block_during_training = bool(server_cfg.get("block_during_training", False))
@@ -606,73 +656,92 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         device, dtype = _resolve_device_dtype(selected_model, settings)
         decode_args["max_new_tokens"] = decide_max_new_tokens(decode_args["max_new_tokens"], device, dtype, settings)
 
+        adapter_active: str | None = None
+        adapter_reason: str | None = None
+        if payload.get("adapter") is not None and not bool(getattr(selected_model, "is_hf", False)):
+            raise HTTPException(status_code=400, detail="adapter_only_supported_for_hf")
+        if bool(getattr(selected_model, "is_hf", False)) and bool(adapters_registry.enabled):
+            adapter_sel = _select_hf_adapter_for_request(payload, prompt, adapters_registry, adapters_router)
+            if not adapter_sel.get("ok", False):
+                raise HTTPException(status_code=400, detail=adapter_sel.get("error", "adapter_error"))
+            adapter_active = adapter_sel.get("adapter")
+            adapter_reason = adapter_sel.get("reason")
+
         if not stream:
             start = time.time()
             with model_lock.read_lock():
-                try:
-                    if hasattr(selected_model, "generate"):
-                        if hasattr(selected_model, "blocks"):
-                            text, stats = selected_model.generate(
-                                prompt,
-                                max_new_tokens=decode_args["max_new_tokens"],
-                                temperature=decode_args["temperature"],
-                                top_p=decode_args["top_p"],
-                                repetition_penalty=decode_args["repetition_penalty"],
-                                no_repeat_ngram=decode_args["no_repeat_ngram"],
-                                return_stats=True,
-                            )
+                adapter_ctx = getattr(selected_model, "adapter_lock", None) or nullcontext()
+                with adapter_ctx:
+                    if adapter_active:
+                        ensured = _ensure_hf_adapter(selected_model, adapters_registry, str(adapter_active))
+                        if not ensured.get("ok", False):
+                            raise HTTPException(status_code=400, detail=ensured.get("error", "adapter_load_failed"))
+                    try:
+                        if hasattr(selected_model, "generate"):
+                            if hasattr(selected_model, "blocks"):
+                                text, stats = selected_model.generate(
+                                    prompt,
+                                    max_new_tokens=decode_args["max_new_tokens"],
+                                    temperature=decode_args["temperature"],
+                                    top_p=decode_args["top_p"],
+                                    repetition_penalty=decode_args["repetition_penalty"],
+                                    no_repeat_ngram=decode_args["no_repeat_ngram"],
+                                    return_stats=True,
+                                )
+                            else:
+                                text = selected_model.generate(
+                                    prompt,
+                                    max_new_tokens=decode_args["max_new_tokens"],
+                                    temperature=decode_args["temperature"],
+                                    top_p=decode_args["top_p"],
+                                    repetition_penalty=decode_args["repetition_penalty"],
+                                    no_repeat_ngram=decode_args["no_repeat_ngram"],
+                                )
+                                stats = None
                         else:
-                            text = selected_model.generate(
-                                prompt,
-                                max_new_tokens=decode_args["max_new_tokens"],
-                                temperature=decode_args["temperature"],
-                                top_p=decode_args["top_p"],
-                                repetition_penalty=decode_args["repetition_penalty"],
-                                no_repeat_ngram=decode_args["no_repeat_ngram"],
-                            )
+                            text = ""
                             stats = None
-                    else:
-                        text = ""
-                        stats = None
-                except RuntimeError as exc:
-                    if is_oom_error(exc):
-                        clear_cuda_cache()
-                        fb = _resolve_fallback_backend(settings, chosen_backend)
-                        if fb:
-                            fb_model = _get_or_load_backend(models, settings, base_dir, fb)
-                            if fb_model is not None:
-                                chosen_backend = fb
-                                selected_model = fb_model
-                                if hasattr(selected_model, "generate"):
-                                    if hasattr(selected_model, "blocks"):
-                                        text, stats = selected_model.generate(
-                                            prompt,
-                                            max_new_tokens=decode_args["max_new_tokens"],
-                                            temperature=decode_args["temperature"],
-                                            top_p=decode_args["top_p"],
-                                            repetition_penalty=decode_args["repetition_penalty"],
-                                            no_repeat_ngram=decode_args["no_repeat_ngram"],
-                                            return_stats=True,
-                                        )
+                    except RuntimeError as exc:
+                        if is_oom_error(exc):
+                            clear_cuda_cache()
+                            fb = _resolve_fallback_backend(settings, chosen_backend)
+                            if fb:
+                                fb_model = _get_or_load_backend(models, settings, base_dir, fb)
+                                if fb_model is not None:
+                                    chosen_backend = fb
+                                    selected_model = fb_model
+                                    adapter_active = None
+                                    adapter_reason = None
+                                    if hasattr(selected_model, "generate"):
+                                        if hasattr(selected_model, "blocks"):
+                                            text, stats = selected_model.generate(
+                                                prompt,
+                                                max_new_tokens=decode_args["max_new_tokens"],
+                                                temperature=decode_args["temperature"],
+                                                top_p=decode_args["top_p"],
+                                                repetition_penalty=decode_args["repetition_penalty"],
+                                                no_repeat_ngram=decode_args["no_repeat_ngram"],
+                                                return_stats=True,
+                                            )
+                                        else:
+                                            text = selected_model.generate(
+                                                prompt,
+                                                max_new_tokens=decode_args["max_new_tokens"],
+                                                temperature=decode_args["temperature"],
+                                                top_p=decode_args["top_p"],
+                                                repetition_penalty=decode_args["repetition_penalty"],
+                                                no_repeat_ngram=decode_args["no_repeat_ngram"],
+                                            )
+                                            stats = None
                                     else:
-                                        text = selected_model.generate(
-                                            prompt,
-                                            max_new_tokens=decode_args["max_new_tokens"],
-                                            temperature=decode_args["temperature"],
-                                            top_p=decode_args["top_p"],
-                                            repetition_penalty=decode_args["repetition_penalty"],
-                                            no_repeat_ngram=decode_args["no_repeat_ngram"],
-                                        )
+                                        text = ""
                                         stats = None
                                 else:
-                                    text = ""
-                                    stats = None
+                                    raise
                             else:
                                 raise
                         else:
                             raise
-                    else:
-                        raise
             elapsed = max(1e-6, time.time() - start)
             vram_peak = None
             if torch is not None and torch.cuda.is_available():
@@ -713,12 +782,15 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 "tokens_out_est": int(tokens_out),
                 "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
                 "vram_peak_mb": vram_peak,
+                "adapter": adapter_active,
             }
             episode = {
                 "version": 1,
                 "ts": time.time(),
                 "request_id": request_id,
                 "backend": str(chosen_backend),
+                "adapter": adapter_active,
+                "adapter_reason": adapter_reason,
                 "messages": messages,
                 "prompt_text": prompt,
                 "response_text": text,
@@ -749,6 +821,8 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         def event_stream() -> Iterable[str]:
             current_model = selected_model
             current_backend = chosen_backend
+            current_adapter = adapter_active
+            current_adapter_reason = adapter_reason
             header = {
                 "id": resp_id,
                 "object": "chat.completion.chunk",
@@ -761,61 +835,69 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             chunks: list[str] = []
             start = time.time()
             with model_lock.read_lock():
-                if hasattr(current_model, "stream_generate"):
-                    gen = current_model.stream_generate(prompt, **decode_args)
-                else:
-                    gen = _stream_generate(current_model, prompt, **decode_args)
-                try:
-                    first = next(gen)
-                except StopIteration:
-                    first = None
-                except RuntimeError as exc:
-                    if is_oom_error(exc):
-                        clear_cuda_cache()
-                        fb = _resolve_fallback_backend(settings, current_backend)
-                        if fb:
-                            fb_model = _get_or_load_backend(models, settings, base_dir, fb)
-                            if fb_model is not None:
-                                current_backend = fb
-                                current_model = fb_model
-                                if hasattr(current_model, "stream_generate"):
-                                    gen = current_model.stream_generate(prompt, **decode_args)
+                adapter_ctx = getattr(current_model, "adapter_lock", None) or nullcontext()
+                with adapter_ctx:
+                    if current_adapter:
+                        ensured = _ensure_hf_adapter(current_model, adapters_registry, str(current_adapter))
+                        if not ensured.get("ok", False):
+                            raise RuntimeError(str(ensured.get("error", "adapter_load_failed")))
+                    if hasattr(current_model, "stream_generate"):
+                        gen = current_model.stream_generate(prompt, **decode_args)
+                    else:
+                        gen = _stream_generate(current_model, prompt, **decode_args)
+                    try:
+                        first = next(gen)
+                    except StopIteration:
+                        first = None
+                    except RuntimeError as exc:
+                        if is_oom_error(exc):
+                            clear_cuda_cache()
+                            fb = _resolve_fallback_backend(settings, current_backend)
+                            if fb:
+                                fb_model = _get_or_load_backend(models, settings, base_dir, fb)
+                                if fb_model is not None:
+                                    current_backend = fb
+                                    current_model = fb_model
+                                    current_adapter = None
+                                    current_adapter_reason = None
+                                    if hasattr(current_model, "stream_generate"):
+                                        gen = current_model.stream_generate(prompt, **decode_args)
+                                    else:
+                                        gen = _stream_generate(current_model, prompt, **decode_args)
+                                    try:
+                                        first = next(gen)
+                                    except StopIteration:
+                                        first = None
                                 else:
-                                    gen = _stream_generate(current_model, prompt, **decode_args)
-                                try:
-                                    first = next(gen)
-                                except StopIteration:
-                                    first = None
+                                    raise
                             else:
                                 raise
                         else:
                             raise
-                    else:
-                        raise
-                if first:
-                    chunks.append(first)
-                    chunk = {
-                        "id": resp_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": "vortex-x",
-                        "choices": [{"index": 0, "delta": {"content": first}, "finish_reason": None}],
-                        "request_id": request_id,
-                    }
-                    yield f"data: {json.dumps(chunk)}\n\n"
-                for delta in gen:
-                    if not delta:
-                        continue
-                    chunks.append(delta)
-                    chunk = {
-                        "id": resp_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": "vortex-x",
-                        "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
-                        "request_id": request_id,
-                    }
-                    yield f"data: {json.dumps(chunk)}\n\n"
+                    if first:
+                        chunks.append(first)
+                        chunk = {
+                            "id": resp_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": "vortex-x",
+                            "choices": [{"index": 0, "delta": {"content": first}, "finish_reason": None}],
+                            "request_id": request_id,
+                        }
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    for delta in gen:
+                        if not delta:
+                            continue
+                        chunks.append(delta)
+                        chunk = {
+                            "id": resp_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": "vortex-x",
+                            "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                            "request_id": request_id,
+                        }
+                        yield f"data: {json.dumps(chunk)}\n\n"
             elapsed = max(1e-6, time.time() - start)
             vram_peak = None
             if torch is not None and torch.cuda.is_available():
@@ -836,6 +918,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 "tokens_out_est": int(tokens_out),
                 "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
                 "vram_peak_mb": vram_peak,
+                "adapter": current_adapter,
             }
             if router is not None:
                 token_count = len(full_text.split())
@@ -861,6 +944,8 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 "ts": time.time(),
                 "request_id": request_id,
                 "backend": str(current_backend),
+                "adapter": current_adapter,
+                "adapter_reason": current_adapter_reason,
                 "messages": messages,
                 "prompt_text": prompt,
                 "response_text": full_text,
@@ -886,7 +971,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.post("/v1/feedback")
-    async def chat_feedback(request: Request):
+    async def chat_feedback(request: StarletteRequest):
         payload = await request.json()
         request_id = str(payload.get("request_id", "")).strip()
         rating = str(payload.get("rating", "")).strip().lower()
@@ -935,8 +1020,10 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
     @app.get("/v1/status")
     async def status():
         adapters: dict[str, str | None] = {}
+        active_adapters: dict[str, str | None] = {}
         for key, mdl in app.state.models.items():
             adapters[key] = getattr(mdl, "adapter_path", None)
+            active_adapters[key] = getattr(mdl, "active_adapter_name", None)
         return JSONResponse(
             content={
                 "ok": True,
@@ -944,6 +1031,8 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 "backends": list(app.state.models.keys()),
                 "adapter": adapters.get(default_backend_label),
                 "adapters": adapters,
+                "active_adapters": active_adapters,
+                "adapter_experts": adapters_registry.names if adapters_registry.enabled else [],
             }
         )
 
@@ -966,12 +1055,18 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     model = load_inference_model(settings)
+    try:
+        setattr(model, "base_dir", base_dir)
+    except Exception:
+        pass
     _maybe_load_adapter(model, settings, base_dir)
     model_lock = threading.Lock()
     episode_lock = threading.Lock()
     episode_index = EpisodeIndex(base_dir / "data" / "episodes" / "index.sqlite")
     fallback_backend = _resolve_fallback_backend(settings, str(settings.get("core", {}).get("backend", "vortex")).lower())
     fallback_model = None
+    adapters_registry = AdapterRegistry.from_settings(settings, base_dir=base_dir)
+    adapters_router = AdapterRouter.from_settings(settings)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):  # noqa: N802
@@ -983,6 +1078,7 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                 self.end_headers()
                 return
             adapters = {"core": getattr(model, "adapter_path", None)}
+            active_adapters = {"core": getattr(model, "active_adapter_name", None)}
             body = json.dumps(
                 {
                     "ok": True,
@@ -990,6 +1086,8 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                     "backends": ["core"],
                     "adapter": adapters.get("core"),
                     "adapters": adapters,
+                    "active_adapters": active_adapters,
+                    "adapter_experts": adapters_registry.names if adapters_registry.enabled else [],
                 }
             ).encode("utf-8")
             self.send_response(200)
@@ -1079,9 +1177,32 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
             request_id = _new_request_id(payload.get("request_id"))
             resp_id = f"chatcmpl-{request_id}"
 
+            adapter_active = None
+            adapter_reason = None
+            if payload.get("adapter") is not None and not bool(getattr(model, "is_hf", False)):
+                self.send_response(400)
+                self.end_headers()
+                return
+            if bool(getattr(model, "is_hf", False)) and bool(adapters_registry.enabled):
+                sel = _select_hf_adapter_for_request(payload, prompt, adapters_registry, adapters_router)
+                if not sel.get("ok", False):
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                adapter_active = sel.get("adapter")
+                adapter_reason = sel.get("reason")
+
             if not stream:
                 start = time.time()
                 with model_lock:
+                    adapter_ctx = getattr(model, "adapter_lock", None) or nullcontext()
+                    with adapter_ctx:
+                        if adapter_active:
+                            ensured = _ensure_hf_adapter(model, adapters_registry, str(adapter_active))
+                            if not ensured.get("ok", False):
+                                self.send_response(400)
+                                self.end_headers()
+                                return
                     try:
                         text = model.generate(
                             prompt,
@@ -1099,6 +1220,8 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                                     fallback_model = load_inference_model(settings, backend_override=fallback_backend)
                                 except Exception:
                                     raise
+                            adapter_active = None
+                            adapter_reason = None
                             text = fallback_model.generate(
                                 prompt,
                                 max_new_tokens=decode_args["max_new_tokens"],
@@ -1116,12 +1239,15 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                     "tokens_out_est": int(tokens_out),
                     "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
                     "vram_peak_mb": None,
+                    "adapter": adapter_active,
                 }
                 episode = {
                     "version": 1,
                     "ts": time.time(),
                     "request_id": request_id,
                     "backend": str(backend_label),
+                    "adapter": adapter_active,
+                    "adapter_reason": adapter_reason,
                     "messages": messages,
                     "prompt_text": prompt,
                     "response_text": text,
@@ -1172,6 +1298,12 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
             chunks: list[str] = []
             start = time.time()
             with model_lock:
+                adapter_ctx = getattr(model, "adapter_lock", None) or nullcontext()
+                with adapter_ctx:
+                    if adapter_active:
+                        ensured = _ensure_hf_adapter(model, adapters_registry, str(adapter_active))
+                        if not ensured.get("ok", False):
+                            raise RuntimeError(str(ensured.get("error", "adapter_load_failed")))
                 if hasattr(model, "stream_generate"):
                     for delta in model.stream_generate(prompt, **decode_args):
                         chunk = {

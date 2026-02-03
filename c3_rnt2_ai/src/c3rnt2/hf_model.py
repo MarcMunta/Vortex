@@ -54,6 +54,12 @@ class HFModel:
         self.device = torch.device(cfg.device)
         self.base_model = self.model
         self.adapter_path = None
+        # Multi-adapter support (PEFT). We serialize adapter switching per request.
+        self.adapters: dict[str, str] = {}
+        self.active_adapter_name: str | None = None
+        self.adapter_max_loaded: int = 0
+        self._adapter_lru: list[str] = []
+        self.adapter_lock = threading.Lock()
 
     def _prepare_prompt(self, prompt: str | None, messages: list[dict] | None, system: str | None) -> str:
         if messages is not None:
@@ -128,7 +134,16 @@ class HFModel:
                 vram_peak = float(torch.cuda.max_memory_allocated() / (1024**2))
             except Exception:
                 vram_peak = None
-        _log_infer_stats(Path("."), {"tokens": int(gen_ids.numel()), "tokens_per_sec": float(gen_ids.numel()) / elapsed, "vram_peak_mb": vram_peak})
+        base_dir = getattr(self, "base_dir", Path("."))
+        _log_infer_stats(
+            Path(base_dir),
+            {
+                "tokens": int(gen_ids.numel()),
+                "tokens_per_sec": float(gen_ids.numel()) / elapsed,
+                "vram_peak_mb": vram_peak,
+                "adapter": getattr(self, "active_adapter_name", None),
+            },
+        )
         return text
 
     def stream_generate(
@@ -198,25 +213,131 @@ class HFModel:
                 vram_peak = float(torch.cuda.max_memory_allocated() / (1024**2))
             except Exception:
                 vram_peak = None
-        _log_infer_stats(Path("."), {"tokens": int(count), "tokens_per_sec": float(count) / elapsed, "vram_peak_mb": vram_peak, "stream": True})
+        base_dir = getattr(self, "base_dir", Path("."))
+        _log_infer_stats(
+            Path(base_dir),
+            {
+                "tokens": int(count),
+                "tokens_per_sec": float(count) / elapsed,
+                "vram_peak_mb": vram_peak,
+                "stream": True,
+                "adapter": getattr(self, "active_adapter_name", None),
+            },
+        )
 
     def load_adapter(self, adapter_path: str, merge: bool = False) -> bool:
         if not adapter_path:
             return False
         if getattr(self, "adapter_path", None) == adapter_path:
             return False
+        with self.adapter_lock:
+            try:
+                from peft import PeftModel  # type: ignore
+            except Exception as exc:  # pragma: no cover
+                raise RuntimeError(f"peft not available for adapter load: {exc}")
+            base = getattr(self, "base_model", None) or self.model
+            # Keep backward compatibility: treat "latest" as a special adapter name.
+            adapter_name = "latest"
+            try:
+                model = PeftModel.from_pretrained(base, adapter_path, adapter_name=adapter_name)
+            except TypeError:
+                model = PeftModel.from_pretrained(base, adapter_path)
+            if merge and hasattr(model, "merge_and_unload"):
+                model = model.merge_and_unload()
+                self.base_model = model
+            self.model = model
+            self.adapter_path = adapter_path
+            self.adapters[str(adapter_name)] = str(adapter_path)
+            self.active_adapter_name = str(adapter_name)
+            self._touch_adapter_lru(str(adapter_name))
+            return True
+
+    def add_adapter(self, name: str, path: str) -> bool:
+        name = str(name or "").strip()
+        if not name or not path:
+            return False
+        with self.adapter_lock:
+            existing = self.adapters.get(name)
+            if existing and existing == str(path):
+                self._touch_adapter_lru(name)
+                return False
+            try:
+                from peft import PeftModel  # type: ignore
+            except Exception as exc:  # pragma: no cover
+                raise RuntimeError(f"peft not available for adapter load: {exc}")
+            if getattr(self.model, "peft_config", None) is not None and hasattr(self.model, "load_adapter"):
+                peft_model = self.model
+                try:
+                    peft_model.load_adapter(str(path), adapter_name=name)
+                except TypeError:
+                    peft_model.load_adapter(str(path))
+                self.model = peft_model
+            else:
+                base = getattr(self, "base_model", None) or self.model
+                try:
+                    self.model = PeftModel.from_pretrained(base, str(path), adapter_name=name)
+                except TypeError:
+                    # Older/unknown PEFT: adapter name not supported.
+                    self.model = PeftModel.from_pretrained(base, str(path))
+            self.adapters[name] = str(path)
+            self._touch_adapter_lru(name)
+            self._enforce_adapter_limit()
+            return True
+
+    def set_adapter(self, name: str) -> bool:
+        name = str(name or "").strip()
+        if not name:
+            return False
+        with self.adapter_lock:
+            if getattr(self, "active_adapter_name", None) == name:
+                self._touch_adapter_lru(name)
+                return False
+            if hasattr(self.model, "set_adapter"):
+                self.model.set_adapter(name)
+            else:
+                return False
+            self.active_adapter_name = name
+            if name in self.adapters:
+                self.adapter_path = self.adapters.get(name)
+            self._touch_adapter_lru(name)
+            return True
+
+    def _touch_adapter_lru(self, name: str) -> None:
         try:
-            from peft import PeftModel  # type: ignore
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError(f"peft not available for adapter load: {exc}")
-        base = getattr(self, "base_model", None) or self.model
-        model = PeftModel.from_pretrained(base, adapter_path)
-        if merge and hasattr(model, "merge_and_unload"):
-            model = model.merge_and_unload()
-            self.base_model = model
-        self.model = model
-        self.adapter_path = adapter_path
-        return True
+            self._adapter_lru.remove(name)
+        except ValueError:
+            pass
+        self._adapter_lru.append(name)
+
+    def _enforce_adapter_limit(self) -> None:
+        limit = int(getattr(self, "adapter_max_loaded", 0) or 0)
+        if limit <= 0:
+            return
+        # Best-effort eviction: if PEFT can't delete adapters, we keep them loaded.
+        while len(self.adapters) > limit:
+            victim = None
+            for cand in list(self._adapter_lru):
+                if cand != getattr(self, "active_adapter_name", None):
+                    victim = cand
+                    break
+            if victim is None:
+                return
+            removed = False
+            if hasattr(self.model, "delete_adapter"):
+                try:
+                    self.model.delete_adapter(victim)
+                    removed = True
+                except Exception:
+                    removed = False
+            if removed:
+                self.adapters.pop(victim, None)
+                try:
+                    self._adapter_lru.remove(victim)
+                except ValueError:
+                    pass
+                continue
+            # No reliable eviction available.
+            return
 
 
 def _build_load_kwargs(
@@ -226,8 +347,11 @@ def _build_load_kwargs(
     load_in_8bit: bool,
     attn_impl: str | None,
     max_memory: dict | str | None,
+    use_safetensors: bool | None,
 ) -> dict:
     load_kwargs: dict = {"torch_dtype": torch_dtype}
+    if use_safetensors is not None:
+        load_kwargs["use_safetensors"] = bool(use_safetensors)
     if attn_impl:
         load_kwargs["attn_implementation"] = attn_impl
     if max_memory:
@@ -277,6 +401,8 @@ def load_hf_model(settings: dict) -> HFModel:
     load_in_4bit = bool(core.get("hf_load_in_4bit"))
     load_in_8bit = bool(core.get("hf_load_in_8bit"))
     max_memory = core.get("hf_max_memory")
+    use_safetensors = core.get("hf_use_safetensors")
+    use_safetensors = bool(use_safetensors) if use_safetensors is not None else None
     quant_requested = bool(load_in_4bit or load_in_8bit)
     quant_available = False
     if quant_requested:
@@ -293,7 +419,7 @@ def load_hf_model(settings: dict) -> HFModel:
                 model_name=str(model_name),
                 device=device,
                 dtype=torch_dtype,
-                load_kwargs=_build_load_kwargs(torch_dtype, device, load_in_4bit, load_in_8bit, attn_impl, max_memory),
+                load_kwargs=_build_load_kwargs(torch_dtype, device, load_in_4bit, load_in_8bit, attn_impl, max_memory, use_safetensors),
             )
         )
         if attn_impl:
@@ -302,7 +428,7 @@ def load_hf_model(settings: dict) -> HFModel:
                     model_name=str(model_name),
                     device=device,
                     dtype=torch_dtype,
-                    load_kwargs=_build_load_kwargs(torch_dtype, device, load_in_4bit, load_in_8bit, None, max_memory),
+                    load_kwargs=_build_load_kwargs(torch_dtype, device, load_in_4bit, load_in_8bit, None, max_memory, use_safetensors),
                 )
             )
     # Non-quant fallback
@@ -311,7 +437,7 @@ def load_hf_model(settings: dict) -> HFModel:
             model_name=str(model_name),
             device=device,
             dtype=torch_dtype,
-            load_kwargs=_build_load_kwargs(torch_dtype, device, False, False, attn_impl, max_memory),
+            load_kwargs=_build_load_kwargs(torch_dtype, device, False, False, attn_impl, max_memory, use_safetensors),
         )
     )
     if attn_impl:
@@ -320,7 +446,7 @@ def load_hf_model(settings: dict) -> HFModel:
                 model_name=str(model_name),
                 device=device,
                 dtype=torch_dtype,
-                load_kwargs=_build_load_kwargs(torch_dtype, device, False, False, None, max_memory),
+                load_kwargs=_build_load_kwargs(torch_dtype, device, False, False, None, max_memory, use_safetensors),
             )
         )
     # CPU fallback
@@ -330,7 +456,7 @@ def load_hf_model(settings: dict) -> HFModel:
                 model_name=str(model_name),
                 device="cpu",
                 dtype=torch.float32,
-                load_kwargs=_build_load_kwargs(torch.float32, "cpu", False, False, None, None),
+                load_kwargs=_build_load_kwargs(torch.float32, "cpu", False, False, None, None, use_safetensors),
             )
         )
 

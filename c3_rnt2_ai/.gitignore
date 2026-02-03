@@ -12,6 +12,7 @@ __pycache__/
 *.log
 .DS_Store
 Thumbs.db
+*.egg-info/
 
 # data artifacts
 /data/*

@@ -93,6 +93,7 @@ def normalize_settings(settings: dict) -> dict:
         web["allow_domains"] = agent.get("web_allowlist")
     web.setdefault("enabled", False)
     web.setdefault("allow_domains", ["docs.python.org", "pytorch.org", "github.com"])
+    web.setdefault("search_domains", ["duckduckgo.com"])
     web.setdefault("max_bytes", 512000)
     web.setdefault("timeout_s", 10)
     web.setdefault("rate_limit_per_min", agent.get("rate_limit_per_min", 30))
@@ -171,6 +172,21 @@ def normalize_settings(settings: dict) -> dict:
     policy.setdefault("deny_source_kinds", None)
     knowledge["policy"] = policy
     normalized["knowledge"] = knowledge
+
+    adapters = normalized.get("adapters", {}) or {}
+    adapters.setdefault("enabled", False)
+    adapters.setdefault("paths", {})
+    adapters.setdefault("max_loaded", 0)
+    adapters.setdefault("default", None)
+    adapter_router = adapters.get("router", {}) or {}
+    adapter_router.setdefault("mode", "keyword_map")
+    adapter_router.setdefault("keyword_map", {})
+    adapter_router.setdefault("default", adapters.get("default"))
+    adapter_router.setdefault("embedding_backend", knowledge.get("embedding_backend", "hash"))
+    adapter_router.setdefault("embedding_dim", 128)
+    adapter_router.setdefault("embedding_min_score", 0.0)
+    adapters["router"] = adapter_router
+    normalized["adapters"] = adapters
 
     hf_train = normalized.get("hf_train", {}) or {}
     hf_train.setdefault("enabled", False)
@@ -344,6 +360,7 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
     web_cfg = tools_cfg.get("web", {}) or {}
     self_patch_cfg = settings.get("self_patch", {}) or {}
     hf_train_cfg = settings.get("hf_train", {}) or {}
+    adapters_cfg = settings.get("adapters", {}) or {}
 
     if not tok.get("vortex_tok_path"):
         missing.append("tokenizer.vortex_tok_path")
@@ -428,6 +445,19 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
                 errors.append("hf_train.grad_accum_steps must be > 0")
         except Exception:
             errors.append("hf_train.grad_accum_steps must be > 0")
+
+    if adapters_cfg and bool(adapters_cfg.get("enabled", False)):
+        paths = adapters_cfg.get("paths", {}) or {}
+        if not paths:
+            errors.append("adapters.paths must not be empty when adapters.enabled is true")
+        router_cfg = adapters_cfg.get("router", {}) or {}
+        keyword_map = router_cfg.get("keyword_map", {}) or {}
+        for _kw, name in keyword_map.items():
+            if name and name not in paths:
+                errors.append(f"adapters.router.keyword_map references unknown adapter: {name}")
+        default = adapters_cfg.get("default") or router_cfg.get("default")
+        if default and default not in paths:
+            errors.append(f"adapters.default unknown: {default}")
         try:
             if int(hf_train_cfg.get("max_steps", 1)) <= 0:
                 errors.append("hf_train.max_steps must be > 0")

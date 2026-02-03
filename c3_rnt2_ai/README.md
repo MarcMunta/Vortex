@@ -7,6 +7,10 @@ Este repo implementa un prototipo modular para una “IA 120B-like” local comb
 - **BAD**: Blockwise Adaptive Decoding (draft+verify).
 - **Agente**: herramientas, memoria persistente, auto-entrenamiento y auto-mejora segura.
 
+Nota de rol:
+- El backend **HF** (Qwen2.5-8B-Instruct) usa el *tokenizer de HuggingFace*.
+- **VORTEX-Tok** es para los backends VORTEX/C3 (no se usa para HF). Bench: `python scripts/bench_tokenizer.py --profile dev_small`.
+
 ## Instalacion
 ```bash
 python -m venv .venv

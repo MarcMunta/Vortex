@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -158,6 +159,25 @@ def run_deep_checks(settings: dict, base_dir: Path) -> dict[str, Any]:
         "locks_exist": locks_dir.exists(),
         "profiles": _profile_checks(base_dir),
     }
+
+    # Bench regression vs baseline (warning only; does not flip deep_ok).
+    try:
+        profile = str(settings.get("_profile") or "")
+        backend = str((settings.get("core", {}) or {}).get("backend", "vortex")).lower()
+        baseline_path = base_dir / "data" / "bench" / "baseline.json"
+        if profile and baseline_path.exists() and tokens_per_sec is not None:
+            baseline = json.loads(baseline_path.read_text(encoding="utf-8")) or {}
+            base_entry = (baseline.get(profile, {}) or {}).get(backend)
+            if isinstance(base_entry, dict):
+                base_tps = float(base_entry.get("tokens_per_sec", 0.0) or 0.0)
+                if base_tps > 0:
+                    regression = max(0.0, (base_tps - float(tokens_per_sec)) / base_tps)
+                    checks["bench_baseline_tps"] = round(base_tps, 3)
+                    checks["bench_regression"] = round(regression, 3)
+                    if regression > 0.15:
+                        checks["bench_regression_warning"] = True
+    except Exception:
+        pass
 
     if str(runtime.get("gpu_decompress", "none")).lower() == "triton":
         try:

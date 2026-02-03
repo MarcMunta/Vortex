@@ -1175,6 +1175,29 @@ def cmd_autopatch_once(args: argparse.Namespace) -> None:
     finally:
         lock.release()
 
+def _update_bench_baseline(bench_dir: Path, bench: dict) -> dict:
+    profile = str(bench.get("profile") or "")
+    backend = str(bench.get("backend") or "")
+    if not profile or not backend:
+        return {"ok": False, "error": "missing_profile_or_backend"}
+    bench_dir.mkdir(parents=True, exist_ok=True)
+    baseline_path = bench_dir / "baseline.json"
+    baseline: dict[str, dict[str, dict]] = {}
+    if baseline_path.exists():
+        try:
+            baseline = json.loads(baseline_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            baseline = {}
+    prof_entry = dict(baseline.get(profile, {}) or {})
+    created = False
+    if backend not in prof_entry:
+        prof_entry[backend] = dict(bench)
+        baseline[profile] = prof_entry
+        baseline_path.write_text(json.dumps(baseline, ensure_ascii=True, indent=2), encoding="utf-8")
+        created = True
+    return {"ok": True, "baseline_created": created}
+
+
 def cmd_bench(args: argparse.Namespace) -> None:
     profile = args.profile or resolve_profile(None)
     _ = _load_and_validate(profile)
@@ -1184,6 +1207,14 @@ def cmd_bench(args: argparse.Namespace) -> None:
         return
     cmd = [sys.executable, str(script), "--profile", profile, "--max-new-tokens", str(args.max_new_tokens)]
     subprocess.run(cmd, check=True)
+    bench_dir = Path(__file__).resolve().parents[2] / "data" / "bench"
+    latest = bench_dir / "latest.json"
+    if latest.exists():
+        try:
+            payload = json.loads(latest.read_text(encoding="utf-8"))
+            _update_bench_baseline(bench_dir, payload)
+        except Exception:
+            pass
 
 
 def main() -> None:
