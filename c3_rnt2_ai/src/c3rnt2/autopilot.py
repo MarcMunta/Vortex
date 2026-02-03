@@ -598,6 +598,15 @@ def run_autopilot_tick(
         return AutopilotResult(ok=False, steps={"lock": "unavailable"}, error=str(exc))
 
     try:
+        pause_path = base_dir / "data" / "state" / "PAUSE_AUTOPILOT"
+        if pause_path.exists():
+            state = _load_state(base_dir)
+            state["last_tick_ts"] = time.time()
+            _save_state(base_dir, state)
+            steps = {"skipped": "paused", "pause_file": str(pause_path)}
+            _log_event(base_dir, {"ok": True, "steps": steps, "summary": {"paused": True}})
+            return AutopilotResult(ok=True, steps=steps)
+
         autopilot_cfg = settings.get("autopilot", {}) or {}
         ingest_cooldown = float(autopilot_cfg.get("ingest_cooldown_minutes", 10))
         train_cooldown = float(autopilot_cfg.get("train_cooldown_minutes", 60))
@@ -608,6 +617,9 @@ def run_autopilot_tick(
         training_jsonl_max = int(autopilot_cfg.get("training_jsonl_max_items", 500))
         min_improvement = float(autopilot_cfg.get("min_improvement", settings.get("hf_train", {}).get("eval", {}).get("min_improvement", 0.0)))
         restart_after_patch = bool(autopilot_cfg.get("restart_after_patch", False))
+        max_failures = int(autopilot_cfg.get("max_consecutive_failures", 3))
+        safe_mode_cooldown_min = float(autopilot_cfg.get("safe_mode_cooldown_minutes", 0))
+        min_new_samples = int(autopilot_cfg.get("min_new_samples_per_tick", 0))
 
         # ingest (web + logs/episodes)
         if no_web:
@@ -635,10 +647,44 @@ def run_autopilot_tick(
             steps["dataset_builder"] = _build_sft_dataset(base_dir, settings)
         except Exception as exc:
             steps["dataset_builder"] = {"ok": False, "error": str(exc)}
+        # Train gating based on new dataset samples.
+        ds_written = None
+        ds_delta = None
+        if isinstance(steps.get("dataset_builder"), dict) and steps["dataset_builder"].get("ok"):
+            stats = steps["dataset_builder"].get("stats") if isinstance(steps["dataset_builder"].get("stats"), dict) else {}
+            try:
+                ds_written = int((stats or {}).get("written", 0))
+            except Exception:
+                ds_written = None
+            if ds_written is not None:
+                prev = int(state.get("last_dataset_written", 0) or 0)
+                ds_delta = max(0, ds_written - prev)
+                state["last_dataset_written"] = ds_written
+                steps["dataset_builder"]["new_written"] = ds_delta
 
         # training
         train_result = None
-        if not mock and _cooldown_ok(float(state.get("last_train_ts", 0.0)), train_cooldown):
+        safe_mode = bool(state.get("safe_mode", False))
+        safe_until = state.get("safe_mode_until_ts")
+        if safe_mode and safe_until:
+            try:
+                if time.time() > float(safe_until):
+                    safe_mode = False
+                    state["safe_mode"] = False
+                    state["failure_streak"] = 0
+            except Exception:
+                pass
+        steps["safe_mode"] = {"active": bool(safe_mode), "failure_streak": int(state.get("failure_streak", 0) or 0)}
+
+        can_train = True
+        if min_new_samples > 0 and ds_delta is not None and ds_delta < min_new_samples:
+            can_train = False
+
+        if safe_mode:
+            steps["train"] = {"ok": True, "skipped": "safe_mode"}
+        elif not can_train:
+            steps["train"] = {"ok": True, "skipped": "insufficient_new_samples", "min_new_samples_per_tick": min_new_samples, "new_written": ds_delta}
+        elif not mock and _cooldown_ok(float(state.get("last_train_ts", 0.0)), train_cooldown):
             if is_lock_held(base_dir, "train") or is_lock_held(base_dir, "self_patch"):
                 steps["train"] = {"ok": False, "skipped": "lock_held"}
             else:
@@ -651,7 +697,12 @@ def run_autopilot_tick(
             steps["train"] = {"ok": True, "skipped": "mock_or_cooldown"}
 
         # eval + promote
-        if train_result and train_result.get("ok_train") and _cooldown_ok(float(state.get("last_eval_ts", 0.0)), eval_cooldown):
+        if safe_mode:
+            steps["eval_short"] = {"ok": True, "skipped": "safe_mode"}
+            if bool(autopilot_cfg.get("bench_enabled", False)):
+                steps["bench"] = {"ok": True, "skipped": "safe_mode"}
+            steps["promote"] = {"ok": True, "promoted": False, "skipped": "safe_mode"}
+        elif train_result and train_result.get("ok_train") and _cooldown_ok(float(state.get("last_eval_ts", 0.0)), eval_cooldown):
             eval_ok = bool(train_result.get("eval_ok", train_result.get("ok_eval", False)))
             improvement = train_result.get("improvement")
             bench = None
@@ -696,7 +747,9 @@ def run_autopilot_tick(
             steps["promote"] = {"ok": True, "promoted": False, "skipped": "no_eval"}
 
         # autopatch (gated)
-        if _cooldown_ok(float(state.get("last_patch_ts", 0.0)), patch_cooldown):
+        if safe_mode:
+            steps["autopatch"] = {"ok": True, "skipped": "safe_mode"}
+        elif _cooldown_ok(float(state.get("last_patch_ts", 0.0)), patch_cooldown):
             profile = settings.get("_profile") or os.getenv("C3RNT2_PROFILE") or "dev_small"
             steps["autopatch"] = _maybe_autopatch(
                 base_dir,
@@ -708,6 +761,31 @@ def run_autopilot_tick(
             state["last_patch_ts"] = time.time()
         else:
             steps["autopatch"] = {"ok": True, "skipped": "cooldown"}
+
+        # Failure tracking / safe mode.
+        failure = False
+        if isinstance(steps.get("train"), dict):
+            if steps["train"].get("ok_train") is False or steps["train"].get("ok") is False:
+                failure = True
+        if isinstance(steps.get("eval_short"), dict) and steps["eval_short"].get("ok") is False:
+            failure = True
+        if isinstance(steps.get("autopatch"), dict) and steps["autopatch"].get("ok") is False:
+            failure = True
+        streak = int(state.get("failure_streak", 0) or 0)
+        if failure:
+            streak += 1
+        else:
+            # Reset on clean tick where we attempted work (not just paused/cooldown).
+            if steps.get("train", {}).get("skipped") not in {"mock_or_cooldown"}:
+                streak = 0
+        state["failure_streak"] = streak
+        if (not safe_mode) and max_failures > 0 and streak >= max_failures:
+            state["safe_mode"] = True
+            if safe_mode_cooldown_min and safe_mode_cooldown_min > 0:
+                state["safe_mode_until_ts"] = time.time() + safe_mode_cooldown_min * 60.0
+            else:
+                state["safe_mode_until_ts"] = None
+            steps["safe_mode"] = {"active": True, "failure_streak": streak, "entered": True}
 
         state["last_tick_ts"] = time.time()
         _save_state(base_dir, state)

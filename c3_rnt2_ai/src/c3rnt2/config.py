@@ -152,6 +152,7 @@ def normalize_settings(settings: dict) -> dict:
     server_cfg = normalized.get("server", {}) or {}
     server_cfg.setdefault("auto_reload_adapter", False)
     server_cfg.setdefault("reload_interval_s", 60)
+    server_cfg.setdefault("reload_request_interval_s", 2)
     server_cfg.setdefault("maintenance_window_s", 10)
     server_cfg.setdefault("block_during_training", False)
     server_cfg.setdefault("train_strategy", "subprocess")
@@ -283,6 +284,11 @@ def normalize_settings(settings: dict) -> dict:
         web_disc.setdefault("seed_queries", [])
         web_disc.setdefault("max_urls_per_tick", 10)
         web_disc.setdefault("max_total_urls", 200)
+        web_disc.setdefault("ttl_hours", 72)
+        web_disc.setdefault("max_queue", 500)
+        web_disc.setdefault("max_crawl_pages_per_tick", 2)
+        web_disc.setdefault("max_links_per_page", 50)
+        web_disc.setdefault("max_sitemap_urls", 200)
         cont["web_discovery"] = web_disc
         normalized["continuous"] = cont
 
@@ -309,6 +315,10 @@ def normalize_settings(settings: dict) -> dict:
     autopilot.setdefault("bench_max_new_tokens", 64)
     autopilot.setdefault("bench_max_regression", 0.15)
     autopilot.setdefault("bench_min_tokens_per_sec", 0.0)
+    # Disabled by default; autonomous profiles should opt in.
+    autopilot.setdefault("min_new_samples_per_tick", 0)
+    autopilot.setdefault("max_consecutive_failures", 3)
+    autopilot.setdefault("safe_mode_cooldown_minutes", 0)
     autopilot.setdefault("todo_regex", r"TODO\((P1|PRIORITY)\)|TODO!|TODO:HIGH|TODO:CRITICAL")
     normalized["autopilot"] = autopilot
 

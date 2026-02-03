@@ -397,6 +397,66 @@ def _start_adapter_watcher(app, base_dir: Path, settings: dict) -> None:
     app.state.adapter_reload_stop = stop_event
 
 
+def _process_reload_request(app, base_dir: Path, settings: dict) -> dict:
+    path = base_dir / "data" / "state" / "reload.json"
+    if not path.exists():
+        return {"ok": True, "processed": False}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"ok": False, "processed": False, "error": f"reload_request_invalid: {exc}"}
+    adapter_path = payload.get("adapter_path")
+    if adapter_path:
+        # Update registry pointer so reload_latest_adapter_for_app resolves it.
+        reg_dir = Path(settings.get("hf_train", {}).get("registry_dir", "data/registry/hf_train"))
+        if not reg_dir.is_absolute():
+            reg_dir = base_dir / reg_dir
+        try:
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            (reg_dir / "registry.json").write_text(
+                json.dumps({"current_adapter": str(adapter_path), "ts": time.time()}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    result = reload_latest_adapter_for_app(app, base_dir, settings, force=True)
+    if result.get("ok"):
+        try:
+            path.unlink()
+        except Exception:
+            pass
+        return {"ok": True, "processed": True, "result": result}
+    return {"ok": False, "processed": False, "result": result}
+
+
+def _start_reload_request_watcher(app, base_dir: Path, settings: dict) -> None:
+    server_cfg = settings.get("server", {}) or {}
+    interval = float(server_cfg.get("reload_request_interval_s", 2))
+    if interval <= 0:
+        return
+    stop_event = threading.Event()
+    last_mtime = 0.0
+
+    def _loop():
+        nonlocal last_mtime
+        path = base_dir / "data" / "state" / "reload.json"
+        while not stop_event.wait(interval):
+            try:
+                if not path.exists():
+                    continue
+                mtime = float(path.stat().st_mtime)
+                if mtime <= last_mtime:
+                    continue
+                last_mtime = mtime
+                _process_reload_request(app, base_dir, settings)
+            except Exception:
+                continue
+
+    thread = threading.Thread(target=_loop, daemon=True)
+    thread.start()
+    app.state.reload_request_stop = stop_event
+
+
 def _has_context_marker(messages: list[dict], prompt: str | None) -> bool:
     markers = ("context:", "end_context")
     if prompt and any(marker in prompt.lower() for marker in markers):
@@ -888,6 +948,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         )
 
     _start_adapter_watcher(app, base_dir, settings)
+    _start_reload_request_watcher(app, base_dir, settings)
     return app
 
 
