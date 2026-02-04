@@ -28,9 +28,12 @@ hf = [
   "transformers>=4.40,<4.57",
   "accelerate>=0.27",
   "safetensors>=0.4",
+  # Required for PEFT adapters/expert bank inference.
+  "peft>=0.10",
   # bitsandbytes is Linux-focused; HF can run without it on Windows.
   "bitsandbytes>=0.43; platform_system != 'Windows'",
 ]
+experts = ["peft>=0.10"]
 train = ["peft>=0.10"]
 rag = [
   "sentence-transformers>=2.6",

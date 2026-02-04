@@ -304,6 +304,25 @@ def promote_hf_expert(
         "ctx": bench.get("ctx"),
     }
     baseline_tps = _load_profile_bench_baseline_tps(base_dir, profile=profile, backend="hf")
+    allow_no_baseline = bool((settings.get("security", {}) or {}).get("allow_promotion_without_baseline", False))
+    if profile == "rtx4080_16gb_120b_like" and baseline_tps is None and not allow_no_baseline:
+        log_promotion_decision(
+            base_dir,
+            {
+                "kind": "promotion_gate",
+                "backend": "hf_experts",
+                "profile": profile,
+                "domain": domain,
+                "run_id": run_id,
+                "promote_ok": False,
+                "reason": "baseline_missing",
+                "baseline_path": str(base_dir / "data" / "bench" / "baseline.json"),
+                "thresholds": thresholds,
+                "candidate": candidate,
+                "manifest": str(manifest_path),
+            },
+        )
+        return {"ok": True, "promoted": False, "reason": "baseline_missing", "domain": domain, "run_id": run_id}
     baseline = {"tokens_per_sec": baseline_tps} if baseline_tps is not None else None
     verdict = bench_gate(candidate, baseline, thresholds)
     bench_ok = bool(verdict.get("ok", False))

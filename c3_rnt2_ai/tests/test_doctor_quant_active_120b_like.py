@@ -16,6 +16,7 @@ class _DummyHFModel:
 
 def _patch_deep_checks_lightweight(monkeypatch) -> None:
     monkeypatch.setattr(doctor_mod.sys, "platform", "linux", raising=False)
+    monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: object() if name == "peft" else None)
     monkeypatch.setattr(doctor_mod, "detect_device", lambda: SimpleNamespace(device="cpu", cuda_available=True, name="gpu", vram_gb=16.0, dtype="bf16"))
     monkeypatch.setattr(doctor_mod, "_profile_checks", lambda _base_dir: {})
     monkeypatch.setattr(doctor_mod, "_tokenizer_roundtrip_strict", lambda *_a, **_k: {"ok": True})
@@ -29,9 +30,20 @@ def test_doctor_deep_120b_like_fails_when_quant_fallback(tmp_path: Path, monkeyp
     _patch_deep_checks_lightweight(monkeypatch)
     monkeypatch.setattr(loader_mod, "load_inference_model", lambda _settings: _DummyHFModel(quant_fallback=True))
 
+    # Baseline is required for 120B-like in real (non-mock) doctor.
+    bench_dir = tmp_path / "data" / "bench"
+    bench_dir.mkdir(parents=True, exist_ok=True)
+    (bench_dir / "baseline.json").write_text('{"rtx4080_16gb_120b_like": {"hf": {"tokens_per_sec": 10.0}}}', encoding="utf-8")
+
     settings = {
         "_profile": "rtx4080_16gb_120b_like",
-        "core": {"backend": "hf", "hf_load_in_4bit": True},
+        "core": {
+            "backend": "hf",
+            "hf_load_in_4bit": True,
+            "hf_device_map": "auto",
+            "hf_max_memory": {0: "12GiB", "cpu": "48GiB"},
+            "hf_offload_folder": "data/hf_offload",
+        },
         "bench_thresholds": {"min_tokens_per_sec": 10.0, "max_regression": 0.15, "max_vram_peak_mb": 15500, "required_ctx": 4096},
         "adapters": {"enabled": True, "allow_empty": True, "max_loaded": 6, "router": {"mode": "hybrid", "top_k": 2, "mix_mode": "weighted"}},
         "experts": {"enabled": True, "max_loaded": 6, "paths": {}, "router": {"mode": "hybrid", "top_k": 2, "mix_mode": "weighted"}},
@@ -49,9 +61,19 @@ def test_doctor_deep_120b_like_passes_when_quant_active(tmp_path: Path, monkeypa
     _patch_deep_checks_lightweight(monkeypatch)
     monkeypatch.setattr(loader_mod, "load_inference_model", lambda _settings: _DummyHFModel(quant_fallback=False))
 
+    bench_dir = tmp_path / "data" / "bench"
+    bench_dir.mkdir(parents=True, exist_ok=True)
+    (bench_dir / "baseline.json").write_text('{"rtx4080_16gb_120b_like": {"hf": {"tokens_per_sec": 10.0}}}', encoding="utf-8")
+
     settings = {
         "_profile": "rtx4080_16gb_120b_like",
-        "core": {"backend": "hf", "hf_load_in_4bit": True},
+        "core": {
+            "backend": "hf",
+            "hf_load_in_4bit": True,
+            "hf_device_map": "auto",
+            "hf_max_memory": {0: "12GiB", "cpu": "48GiB"},
+            "hf_offload_folder": "data/hf_offload",
+        },
         "bench_thresholds": {"min_tokens_per_sec": 10.0, "max_regression": 0.15, "max_vram_peak_mb": 15500, "required_ctx": 4096},
         "adapters": {"enabled": True, "allow_empty": True, "max_loaded": 6, "router": {"mode": "hybrid", "top_k": 2, "mix_mode": "weighted"}},
         "experts": {"enabled": True, "max_loaded": 6, "paths": {}, "router": {"mode": "hybrid", "top_k": 2, "mix_mode": "weighted"}},
@@ -60,4 +82,3 @@ def test_doctor_deep_120b_like_passes_when_quant_active(tmp_path: Path, monkeypa
     }
     report = doctor_mod.run_deep_checks(settings, base_dir=tmp_path, mock=False)
     assert report["deep_ok"] is True
-

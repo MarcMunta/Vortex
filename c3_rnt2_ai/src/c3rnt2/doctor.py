@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import importlib.util
 import json
 import os
 import random
@@ -547,6 +548,42 @@ def _deep_check_120b_like_profile(settings: dict, base_dir: Path, *, mock: bool)
     errors: list[str] = []
     info: dict[str, Any] = {}
 
+    core_backend = str((settings.get("core", {}) or {}).get("backend", "vortex")).lower()
+    experts_enabled = bool((settings.get("experts", {}) or {}).get("enabled", False))
+    adapters_enabled = bool((settings.get("adapters", {}) or {}).get("enabled", False))
+    if core_backend in {"hf", "transformers"} and (experts_enabled or adapters_enabled):
+        peft_ok = bool(importlib.util.find_spec("peft") is not None)
+        info["peft"] = {
+            "ok": peft_ok,
+            "required": True,
+            "enabled": {"experts": experts_enabled, "adapters": adapters_enabled},
+        }
+        if not peft_ok:
+            info["peft"]["error"] = "peft_missing_for_hf_experts"
+            info["peft"]["install"] = 'python -m pip install -e ".[hf,experts]"'
+            errors.append("peft_missing_for_hf_experts")
+
+    try:
+        from .prepare import prepare_model_state
+
+        prep = prepare_model_state(settings, base_dir=base_dir)
+        info["prepare_model"] = {
+            "ok": bool(prep.get("ok", False)),
+            "backend_requested": prep.get("backend_requested"),
+            "backend_resolved": prep.get("backend_resolved"),
+            "quant_mode": prep.get("quant_mode"),
+            "offload_enabled": prep.get("offload_enabled"),
+            "gguf_path": prep.get("gguf_path"),
+            "warnings": prep.get("warnings"),
+            "errors": prep.get("errors"),
+            "next_steps": prep.get("next_steps"),
+        }
+        if not bool(prep.get("ok", False)):
+            errors.append("prepare_model_failed")
+    except Exception as exc:
+        info["prepare_model"] = {"ok": False, "error": str(exc)}
+        errors.append("prepare_model_failed")
+
     thresholds = settings.get("bench_thresholds", {}) or {}
     required = ("min_tokens_per_sec", "max_regression", "max_vram_peak_mb", "required_ctx")
     missing = [key for key in required if thresholds.get(key) is None]
@@ -562,6 +599,36 @@ def _deep_check_120b_like_profile(settings: dict, base_dir: Path, *, mock: bool)
             }
         except Exception:
             errors.append("bench_thresholds_invalid_types")
+
+    if not mock:
+        baseline_path = base_dir / "data" / "bench" / "baseline.json"
+        baseline_ok = False
+        baseline_backend = None
+        try:
+            baseline_backend = str((info.get("prepare_model") or {}).get("backend_resolved") or core_backend).strip().lower()
+        except Exception:
+            baseline_backend = str(core_backend or "").strip().lower()
+        baseline_info: dict[str, Any] = {"path": str(baseline_path), "backend": baseline_backend}
+        if not baseline_path.exists():
+            baseline_info.update({"ok": False, "error": "baseline_missing", "hint": f'Run: python -m vortex bench --profile {profile} --update-baseline'})
+        else:
+            try:
+                payload = json.loads(baseline_path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = None
+            entry = None
+            if isinstance(payload, dict):
+                prof = payload.get(profile)
+                if isinstance(prof, dict):
+                    entry = prof.get(baseline_backend)
+            tps = entry.get("tokens_per_sec") if isinstance(entry, dict) else None
+            baseline_ok = tps is not None
+            baseline_info.update({"ok": bool(baseline_ok), "tokens_per_sec": tps})
+            if not baseline_ok:
+                baseline_info.update({"error": "baseline_missing_for_backend", "hint": f'Run: python -m vortex bench --profile {profile} --update-baseline'})
+        info["bench_baseline"] = baseline_info
+        if not baseline_ok:
+            errors.append("bench_baseline_missing")
 
     def _check_router(section: str) -> dict[str, Any]:
         cfg = settings.get(section, {}) or {}

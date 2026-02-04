@@ -498,6 +498,69 @@ def _estimate_tokens(text: str, model: object | None = None) -> int:
     return len(text.split())
 
 
+def _resolve_ctx_max_tokens(settings: dict) -> int | None:
+    server_cfg = settings.get("server", {}) or {}
+    raw = server_cfg.get("ctx_max_tokens")
+    if raw is None:
+        raw = (settings.get("bench_thresholds", {}) or {}).get("required_ctx")
+    if raw is None:
+        raw = (settings.get("bench", {}) or {}).get("required_ctx")
+    try:
+        val = int(raw) if raw is not None else None
+    except Exception:
+        val = None
+    return int(val) if isinstance(val, int) and val > 0 else None
+
+
+def _resolve_ctx_overflow_policy(settings: dict) -> str:
+    server_cfg = settings.get("server", {}) or {}
+    raw = server_cfg.get("ctx_overflow_policy") or server_cfg.get("ctx_trim_policy") or "reject"
+    return str(raw or "reject").strip().lower()
+
+
+def _trim_text_tokens(text: str, keep_tokens: int, tokenizer: object | None, *, tail: bool) -> str:
+    keep = int(keep_tokens)
+    if keep <= 0:
+        return ""
+    tok = tokenizer
+    if tok is not None:
+        try:
+            encoded = None
+            try:
+                encoded = tok(text, add_special_tokens=False)
+            except TypeError:
+                encoded = tok(text)
+            ids = encoded.get("input_ids") if isinstance(encoded, dict) else None
+            if isinstance(ids, list) and ids and isinstance(ids[0], list):
+                ids = ids[0]
+            if isinstance(ids, list) and ids:
+                keep_ids = ids[-keep:] if tail else ids[:keep]
+                try:
+                    return str(tok.decode(keep_ids, skip_special_tokens=True))
+                except TypeError:
+                    return str(tok.decode(keep_ids))
+        except Exception:
+            pass
+    # Fallback: whitespace tokens.
+    words = text.split()
+    if not words:
+        return ""
+    kept = words[-keep:] if tail else words[:keep]
+    return " ".join(kept)
+
+
+def _log_ctx_guard_event(base_dir: Path, payload: dict) -> None:
+    log_path = base_dir / "data" / "logs" / "ctx_guard.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    record = dict(payload)
+    record.setdefault("ts", time.time())
+    try:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+    except Exception:
+        pass
+
+
 def _resolve_device_dtype(model: object, settings: dict) -> tuple[object | None, object | None]:
     device = getattr(model, "device", None)
     if device is None:
@@ -862,6 +925,102 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             )
         device, dtype = _resolve_device_dtype(selected_model, settings)
         decode_args["max_new_tokens"] = decide_max_new_tokens(decode_args["max_new_tokens"], device, dtype, settings)
+
+        ctx_max = _resolve_ctx_max_tokens(settings)
+        if ctx_max is not None:
+            policy = _resolve_ctx_overflow_policy(settings)
+            max_new_before = int(decode_args.get("max_new_tokens") or 0)
+            max_new_after = int(max_new_before)
+            action = None
+
+            if max_new_after >= int(ctx_max):
+                max_new_after = max(1, int(ctx_max) - 1)
+                decode_args["max_new_tokens"] = int(max_new_after)
+                action = "reduce_max_new_tokens"
+
+            tok = getattr(selected_model, "tokenizer", None)
+            ctx_in = int(_estimate_tokens(prompt, selected_model))
+            allowed_prompt = max(1, int(ctx_max) - int(max_new_after))
+            ctx_used = ctx_in
+
+            if ctx_in > allowed_prompt:
+                if policy in {"reject", "error", "400"}:
+                    _log_ctx_guard_event(
+                        base_dir,
+                        {
+                            "kind": "ctx_guard",
+                            "profile": str(settings.get("_profile") or ""),
+                            "backend": str(chosen_backend),
+                            "policy": policy,
+                            "action": "reject",
+                            "stream": bool(stream),
+                            "request_id": request_id,
+                            "ctx_in": ctx_in,
+                            "ctx_used": None,
+                            "ctx_dropped": None,
+                            "max_ctx_profile": int(ctx_max),
+                            "max_new_tokens_before": max_new_before,
+                            "max_new_tokens_after": max_new_after,
+                        },
+                    )
+                    raise HTTPException(status_code=400, detail="context_too_large")
+
+                tail = True
+                if policy.startswith("head"):
+                    tail = False
+                elif policy.startswith("tail"):
+                    tail = True
+                else:
+                    _log_ctx_guard_event(
+                        base_dir,
+                        {
+                            "kind": "ctx_guard",
+                            "profile": str(settings.get("_profile") or ""),
+                            "backend": str(chosen_backend),
+                            "policy": policy,
+                            "action": "reject_unknown_policy",
+                            "stream": bool(stream),
+                            "request_id": request_id,
+                            "ctx_in": ctx_in,
+                            "ctx_used": None,
+                            "ctx_dropped": None,
+                            "max_ctx_profile": int(ctx_max),
+                            "max_new_tokens_before": max_new_before,
+                            "max_new_tokens_after": max_new_after,
+                        },
+                    )
+                    raise HTTPException(status_code=400, detail="context_policy_invalid")
+
+                prompt = _trim_text_tokens(prompt, allowed_prompt, tok, tail=tail)
+                ctx_used = int(_estimate_tokens(prompt, selected_model))
+                action = ("trim_prompt_tail" if tail else "trim_prompt_head") if action is None else action + ("+trim_prompt_tail" if tail else "+trim_prompt_head")
+
+            if int(ctx_used) + int(max_new_after) > int(ctx_max):
+                fit = max(1, int(ctx_max) - int(ctx_used))
+                if fit != int(max_new_after):
+                    decode_args["max_new_tokens"] = int(fit)
+                    max_new_after = int(fit)
+                    action = "reduce_max_new_tokens" if action is None else action + "+reduce_max_new_tokens"
+
+            if action is not None:
+                _log_ctx_guard_event(
+                    base_dir,
+                    {
+                        "kind": "ctx_guard",
+                        "profile": str(settings.get("_profile") or ""),
+                        "backend": str(chosen_backend),
+                        "policy": policy,
+                        "action": action,
+                        "stream": bool(stream),
+                        "request_id": request_id,
+                        "ctx_in": int(ctx_in),
+                        "ctx_used": int(ctx_used),
+                        "ctx_dropped": max(0, int(ctx_in) - int(ctx_used)),
+                        "max_ctx_profile": int(ctx_max),
+                        "max_new_tokens_before": int(max_new_before),
+                        "max_new_tokens_after": int(max_new_after),
+                    },
+                )
 
         adapter_sel: dict | None = None
         adapter_active: str | None = None

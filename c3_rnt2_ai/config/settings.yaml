@@ -440,6 +440,7 @@ profiles:
       web:
         strict: true
         allowlist_domains: []
+      allow_promotion_without_baseline: false
     server:
       # Windows HF training via WSL2 to avoid double-load/OOM.
       train_strategy: wsl_subprocess_unload
@@ -448,6 +449,8 @@ profiles:
       # Optional: override WSL Python/workdir for training subprocess.
       wsl_python: python
       wsl_workdir: null
+      ctx_max_tokens: 4096
+      ctx_overflow_policy: tail_keep_last_n
 
   rtx4080_16gb_safe_windows_core:
     # Windows-safe RTX 4080 16GB (core backend).

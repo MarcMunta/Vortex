@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import random
 import time
@@ -260,6 +261,29 @@ def run_bench(settings: dict, base_dir: Path, args: BenchArgs) -> dict[str, Any]
     core_cfg = settings.get("core", {}) or {}
     backend = str(core_cfg.get("backend", "vortex")).lower()
     stream_topk = _resolve_stream_topk(settings)
+    backend_resolved = backend
+    quant_mode = None
+    offload_enabled = None
+    try:
+        from .prepare import prepare_model_state
+
+        prep = prepare_model_state(settings, base_dir=base_dir)
+        if isinstance(prep, dict):
+            backend_resolved = str(prep.get("backend_resolved") or backend_resolved).lower()
+            quant_mode = prep.get("quant_mode")
+            offload_enabled = prep.get("offload_enabled")
+    except Exception:
+        prep = None
+        backend_resolved = backend
+        quant_requested = bool(core_cfg.get("hf_load_in_4bit") or core_cfg.get("hf_load_in_8bit"))
+        bnb = importlib.util.find_spec("bitsandbytes") is not None
+        if backend in {"hf", "transformers"} and quant_requested and bnb:
+            quant_mode = "4bit" if bool(core_cfg.get("hf_load_in_4bit")) else "8bit"
+        if backend in {"hf", "transformers"}:
+            offload_enabled = bool(core_cfg.get("hf_device_map") or core_cfg.get("hf_max_memory") or core_cfg.get("hf_offload_folder"))
+        if backend == "llama_cpp":
+            quant_mode = "gguf"
+            offload_enabled = False
 
     prompt_text = str(args.prompt or "")
     adapter_load_ms = None
@@ -277,6 +301,9 @@ def run_bench(settings: dict, base_dir: Path, args: BenchArgs) -> dict[str, Any]
             "ts": time.time(),
             "profile": str(args.profile),
             "backend": backend,
+            "backend_resolved": backend_resolved,
+            "quant_mode": quant_mode,
+            "offload_enabled": offload_enabled,
             "seed": int(args.seed),
             "repeat": int(args.repeat),
             "warmup": int(args.warmup),
@@ -328,6 +355,22 @@ def run_bench(settings: dict, base_dir: Path, args: BenchArgs) -> dict[str, Any]
         backend_used = "hf"
     elif bool(getattr(model, "is_llama_cpp", False)):
         backend_used = "llama_cpp"
+    backend_resolved = backend_used
+    if bool(getattr(model, "is_hf", False)):
+        try:
+            cfg = getattr(model, "cfg", None)
+            load_kwargs = getattr(cfg, "load_kwargs", None) if cfg is not None else None
+            if isinstance(load_kwargs, dict):
+                if bool(load_kwargs.get("load_in_4bit")):
+                    quant_mode = "4bit"
+                elif bool(load_kwargs.get("load_in_8bit")):
+                    quant_mode = "8bit"
+                offload_enabled = bool(load_kwargs.get("device_map") or load_kwargs.get("max_memory") or load_kwargs.get("offload_folder"))
+        except Exception:
+            pass
+    elif bool(getattr(model, "is_llama_cpp", False)):
+        quant_mode = "gguf"
+        offload_enabled = False
     try:
         active_adapters, adapter_load_ms, adapter_active = _maybe_prepare_hf_adapters(model, settings, base_dir, prompt_text)
     except Exception:
@@ -431,6 +474,9 @@ def run_bench(settings: dict, base_dir: Path, args: BenchArgs) -> dict[str, Any]
         "ts": time.time(),
         "profile": str(args.profile),
         "backend": backend_used,
+        "backend_resolved": backend_resolved,
+        "quant_mode": quant_mode,
+        "offload_enabled": offload_enabled,
         "stream_topk": stream_topk,
         "seed": int(args.seed),
         "repeat": int(args.repeat),

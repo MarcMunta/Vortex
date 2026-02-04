@@ -1439,13 +1439,12 @@ def cmd_autopatch_once(args: argparse.Namespace) -> None:
     finally:
         lock.release()
 
-def _update_bench_baseline(bench_dir: Path, bench: dict) -> dict:
+def _update_bench_baseline(baseline_path: Path, bench: dict) -> dict:
     profile = str(bench.get("profile") or "")
     backend = str(bench.get("backend") or "")
     if not profile or not backend:
         return {"ok": False, "error": "missing_profile_or_backend"}
-    bench_dir.mkdir(parents=True, exist_ok=True)
-    baseline_path = bench_dir / "baseline.json"
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
     baseline: dict[str, dict[str, dict]] = {}
     if baseline_path.exists():
         try:
@@ -1453,13 +1452,17 @@ def _update_bench_baseline(bench_dir: Path, bench: dict) -> dict:
         except Exception:
             baseline = {}
     prof_entry = dict(baseline.get(profile, {}) or {})
-    created = False
-    if backend not in prof_entry:
-        prof_entry[backend] = dict(bench)
-        baseline[profile] = prof_entry
-        baseline_path.write_text(json.dumps(baseline, ensure_ascii=True, indent=2), encoding="utf-8")
-        created = True
-    return {"ok": True, "baseline_created": created}
+    prev = prof_entry.get(backend)
+    entry = {
+        "ts": bench.get("ts"),
+        "tokens_per_sec": bench.get("tokens_per_sec"),
+        "decode_tokens_per_sec": bench.get("decode_tokens_per_sec"),
+        "vram_peak_mb": bench.get("vram_peak_mb"),
+    }
+    prof_entry[backend] = entry
+    baseline[profile] = prof_entry
+    baseline_path.write_text(json.dumps(baseline, ensure_ascii=True, indent=2), encoding="utf-8")
+    return {"ok": True, "baseline_path": str(baseline_path), "created": prev is None, "updated": prev is not None}
 
 
 def cmd_bench(args: argparse.Namespace) -> None:
@@ -1502,7 +1505,28 @@ def cmd_bench(args: argparse.Namespace) -> None:
             mock=bool(getattr(args, "mock", False)),
         ),
     )
+    if bool(getattr(args, "update_baseline", False)):
+        baseline_path = Path(str(getattr(args, "baseline_path", "data/bench/baseline.json") or "data/bench/baseline.json"))
+        if not baseline_path.is_absolute():
+            baseline_path = (base_dir / baseline_path).resolve()
+        update = _update_bench_baseline(baseline_path, report)
+        report = dict(report)
+        report["baseline_update"] = update
     print(json.dumps(report, ensure_ascii=True))
+
+
+def cmd_prepare_model(args: argparse.Namespace) -> None:
+    from .prepare import prepare_model_state, write_prepared_state
+
+    profile = args.profile or resolve_profile(None)
+    settings = _load_and_validate(profile)
+    base_dir = Path(".")
+    state = prepare_model_state(settings, base_dir=base_dir)
+    out_path = write_prepared_state(state, base_dir=base_dir)
+    state["prepared_path"] = str(out_path)
+    print(json.dumps(state, ensure_ascii=True))
+    if not bool(state.get("ok", False)):
+        sys.exit(1)
 
 
 def main() -> None:
@@ -1576,7 +1600,13 @@ def main() -> None:
     bench.add_argument("--mock", action="store_true")
     bench.add_argument("--json-out", default="data/bench/last.json")
     bench.add_argument("--jsonl-out", default=None)
+    bench.add_argument("--update-baseline", dest="update_baseline", action="store_true")
+    bench.add_argument("--baseline-path", default="data/bench/baseline.json")
     bench.set_defaults(func=cmd_bench)
+
+    prep = sub.add_parser("prepare-model")
+    prep.add_argument("--profile", default=None)
+    prep.set_defaults(func=cmd_prepare_model)
 
     boot = sub.add_parser("bootstrap")
     boot.add_argument("--profile", default=None)
