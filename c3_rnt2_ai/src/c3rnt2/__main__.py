@@ -541,9 +541,9 @@ def cmd_chat(args: argparse.Namespace) -> None:
     info = detect_device()
     print({"device": info.device, "vram_gb": info.vram_gb, "dtype": info.dtype})
     decode_cfg = settings.get("decode", {}) or {}
-    default_system = settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant.")
+    default_system = settings.get("core", {}).get("hf_system_prompt", "You are Vortex, a helpful coding assistant.")
     backend = settings.get("core", {}).get("backend", "vortex")
-    print("VORTEX-X chat. Type 'exit' to quit.")
+    print("Vortex chat. Type 'exit' to quit.")
     while True:
         prompt = input("> ").strip()
         if prompt.lower() in {"exit", "quit"}:
@@ -1441,7 +1441,7 @@ def cmd_bench(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="c3rnt2")
+    parser = argparse.ArgumentParser(prog="vortex")
     sub = parser.add_subparsers(dest="command")
 
     doc = sub.add_parser("doctor")

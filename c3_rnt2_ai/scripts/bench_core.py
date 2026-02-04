@@ -135,7 +135,7 @@ def _prompt_for_ctx(core: CoreTransformer, ctx: int) -> tuple[str, int]:
     reps = (int(ctx) + len(ids) - 1) // len(ids)
     prompt_ids = (ids * max(1, reps))[: int(ctx)]
     prompt = core.decode_ids(prompt_ids, total_len=int(ctx))
-    # Ensure stable ctx_len after decode+encode (VORTEX-Tok should roundtrip).
+    # Ensure stable ctx_len after decode+encode (Vortex-Tok should roundtrip).
     final_ids, _total2 = core.encode_prompt(prompt)
     return prompt, int(len(final_ids))
 

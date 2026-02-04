@@ -17,7 +17,7 @@ from c3rnt2.tokenizer import vortex_tok as vt  # type: ignore[import-not-found]
 
 def _sample_text() -> str:
     return (
-        "VORTEX-Tok tokenizer benchmark.\n"
+        "Vortex-Tok tokenizer benchmark.\n"
         "This is a short-ish sample with repetition repetition repetition.\n"
         "Unicode: ñ é ö 😀\n"
         "Code:\n"
@@ -82,4 +82,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -6,6 +6,6 @@ set "PYTHON=python"
 if exist ".venv\Scripts\python.exe" set "PYTHON=.venv\Scripts\python.exe"
 set "CMD=%*"
 if "%CMD%"=="" set "CMD=chat"
-echo [start] C3RNT2_PROFILE=%C3RNT2_PROFILE%
-%PYTHON% -m c3rnt2 %CMD%
+echo [start] Vortex (C3RNT2_PROFILE=%C3RNT2_PROFILE%)
+%PYTHON% -m vortex %CMD%
 endlocal

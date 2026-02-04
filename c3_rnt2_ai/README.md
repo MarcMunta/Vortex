@@ -1,15 +1,15 @@
-# VORTEX-X (C3 + RNT-2 + LAVA + BAD)
+# Vortex (C3 + RNT-2 + LAVA + BAD)
 
 Este repo implementa un prototipo modular para una “IA 120B-like” local combinando:
 - **C3**: pesos paginados y comprimidos con caché coherente.
-- **VORTEX-Tok**: tokenización reversible de tasa variable (macro/patch/ESC).
+- **Vortex-Tok**: tokenización reversible de tasa variable (macro/patch/ESC).
 - **V-Blocks**: LocalMixer + SSM + LAVA Memory + GatedMLP.
 - **BAD**: Blockwise Adaptive Decoding (draft+verify).
 - **Agente**: herramientas, memoria persistente, auto-entrenamiento y auto-mejora segura.
 
 Nota de rol:
 - El backend **HF** (Qwen2.5-8B-Instruct) usa el *tokenizer de HuggingFace*.
-- **VORTEX-Tok** es para los backends VORTEX/C3 (no se usa para HF). Bench: `python scripts/bench_tokenizer.py --profile dev_small`.
+- **Vortex-Tok** es para los backends Vortex/C3 (no se usa para HF). Bench: `python scripts/bench_tokenizer.py --profile dev_small`.
 
 ## Ruta recomendada (RTX 4080 16GB)
 Ver `docs/rtx4080.md`.
@@ -18,16 +18,16 @@ Ver `docs/rtx4080.md`.
 Comandos recomendados (core backend, sin descargas, web deny-by-default):
 ```bash
 pip install -e .
-python -m c3rnt2 doctor --profile rtx4080_16gb_safe
-python -m c3rnt2 doctor --deep --profile rtx4080_16gb_safe
-python -m c3rnt2 bench --profile rtx4080_16gb_safe --max-new 64 --json-out data/bench/last.json
+python -m vortex doctor --profile rtx4080_16gb_safe
+python -m vortex doctor --deep --profile rtx4080_16gb_safe
+python -m vortex bench --profile rtx4080_16gb_safe --max-new 64 --json-out data/bench/last.json
 ```
 
 Self-train seguro (quarantine + aprobaciÃ³n manual):
 - `doctor --deep` escribe un adapter candidato en `data/continuous/quarantine/<run_id>/`.
 - Para promoverlo: crea `APPROVE.txt` dentro del directorio del run y ejecuta:
 ```bash
-python -m c3rnt2 promote-quarantine --run-id <run_id>
+python -m vortex promote-quarantine --run-id <run_id>
 ```
 
 Troubleshooting OOM:
@@ -55,8 +55,8 @@ Embeddings CPU opcionales (RAG, incluye FAISS si esta disponible):
 pip install -e .[rag]
 ```
 
-## CLI (VORTEX-X)
-Comandos principales via `python -m c3rnt2`:
+## CLI (Vortex)
+Comandos principales vía `python -m vortex` (compat: `python -m c3rnt2`):
 ```bash
 python -m c3rnt2 tokenizer-train
 python -m c3rnt2 eval
@@ -113,13 +113,13 @@ Aplicar un patch aprobado:
 python -m c3rnt2 apply-patch <id>
 ```
 
-## Tokenizador VORTEX-Tok
+## Tokenizador Vortex-Tok
 Entrenamiento MVP (patch codebook + macro codebook opcional):
 ```bash
 python -m c3rnt2 tokenizer-train --corpus data/corpora
 ```
 
-## VORTEX-X Core
+## Vortex Core
 Usa V-Blocks (LocalMixer + SSM + LAVA + GatedMLP). El contexto largo depende de LAVA + SSM, no de KV infinito.
 
 ## C3 Runtime
@@ -256,19 +256,19 @@ python -m c3rnt2 self-train --once --profile qwen8b_train
 ```
 
 ## Configuración
-`config/settings.yaml` define perfiles (`dev_small`, `core_only`, `c3_paged`, `agent`) con par?metros para VORTEX, BAD y self-train.
+`config/settings.yaml` define perfiles (`dev_small`, `core_only`, `c3_paged`, `agent`) con parámetros para Vortex, BAD y self-train.
 
-Flags ?tiles:
+Flags útiles:
 - `core.mtp_k`: activa Multi-Token Prediction (MTP).
-- `core.compile_step` / `core.compile_local_mixer_step`: compila rutas cr?ticas (experimental).
+- `core.compile_step` / `core.compile_local_mixer_step`: compila rutas críticas (experimental).
 - `vortex_model.lava_clusters` / `vortex_model.lava_cluster_top`: ANN coarse->fine en LAVA.
 - `vortex_model.lava_read_every` / `vortex_model.lava_write_every` / `vortex_model.lava_write_on_surprise`: duty-cycling LAVA.
-- `bad.entropy_top_k`: top-k para entrop?a aproximada.
-- `bad.penalty_window`: ventana de repetici?n.
-- `bad.top_p_min_k` / `bad.top_p_max_k`: l?mites top-k adaptativo para top_p.
+- `bad.entropy_top_k`: top-k para entropía aproximada.
+- `bad.penalty_window`: ventana de repetición.
+- `bad.top_p_min_k` / `bad.top_p_max_k`: límites top-k adaptativo para top_p.
 - `decode.exact_copy_mode` / `decode.escape_restrict`: control de ESC/bytes.
 - `depth_gating.*`: router de profundidad (min/max + hysteresis).
-- `c3.pinned_memory` / `c3.prefetch_depth`: transferencia as?ncrona.
+- `c3.pinned_memory` / `c3.prefetch_depth`: transferencia asíncrona.
 
 ## Notas
 - Este MVP prioriza arquitectura, métricas y exactitud. Rendimiento se optimiza en fases siguientes.
@@ -276,7 +276,7 @@ Flags ?tiles:
 
 
 ## Benchmarks RTX 4080
-Generaci?n (BAD decode + cache/prefetch stats):
+Generación (BAD decode + cache/prefetch stats):
 ```bash
 python scripts/bench_generate.py --profile rtx4080_16gb_vortexx_next --max-new-tokens 512
 ```
@@ -285,11 +285,11 @@ Microbench de PagedLinear:
 python scripts/bench_paged_linear.py --dtype bf16 --accum-fp32
 ```
 
-M?tricas clave:
-- `page_faults`: fallos de cach? de tiles (menos es mejor).
+Métricas clave:
+- `page_faults`: fallos de caché de tiles (menos es mejor).
 - `prefetch_hits`: tiles consumidos desde prefetch sin bloqueo.
 - `bytes_h2d`: bytes reales transferidos H2D.
-- `bytes_compressed_read`: bytes le?dos desde payload comprimido.
+- `bytes_compressed_read`: bytes leídos desde payload comprimido.
 
 
 Bootstrap con Qwen-8B (teacher 4bit):

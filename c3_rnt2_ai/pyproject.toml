@@ -1,7 +1,7 @@
 [project]
-name = "c3-rnt2-ai"
+name = "vortex"
 version = "0.1.0"
-description = "Local C3 + RNT-2 + KV-hybrid research stack"
+description = "Vortex local inference + training stack"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "Local", email = "local@example.com"}]

@@ -243,7 +243,7 @@ def _self_train_mock(settings: dict, base_dir: Path) -> dict[str, Any]:
     model = CoreTransformer.from_settings(deepcopy(settings))
     core_cfg = settings.get("core", {}) or {}
     backend = str(core_cfg.get("backend", "vortex"))
-    default_system = core_cfg.get("hf_system_prompt", "You are a helpful coding assistant.")
+    default_system = core_cfg.get("hf_system_prompt", "You are Vortex, a helpful coding assistant.")
     tokenizer = getattr(model, "tokenizer", None)
 
     base_loss = eval_loss(model, anchors, backend=backend, tokenizer=tokenizer, default_system=default_system)

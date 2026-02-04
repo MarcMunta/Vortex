@@ -163,7 +163,7 @@ def _load_checkpoint(model: "CoreTransformer", path: str | Path) -> None:
 
 
 class CoreTransformer(nn.Module):
-    """VORTEX-X core using V-Blocks and LAVA memory."""
+    """Vortex core using V-Blocks and LAVA memory."""
 
     def __init__(self, config: VortexXConfig, tokenizer: VortexTokModel):
         super().__init__()

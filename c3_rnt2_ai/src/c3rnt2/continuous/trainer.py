@@ -41,7 +41,7 @@ class ContinualTrainer:
     def _format_sample(self, model: CoreTransformer, sample: Sample) -> str:
         core_cfg = self.settings.get("core", {}) or {}
         backend = str(core_cfg.get("backend", "vortex"))
-        default_system = core_cfg.get("hf_system_prompt", "You are a helpful coding assistant.")
+        default_system = core_cfg.get("hf_system_prompt", "You are Vortex, a helpful coding assistant.")
         tokenizer = getattr(model, "tokenizer", None)
         return format_chat_sample(sample, backend=backend, tokenizer=tokenizer, default_system=default_system)
 

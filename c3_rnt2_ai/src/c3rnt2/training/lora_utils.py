@@ -132,7 +132,7 @@ def train_lora(
     model = CoreTransformer.from_settings(settings)
     core_cfg = settings.get("core", {}) or {}
     backend = str(core_cfg.get("backend", "vortex"))
-    default_system = core_cfg.get("hf_system_prompt", "You are a helpful coding assistant.")
+    default_system = core_cfg.get("hf_system_prompt", "You are Vortex, a helpful coding assistant.")
     tokenizer = getattr(model, "tokenizer", None)
     strict = bool(adapter_cfg.get("strict_target_modules", False))
     target_modules = resolve_target_modules(adapter_cfg, strict=strict)

@@ -314,7 +314,7 @@ def _train_from_samples(
     model = CoreTransformer.from_settings(settings)
     core_cfg = settings.get("core", {}) or {}
     backend = str(core_cfg.get("backend", "vortex"))
-    default_system = core_cfg.get("hf_system_prompt", "You are a helpful coding assistant.")
+    default_system = core_cfg.get("hf_system_prompt", "You are Vortex, a helpful coding assistant.")
     tokenizer = getattr(model, "tokenizer", None)
     adapter_cfg = settings.get("continuous", {}).get("adapters", {})
     lora_cfg = LoRAConfig(
@@ -413,7 +413,7 @@ def _distill_teacher(
                 device=teacher_device,
                 quant=teacher_quant,
                 max_memory=teacher_max_memory,
-                default_system=settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant."),
+                default_system=settings.get("core", {}).get("hf_system_prompt", "You are Vortex, a helpful coding assistant."),
             )
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -436,7 +436,7 @@ def _distill_teacher(
             dataset_path,
             samples,
             meta,
-            default_system=settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant."),
+            default_system=settings.get("core", {}).get("hf_system_prompt", "You are Vortex, a helpful coding assistant."),
         )
 
     if not samples:

@@ -540,7 +540,7 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
     if reuse_dataset and dataset_path.exists():
         samples = _load_dataset(dataset_path)
     else:
-        system_prompt = cfg.get("default_system") or settings.get("core", {}).get("hf_system_prompt") or "You are a helpful coding assistant."
+        system_prompt = cfg.get("default_system") or settings.get("core", {}).get("hf_system_prompt") or "You are Vortex, a helpful coding assistant."
         queue_dir = Path(settings.get("self_patch", {}).get("queue_dir", "data/self_patch/queue"))
         if not queue_dir.is_absolute():
             queue_dir = base_dir / queue_dir

@@ -201,7 +201,7 @@ profiles:
       hf_load_in_4bit: true
       hf_device: cuda
       hf_attn_implementation: sdpa
-      hf_system_prompt: "You are a helpful coding assistant."
+      hf_system_prompt: "You are Vortex, a helpful coding assistant."
       hf_use_latest_adapter: true
       dtype: bf16
       backend_fallback: vortex
@@ -705,7 +705,7 @@ profiles:
       max_patch_kb: 64
       sandbox_root: data/workspaces
   rtx4080_16gb_vortexx:
-    # VORTEX-Tok (reversible, tasa variable, ESC exacto)
+    # Vortex-Tok (reversible, tasa variable, ESC exacto)
     tokenizer:
       type: vortex_tok
       rnt2_model_path: data/runs/rnt2_dev.pt
@@ -718,7 +718,7 @@ profiles:
         max_merge: 8
         min_freq: 50
 
-    # VORTEX-X core (V-Blocks + LAVA + SSM)
+    # Vortex core (V-Blocks + LAVA + SSM)
     core:
       arch: vortex_x
       precision: bf16

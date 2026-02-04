@@ -1,4 +1,4 @@
-"""C3 + RNT-2 local stack."""
+"""Vortex local stack."""
 from __future__ import annotations
 
 __version__ = "0.1.0"

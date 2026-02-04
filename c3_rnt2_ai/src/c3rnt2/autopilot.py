@@ -234,7 +234,7 @@ def _build_sft_dataset(base_dir: Path, settings: dict) -> dict[str, Any]:
     max_samples = int(cfg.get("max_samples", 128))
     min_quality = float(cfg.get("min_quality", 0.0))
     chunks = store.sample_chunks(limit=max_samples, min_quality=min_quality)
-    system_prompt = cfg.get("default_system") or settings.get("core", {}).get("hf_system_prompt") or "You are a helpful coding assistant."
+    system_prompt = cfg.get("default_system") or settings.get("core", {}).get("hf_system_prompt") or "You are Vortex, a helpful coding assistant."
     dataset_path = Path(cfg.get("dataset_path", base_dir / "data" / "registry" / "hf_train" / "sft_samples.jsonl"))
     if not dataset_path.is_absolute():
         dataset_path = base_dir / dataset_path

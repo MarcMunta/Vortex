@@ -790,7 +790,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             raise HTTPException(status_code=400, detail="messages required")
         messages, _prompt_override, rag_info = _inject_rag_context(base_dir, settings, messages, None)
         backend_cfg = settings.get("core", {}).get("backend", "vortex")
-        default_system = settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant.")
+        default_system = settings.get("core", {}).get("hf_system_prompt", "You are Vortex, a helpful coding assistant.")
         prompt = build_chat_prompt(messages, backend_cfg, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
         stream = bool(payload.get("stream", False))
         decode_args = _resolve_decode_args(settings, payload)
@@ -1344,7 +1344,7 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
             messages, _prompt_override, rag_info = _inject_rag_context(base_dir, settings, messages, None)
             backend = settings.get("core", {}).get("backend", "vortex")
             backend_label = "hf" if str(backend).lower() == "hf" else "core"
-            default_system = settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant.")
+            default_system = settings.get("core", {}).get("hf_system_prompt", "You are Vortex, a helpful coding assistant.")
             prompt = build_chat_prompt(messages, backend, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
             stream = bool(payload.get("stream", False))
             decode_args = _resolve_decode_args(settings, payload)

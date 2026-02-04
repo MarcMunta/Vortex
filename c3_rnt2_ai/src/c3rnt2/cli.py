@@ -25,7 +25,7 @@ from .tokenizer.rnt2_model import RNT2Model, RNT2Codebook
 from .model.core_transformer import CoreTransformer
 from .agent.agent_loop import run_demo_agent
 
-app = typer.Typer(help="C3 + RNT-2 local stack CLI")
+app = typer.Typer(help="Vortex CLI")
 logger = get_logger(__name__)
 
 

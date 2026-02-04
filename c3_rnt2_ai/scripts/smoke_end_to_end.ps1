@@ -9,16 +9,15 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
-python -m c3rnt2 doctor --deep --profile $ProfileCore
-python -m c3rnt2 bench --profile $ProfileCore --max-new-tokens 64
+python -m vortex doctor --deep --profile $ProfileCore
+python -m vortex bench --profile $ProfileCore --max-new-tokens 64
 
-python -m c3rnt2 doctor --deep --profile $ProfileHf
-python -m c3rnt2 bench --profile $ProfileHf --max-new-tokens 64
+python -m vortex doctor --deep --profile $ProfileHf
+python -m vortex bench --profile $ProfileHf --max-new-tokens 64
 
 try {
-  python -m c3rnt2 doctor --deep --profile $ProfileLlamaCpp
-  python -m c3rnt2 bench --profile $ProfileLlamaCpp --max-new-tokens 64
+  python -m vortex doctor --deep --profile $ProfileLlamaCpp
+  python -m vortex bench --profile $ProfileLlamaCpp --max-new-tokens 64
 } catch {
   Write-Host "NOTE: llama_cpp smoke skipped (GGUF model missing or llama-cpp-python not installed)."
 }
-

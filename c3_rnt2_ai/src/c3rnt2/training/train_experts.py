@@ -67,7 +67,7 @@ def train_experts(
             targets = resolve_target_modules(adapter_cfg, strict=strict)
             inject_lora(model, lora_cfg, target_modules=targets)
             backend = str(settings.get("core", {}).get("backend", "vortex"))
-            default_system = settings.get("core", {}).get("hf_system_prompt", "You are a helpful coding assistant.")
+            default_system = settings.get("core", {}).get("hf_system_prompt", "You are Vortex, a helpful coding assistant.")
             tokenizer = getattr(model, "tokenizer", None)
             base_loss = eval_loss(model, anchors, backend=backend, tokenizer=tokenizer, default_system=default_system) if anchors else None
             load_lora_state(model, adapter_path)
