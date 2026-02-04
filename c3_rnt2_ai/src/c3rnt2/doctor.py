@@ -411,6 +411,10 @@ def _llama_cpp_backend_check(settings: dict, base_dir: Path) -> dict[str, Any]:
 
 def _promotion_gating_wiring_check(base_dir: Path) -> dict[str, Any]:
     try:
+        from .promotion import gating as gating_mod
+    except Exception as exc:
+        return {"ok": False, "error": f"promotion_gating_import_failed:{exc}"}
+    try:
         from .continuous.promotion import promote_quarantine_run
 
         sig = inspect.signature(promote_quarantine_run)
@@ -419,13 +423,123 @@ def _promotion_gating_wiring_check(base_dir: Path) -> dict[str, Any]:
         return {"ok": False, "error": f"promotion_import_failed:{exc}"}
     log_dir = base_dir / "data" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    path = log_dir / "bench_promote.jsonl"
+    path = log_dir / "promotions.jsonl"
     try:
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"kind": "doctor_promotion_wiring", "ts": time.time()}, ensure_ascii=True) + "\n")
+            handle.write(
+                json.dumps(
+                    {"kind": "doctor_promotion_wiring", "ts": time.time(), "gating": bool(getattr(gating_mod, "bench_gate", None))},
+                    ensure_ascii=True,
+                )
+                + "\n"
+            )
     except Exception as exc:
-        return {"ok": False, "error": f"bench_promote_log_unwritable:{exc}", "log_path": str(path)}
-    return {"ok": True, "has_settings_param": bool(has_settings), "log_path": str(path)}
+        return {"ok": False, "error": f"promotions_log_unwritable:{exc}", "log_path": str(path)}
+    if not has_settings:
+        return {"ok": False, "error": "promote_quarantine_run_missing_settings_param", "log_path": str(path)}
+    return {"ok": True, "log_path": str(path)}
+
+
+def _security_deep_check(settings: dict, base_dir: Path) -> dict[str, Any]:
+    security = settings.get("security", {}) or {}
+    web_sec = (security.get("web", {}) or {}) if isinstance(security, dict) else {}
+    tools_web = settings.get("tools", {}).get("web", {}) or {}
+    cont = settings.get("continuous", {}) or {}
+
+    strict = bool(web_sec.get("strict", True))
+    web_enabled = bool(tools_web.get("enabled", False))
+    ingest_web = bool(cont.get("ingest_web", False))
+    allowlist = tools_web.get("allow_domains")
+    if not allowlist:
+        allowlist = (settings.get("agent", {}) or {}).get("web_allowlist", [])
+    allowlist = list(allowlist) if allowlist else []
+
+    errors: list[str] = []
+    if (web_enabled or ingest_web) and not strict:
+        errors.append("web_strict_disabled")
+    if (web_enabled or ingest_web) and not allowlist:
+        errors.append("web_allowlist_empty")
+
+    autopilot_cfg = settings.get("autopilot", {}) or {}
+    autopatch_enabled = bool(autopilot_cfg.get("autopatch_enabled", False))
+    autopatch_require_approval = bool(autopilot_cfg.get("autopatch_require_approval", False))
+    approval_file = autopilot_cfg.get("approval_file")
+    self_patch_cfg = settings.get("self_patch", {}) or {}
+    self_patch_enabled = bool(self_patch_cfg.get("enabled", False))
+    auto_sandbox = bool(self_patch_cfg.get("auto_sandbox", True))
+
+    if autopatch_enabled:
+        if not autopatch_require_approval:
+            errors.append("autopatch_require_approval_false")
+        if not approval_file:
+            errors.append("autopatch_approval_file_missing")
+        if not self_patch_enabled:
+            errors.append("self_patch_disabled")
+        if not auto_sandbox:
+            errors.append("self_patch_auto_sandbox_disabled")
+
+    return {
+        "ok": not errors,
+        "errors": errors or None,
+        "web": {
+            "enabled": web_enabled,
+            "ingest_web": ingest_web,
+            "strict": strict,
+            "allowlist_len": len(allowlist),
+        },
+        "autopatch": {
+            "enabled": autopatch_enabled,
+            "require_approval": autopatch_require_approval,
+            "approval_file": str(approval_file) if approval_file else None,
+            "self_patch_enabled": self_patch_enabled,
+            "auto_sandbox": auto_sandbox,
+        },
+    }
+
+
+def _bench_minimal_check(settings: dict, base_dir: Path) -> dict[str, Any]:
+    from .bench import BenchArgs, run_bench
+    from .promotion.gating import DEFAULT_BENCH_PROMPT
+
+    bench_cfg = settings.get("bench", {}) or {}
+    required_ctx = bench_cfg.get("required_ctx")
+    try:
+        ctx = int(required_ctx) if required_ctx is not None else None
+    except Exception:
+        ctx = None
+    profile = str(settings.get("_profile") or "unknown")
+    out_path = base_dir / "data" / "bench" / "doctor_minimal.json"
+    args = BenchArgs(
+        profile=profile,
+        prompt=DEFAULT_BENCH_PROMPT,
+        prompt_file=None,
+        ctx=ctx,
+        max_new=64,
+        warmup=1,
+        repeat=1,
+        seed=0,
+        json_out=out_path,
+        jsonl_out=None,
+    )
+
+    backend = str((settings.get("core", {}) or {}).get("backend", "vortex")).lower()
+    offline_env = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_DATASETS_OFFLINE": "1"}
+    old_env = {k: os.environ.get(k) for k in offline_env}
+    if backend == "hf":
+        for k, v in offline_env.items():
+            os.environ[k] = v
+    try:
+        report = run_bench(settings, base_dir=base_dir, args=args)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "backend": backend, "json_out": str(out_path)}
+    finally:
+        if backend == "hf":
+            for k, prev in old_env.items():
+                if prev is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = prev
+    return {"ok": bool(report.get("ok", False)), "backend": report.get("backend"), "tokens_per_sec": report.get("tokens_per_sec"), "json_out": str(out_path)}
 
 
 def run_deep_checks(settings: dict, base_dir: Path, *, mock: bool = False) -> dict[str, Any]:
@@ -470,6 +584,24 @@ def run_deep_checks(settings: dict, base_dir: Path, *, mock: bool = False) -> di
         checks["paging_sanity"] = {"ok": False, "error": str(exc)}
         report["deep_ok"] = False
 
+    # Minimal bench: run only in non-mock mode, and only when bench gating is enabled/required.
+    try:
+        learning_cfg = settings.get("learning", {}) or {}
+        autopilot_cfg = settings.get("autopilot", {}) or {}
+        bench_required = bool(learning_cfg.get("require_bench_ok", False))
+        bench_enabled = bool(autopilot_cfg.get("bench_enabled", False) or bench_required)
+        if not bench_enabled:
+            checks["bench_minimal"] = {"ok": True, "skipped": "disabled"}
+        elif mock:
+            checks["bench_minimal"] = {"ok": True, "skipped": "mock"}
+        else:
+            checks["bench_minimal"] = _bench_minimal_check(settings, base_dir)
+            if not bool(checks["bench_minimal"].get("ok", False)):
+                report["deep_ok"] = False
+    except Exception as exc:
+        checks["bench_minimal"] = {"ok": False, "error": str(exc)}
+        report["deep_ok"] = False
+
     # In mock mode we still run the full self-train path (no network); it is already tiny (1–2 steps).
     try:
         checks["self_train_mock"] = _self_train_mock(settings, base_dir)
@@ -485,6 +617,14 @@ def run_deep_checks(settings: dict, base_dir: Path, *, mock: bool = False) -> di
             report["deep_ok"] = False
     except Exception as exc:
         checks["promotion_gating"] = {"ok": False, "error": str(exc)}
+        report["deep_ok"] = False
+
+    try:
+        checks["security"] = _security_deep_check(settings, base_dir)
+        if not bool(checks["security"].get("ok", False)):
+            report["deep_ok"] = False
+    except Exception as exc:
+        checks["security"] = {"ok": False, "error": str(exc)}
         report["deep_ok"] = False
 
     lock_dir = base_dir / "data" / "locks"

@@ -19,6 +19,7 @@ from .learning_loop.promoter import promote_latest
 from .self_patch.policy import policy_from_settings, validate_patch
 from .tools.web_ingest import ingest_urls
 from .utils.locks import FileLock, LockUnavailable, is_lock_held
+from .utils.vram import get_vram_free_mb
 
 
 @dataclass
@@ -696,11 +697,33 @@ def run_autopilot_tick(
             if is_lock_held(base_dir, "train") or is_lock_held(base_dir, "self_patch"):
                 steps["train"] = {"ok": False, "skipped": "lock_held"}
             else:
-                profile = settings.get("_profile") or os.getenv("C3RNT2_PROFILE") or "dev_small"
-                runner = train_runner or _train_subprocess
-                train_result = runner(str(profile), reuse_dataset=reuse_dataset, max_steps=int(max_steps) if max_steps else None)
-                steps["train"] = train_result
-                state["last_train_ts"] = time.time()
+                gpu_lock = FileLock(base_dir / "data" / "locks" / "gpu.lock")
+                try:
+                    gpu_lock.acquire(blocking=False)
+                except LockUnavailable:
+                    steps["train"] = {"ok": True, "skipped": "gpu_lock_unavailable"}
+                else:
+                    try:
+                        core_cfg = settings.get("core", {}) or {}
+                        margin_mb = float(core_cfg.get("vram_safety_margin_mb", 0.0) or 0.0)
+                        threshold_mb = float(core_cfg.get("train_vram_threshold_mb", core_cfg.get("vram_threshold_mb", 0.0) or 0.0) or 0.0)
+                        required_mb = float(margin_mb + threshold_mb)
+                        free_mb = get_vram_free_mb()
+                        if free_mb is not None and required_mb > 0 and float(free_mb) < required_mb:
+                            steps["train"] = {
+                                "ok": True,
+                                "skipped": "vram_insufficient",
+                                "vram_free_mb": float(free_mb),
+                                "vram_required_mb": float(required_mb),
+                            }
+                        else:
+                            profile = settings.get("_profile") or os.getenv("C3RNT2_PROFILE") or "dev_small"
+                            runner = train_runner or _train_subprocess
+                            train_result = runner(str(profile), reuse_dataset=reuse_dataset, max_steps=int(max_steps) if max_steps else None)
+                            steps["train"] = train_result
+                            state["last_train_ts"] = time.time()
+                    finally:
+                        gpu_lock.release()
         else:
             steps["train"] = {"ok": True, "skipped": "mock_or_cooldown"}
 

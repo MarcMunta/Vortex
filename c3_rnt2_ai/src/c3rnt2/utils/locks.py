@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -14,29 +15,43 @@ class FileLock:
         self.path = Path(path)
         self._fd: Optional[int] = None
 
-    def acquire(self, blocking: bool = False) -> None:
+    def acquire(self, blocking: bool = False, timeout_s: float | None = None, poll_interval_s: float = 0.1) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         flags = os.O_RDWR | os.O_CREAT
         self._fd = os.open(self.path, flags)
         try:
-            if os.name == "nt":
-                import msvcrt
-
-                mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+            deadline = None
+            if blocking:
                 try:
-                    msvcrt.locking(self._fd, mode, 1)
-                except OSError as exc:
-                    raise LockUnavailable(str(exc))
-            else:
-                import fcntl
+                    if timeout_s is not None:
+                        timeout_val = float(timeout_s)
+                        if timeout_val <= 0:
+                            timeout_val = 0.0
+                        deadline = time.monotonic() + timeout_val
+                except Exception:
+                    deadline = None
 
-                lock_flags = fcntl.LOCK_EX
-                if not blocking:
-                    lock_flags |= fcntl.LOCK_NB
+            while True:
                 try:
-                    fcntl.flock(self._fd, lock_flags)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(self._fd, msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return
                 except OSError as exc:
-                    raise LockUnavailable(str(exc))
+                    if not blocking:
+                        raise LockUnavailable(str(exc))
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise LockUnavailable("timeout")
+                    try:
+                        sleep_s = max(0.01, float(poll_interval_s))
+                    except Exception:
+                        sleep_s = 0.1
+                    time.sleep(sleep_s)
         except Exception:
             self.release()
             raise

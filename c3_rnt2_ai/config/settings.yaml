@@ -91,6 +91,8 @@ profiles:
       router:
         mode: keyword_map
         keyword_map: {}
+        top_k: 1
+        mix_mode: single
     knowledge:
       embedding_backend: auto
       embedding_model: sentence-transformers/all-MiniLM-L6-v2
@@ -282,14 +284,16 @@ profiles:
       backend: hf
       hf_model: "Qwen/Qwen2.5-7B-Instruct"
     server:
-      train_strategy: unload_reload
+      train_strategy: subprocess_unload
       block_during_training: true
       auto_reload_adapter: true
       reload_interval_s: 30
       maintenance_window_s: 10
     tools:
       web:
-        enabled: true
+        enabled: false
+    continuous:
+      ingest_web: false
     autopilot:
       enabled: false
       interval_minutes: 30
@@ -443,6 +447,7 @@ profiles:
     # Requires explicit approval file to apply/merge patches.
     base_profile: safe_selftrain_4080_hf
     continuous:
+      ingest_web: true
       web_discovery:
         enabled: true
         seed_queries:
@@ -471,7 +476,11 @@ profiles:
       max_consecutive_failures: 3
       safe_mode_cooldown_minutes: 0
     learning:
+      require_eval_ok: true
       require_bench_ok: true
+    tools:
+      web:
+        enabled: true
     server:
       train_strategy: subprocess_unload
       reload_request_interval_s: 2
