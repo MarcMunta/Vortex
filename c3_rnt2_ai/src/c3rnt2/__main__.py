@@ -17,7 +17,7 @@ try:
 except Exception:  # pragma: no cover
     torch = None
 
-from .config import load_settings, resolve_profile, validate_profile
+from .config import load_settings, resolve_profile, validate_profile, resolve_web_allowlist, resolve_web_strict
 from .continuous.dataset import ingest_sources, collect_samples
 from .continuous.bootstrap import run_bootstrap
 from .device import detect_device
@@ -37,6 +37,7 @@ from .learning_loop.promoter import promote_latest
 from .agent.runner import run_agent
 from .runtime.vram_governor import decide_max_new_tokens
 from .autopilot import run_autopilot_loop, run_autopilot_tick, run_autopatch_once
+from .continuous.promotion import promote_quarantine_run
 
 
 def _load_and_validate(profile: str | None, override: Callable[[dict], dict] | None = None) -> dict:
@@ -48,12 +49,7 @@ def _load_and_validate(profile: str | None, override: Callable[[dict], dict] | N
 
 
 def _resolve_allowlist(settings: dict) -> list[str]:
-    tools_cfg = settings.get("tools", {}) or {}
-    web_cfg = tools_cfg.get("web", {}) or {}
-    if web_cfg.get("allow_domains"):
-        return list(web_cfg.get("allow_domains"))
-    agent_cfg = settings.get("agent", {}) or {}
-    return list(agent_cfg.get("web_allowlist", []))
+    return resolve_web_allowlist(settings)
 
 
 def _supported_agent_tools() -> set[str]:
@@ -105,12 +101,15 @@ def _coerce_train_result(payload: dict | object) -> SimpleNamespace:
     return SimpleNamespace(ok=False, ok_eval=False, ok_train=False, error="invalid_train_result")
 
 
-def _run_train_subprocess(settings: dict, reuse_dataset: bool) -> dict:
+def _run_train_subprocess(settings: dict, reuse_dataset: bool, *, timeout_s: float | None = None) -> dict:
     profile = settings.get("_profile") or resolve_profile(None)
     cmd = [sys.executable, "-m", "c3rnt2", "train-once", "--profile", str(profile)]
     if reuse_dataset:
         cmd.append("--reuse-dataset")
-    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "ok_train": False, "ok_eval": False, "error": "train_subprocess_timeout"}
     if result.returncode != 0:
         return {"ok": False, "ok_train": False, "ok_eval": False, "error": result.stderr.strip() or "train subprocess failed"}
     payload = None
@@ -442,16 +441,15 @@ def _run_doctor_deep_checks(settings: dict, base_dir: Path) -> dict:
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     info = detect_device()
-    print(
-        {
-            "device": info.device,
-            "cuda_available": info.cuda_available,
-            "gpu": info.name,
-            "vram_gb": info.vram_gb,
-            "dtype": info.dtype,
-            "python": sys.version.split()[0],
-        }
-    )
+    device_payload = {
+        "device": info.device,
+        "cuda_available": info.cuda_available,
+        "gpu": info.name,
+        "vram_gb": info.vram_gb,
+        "dtype": info.dtype,
+        "python": sys.version.split()[0],
+    }
+    print(device_payload)
     modules = [
         "torch",
         "bitsandbytes",
@@ -472,24 +470,50 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         print({"warning": "settings_invalid", "error": str(exc)})
         sys.exit(1)
 
-    report = _run_doctor_checks(settings, base_dir)
-    print(report)
-    if not report.get("ok", False):
+    base_report = _run_doctor_checks(settings, base_dir)
+    print(base_report)
+    if not base_report.get("ok", False):
+        final = {
+            "ok": False,
+            "profile": resolve_profile(args.profile),
+            "device": device_payload,
+            "deps": status,
+            "base": base_report,
+        }
+        print(json.dumps(final, ensure_ascii=True))
         sys.exit(1)
 
     if args.deep:
+        deep_result: dict | None = None
         try:
             deep_result = run_deep_checks(settings, base_dir=base_dir, mock=bool(getattr(args, "mock", False)))
-            print({"deep": deep_result})
-            if not bool(deep_result.get("deep_ok", False)):
-                sys.exit(1)
         except Exception as exc:
-            print({"deep": {"deep_ok": False, "error": str(exc)}})
+            deep_result = {"deep_ok": False, "error": str(exc)}
+        final = {
+            "ok": bool(deep_result is not None and deep_result.get("deep_ok", False)),
+            "profile": resolve_profile(args.profile),
+            "device": device_payload,
+            "deps": status,
+            "base": base_report,
+            "deep": deep_result,
+        }
+        out_path = base_dir / "data" / "doctor" / "last.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(final, ensure_ascii=True, indent=2), encoding="utf-8")
+        print(f"doctor --deep {'OK' if final['ok'] else 'FAIL'} (wrote {out_path})")
+        print(json.dumps(final, ensure_ascii=True))
+        if not final["ok"]:
             sys.exit(1)
-        extra = _run_doctor_deep_checks(settings, base_dir)
-        print({"deep_extra": extra})
-        if not extra.get("ok", False):
-            sys.exit(1)
+        return
+
+    final = {
+        "ok": True,
+        "profile": resolve_profile(args.profile),
+        "device": device_payload,
+        "deps": status,
+        "base": base_report,
+    }
+    print(json.dumps(final, ensure_ascii=True))
 
 
 def cmd_chat(args: argparse.Namespace) -> None:
@@ -669,7 +693,11 @@ def cmd_self_train(args: argparse.Namespace) -> None:
             time.sleep(max(5.0, interval_min * 60.0))
             continue
         try:
-            train_result = train_once_backend(settings, base_dir, reuse_dataset=bool(args.reuse_dataset))
+            strategy = str((settings.get("server", {}) or {}).get("train_strategy", "subprocess")).lower()
+            if strategy.startswith("subprocess"):
+                train_result = _run_train_subprocess(settings, reuse_dataset=bool(args.reuse_dataset))
+            else:
+                train_result = train_once_backend(settings, base_dir, reuse_dataset=bool(args.reuse_dataset))
             payload = dict(train_result) if isinstance(train_result, dict) else dict(getattr(train_result, "__dict__", {}) or {})
             adapter_dir = payload.get("adapter_dir")
             if adapter_dir is not None:
@@ -720,6 +748,26 @@ def _run_self_train_tick(
         if stats.new_docs < min_new_docs and stats.novelty_avg < min_novelty and stats.successes <= min_successes:
             return {"ok": True, "skipped": "signal_low", "new_docs": new_docs, "stats": stats.__dict__}
 
+    budgets_cfg = (settings.get("continuous", {}) or {}).get("budgets", {}) or {}
+    try:
+        from .continuous.budgets import can_start_run
+
+        planned_steps = (settings.get("continuous", {}) or {}).get("max_steps_per_tick", (settings.get("continuous", {}) or {}).get("max_steps"))
+        decision = can_start_run(
+            base_dir,
+            max_steps_per_day=budgets_cfg.get("max_steps_per_day"),
+            max_tokens_per_day=budgets_cfg.get("max_tokens_per_day"),
+            max_disk_mb=budgets_cfg.get("max_disk_mb"),
+            planned_steps=int(planned_steps) if planned_steps is not None else None,
+        )
+        if not decision.ok:
+            payload = {"ok": False, "error": f"budget_limit:{decision.reason}", "budget": decision.state, "budget_state_path": str(decision.state_path)}
+            print({"self_train_budget": payload})
+            return {**payload, "skipped": "budget_limit"}
+    except Exception:
+        # Never block self-train on budget module errors.
+        pass
+
     server_cfg = settings.get("server", {}) or {}
     block_during_training = bool(server_cfg.get("block_during_training", False))
     train_strategy = str(server_cfg.get("train_strategy", "subprocess")).lower()
@@ -741,7 +789,14 @@ def _run_self_train_tick(
                 _unload_models_for_train(app)
                 did_unload = True
             if train_strategy in {"subprocess", "subprocess_unload"}:
-                result_dict = _run_train_subprocess(settings, reuse_dataset=reuse_dataset)
+                timeout_s = None
+                max_walltime_min = budgets_cfg.get("max_walltime_min")
+                try:
+                    if max_walltime_min is not None and float(max_walltime_min) > 0:
+                        timeout_s = float(max_walltime_min) * 60.0
+                except Exception:
+                    timeout_s = None
+                result_dict = _run_train_subprocess(settings, reuse_dataset=reuse_dataset, timeout_s=timeout_s)
                 result = _coerce_train_result(result_dict)
             else:
                 result = _run_train_inprocess(settings, base_dir, reuse_dataset, train_fn=train_fn)
@@ -790,6 +845,17 @@ def _run_self_train_tick(
         "vram_peak_mb": getattr(result, "vram_peak_mb", None) if result else None,
         "eval_ok": getattr(result, "eval_ok", None) if result else None,
     }
+    try:
+        from .continuous.budgets import record_run
+
+        steps_val = int(getattr(result, "steps", 0) or 0) if result else 0
+        tokens_val = int(getattr(result, "tokens_seen", getattr(result, "tokens", 0)) or 0) if result else 0
+        if steps_val > 0 or tokens_val > 0:
+            record = record_run(base_dir, steps=steps_val, tokens=tokens_val)
+            metrics["budget_recorded"] = bool(record.ok)
+            metrics["budget_state"] = record.state
+    except Exception:
+        pass
     print({"self_train_metrics": metrics})
     return {"ok": True, "new_docs": new_docs, "train": result.__dict__ if result else None, "reload": reload_result, "stats": stats.__dict__}
 
@@ -1196,6 +1262,15 @@ def cmd_learn_promote(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_promote_quarantine(args: argparse.Namespace) -> None:
+    base_dir = Path(".")
+    result = promote_quarantine_run(base_dir, run_id=str(args.run_id), require_approval=not bool(args.no_approval))
+    payload = dict(getattr(result, "__dict__", {}) or {})
+    print(json.dumps(payload, ensure_ascii=True))
+    if not bool(payload.get("ok", False)):
+        sys.exit(1)
+
+
 def cmd_tokenizer_train(args: argparse.Namespace) -> None:
     _run_module("c3rnt2.tokenizer.rnt2_train", args.extra)
 
@@ -1280,27 +1355,45 @@ def _update_bench_baseline(bench_dir: Path, bench: dict) -> dict:
 
 
 def cmd_bench(args: argparse.Namespace) -> None:
+    from .bench import BenchArgs, run_bench
+
     profile = args.profile or resolve_profile(None)
     settings = _load_and_validate(profile)
-    backend = str((settings.get("core", {}) or {}).get("backend", "vortex")).lower()
-    script_name = "bench_hf.py" if backend == "hf" else "bench_core.py"
-    script = Path(__file__).resolve().parents[2] / "scripts" / script_name
-    if not script.exists():
-        print(json.dumps({"ok": False, "error": f"{script_name} not found"}, ensure_ascii=True))
-        sys.exit(1)
-    cmd = [
-        sys.executable,
-        str(script),
-        "--profile",
-        profile,
-        "--ctx",
-        str(int(args.ctx)),
-        "--max-new-tokens",
-        str(int(args.max_new_tokens)),
-    ]
-    result = subprocess.run(cmd, check=False)
-    if result.returncode != 0:
-        sys.exit(result.returncode)
+    base_dir = Path(".")
+    prompt_text = str(getattr(args, "prompt", "") or "")
+    prompt_file = getattr(args, "prompt_file", None)
+    prompt_file_str = str(prompt_file) if prompt_file else None
+    if prompt_file:
+        try:
+            prompt_text = Path(str(prompt_file)).read_text(encoding="utf-8")
+        except Exception as exc:
+            print(json.dumps({"ok": False, "error": f"prompt_file_read_failed:{exc}"}, ensure_ascii=True))
+            sys.exit(1)
+
+    json_out = Path(str(getattr(args, "json_out", "data/bench/last.json")))
+    jsonl_out_raw = getattr(args, "jsonl_out", None)
+    jsonl_out = Path(str(jsonl_out_raw)) if jsonl_out_raw else None
+    max_new = int(getattr(args, "max_new", getattr(args, "max_new_tokens", 64)) or 64)
+    ctx = getattr(args, "ctx", None)
+    ctx_val = int(ctx) if ctx is not None else None
+
+    report = run_bench(
+        settings,
+        base_dir=base_dir,
+        args=BenchArgs(
+            profile=str(profile),
+            prompt=prompt_text,
+            prompt_file=prompt_file_str,
+            ctx=ctx_val,
+            max_new=max_new,
+            warmup=int(getattr(args, "warmup", 1) or 0),
+            repeat=int(getattr(args, "repeat", 3) or 1),
+            seed=int(getattr(args, "seed", 0) or 0),
+            json_out=json_out,
+            jsonl_out=jsonl_out,
+        ),
+    )
+    print(json.dumps(report, ensure_ascii=True))
 
 
 def main() -> None:
@@ -1363,8 +1456,16 @@ def main() -> None:
 
     bench = sub.add_parser("bench")
     bench.add_argument("--profile", default=None)
-    bench.add_argument("--ctx", type=int, default=4096)
-    bench.add_argument("--max-new-tokens", type=int, default=64)
+    bench.add_argument("--prompt-file", default=None)
+    bench.add_argument("--prompt", default="def f(x):\n    return x\n")
+    bench.add_argument("--ctx", type=int, default=None)
+    bench.add_argument("--max-new", dest="max_new", type=int, default=64)
+    bench.add_argument("--max-new-tokens", dest="max_new", type=int, default=None)
+    bench.add_argument("--repeat", type=int, default=3)
+    bench.add_argument("--warmup", type=int, default=1)
+    bench.add_argument("--seed", type=int, default=0)
+    bench.add_argument("--json-out", default="data/bench/last.json")
+    bench.add_argument("--jsonl-out", default=None)
     bench.set_defaults(func=cmd_bench)
 
     boot = sub.add_parser("bootstrap")
@@ -1488,6 +1589,11 @@ def main() -> None:
     learn_promote.add_argument("--profile", default=None)
     learn_promote.add_argument("--min-improvement", type=float, default=None)
     learn_promote.set_defaults(func=cmd_learn_promote)
+
+    promo = sub.add_parser("promote-quarantine")
+    promo.add_argument("--run-id", required=True)
+    promo.add_argument("--no-approval", action="store_true")
+    promo.set_defaults(func=cmd_promote_quarantine)
 
     args = parser.parse_args()
     if not args.command:

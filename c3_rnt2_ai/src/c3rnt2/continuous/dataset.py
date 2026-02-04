@@ -449,7 +449,7 @@ def ingest_sources(base_dir: Path, allowlist: List[str], settings: dict) -> int:
         print(f"WARN {message}")
     if ingest_web_enabled and allowlist and web_enabled:
         urls = continuous.get("ingest_urls", ["https://docs.python.org/3/", "https://pytorch.org/docs/stable/"])
-        tools = AgentTools(allowlist=allowlist, web_cfg=tools_web_cfg)
+        tools = AgentTools(allowlist=allowlist, web_cfg=tools_web_cfg, security_cfg=settings.get("security", {}) or {})
         recent_chunks = store.sample_chunks(limit=50, source_kinds=["web"])
         recent_vecs = [embed_text(chunk.text) for chunk in recent_chunks]
         for raw_url in urls:

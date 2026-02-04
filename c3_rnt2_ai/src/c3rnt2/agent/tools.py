@@ -31,6 +31,7 @@ class AgentTools:
         web_cfg: dict | None = None,
         agent_cfg: dict | None = None,
         self_patch_cfg: dict | None = None,
+        security_cfg: dict | None = None,
         repo_root: Path | None = None,
     ):
         raw_cfg: dict[str, Any] = dict(web_cfg or {})
@@ -39,10 +40,17 @@ class AgentTools:
         self.web_cfg: dict[str, Any] = raw_cfg
         self.agent_cfg: dict[str, Any] = dict(agent_cfg or {})
         self.self_patch_cfg: dict[str, Any] = dict(self_patch_cfg or {})
+        self.security_cfg: dict[str, Any] = dict(security_cfg or {})
+        security_web = self.security_cfg.get("web", {}) if isinstance(self.security_cfg.get("web", {}), dict) else {}
+        self.web_strict = bool(security_web.get("strict", True))
         self.web_enabled = bool(self.web_cfg.get("enabled", False))
-        allow_domains = self.web_cfg.get("allow_domains", allowlist) or []
+        security_allow = security_web.get("allowlist_domains") if isinstance(security_web, dict) else None
+        if isinstance(security_allow, list):
+            allow_domains = list(security_allow)
+        else:
+            allow_domains = self.web_cfg.get("allow_domains", allowlist) or []
         self.allowlist: list[str] = [str(item) for item in allow_domains if item]
-        if self.web_enabled:
+        if self.web_enabled and not self.web_strict:
             normalized = [str(item).lower().strip() for item in self.allowlist if item]
             if "duckduckgo.com" not in normalized:
                 self.allowlist.append("duckduckgo.com")
@@ -51,6 +59,8 @@ class AgentTools:
         self.rate_limit_per_min: int = int(self.web_cfg.get("rate_limit_per_min", rate_limit_per_min))
         self.max_bytes: int = int(self.web_cfg.get("max_bytes", 512_000))
         self.timeout_s: int = int(self.web_cfg.get("timeout_s", 10))
+        self.max_redirects: int = int(self.web_cfg.get("max_redirects", security_web.get("max_redirects", 5) if isinstance(security_web, dict) else 5))
+        self.user_agent: str = str(self.web_cfg.get("user_agent", security_web.get("user_agent", "KlimeAI-WebFetch/1.0") if isinstance(security_web, dict) else "KlimeAI-WebFetch/1.0"))
         cache_ttl = self.web_cfg.get("cache_ttl_s", None)
         self.cache_ttl_s: int | None = int(cache_ttl) if cache_ttl is not None else None
         allow_content_types = self.web_cfg.get("allow_content_types")
@@ -108,6 +118,9 @@ class AgentTools:
             rate_limit_per_min=self.rate_limit_per_min,
             cache_ttl_s=self.cache_ttl_s,
             allow_content_types=self.allow_content_types,
+            strict=bool(self.web_strict),
+            max_redirects=int(self.max_redirects),
+            user_agent=str(self.user_agent),
         )
         if not result.ok:
             return ToolResult(ok=False, output=result.error or "fetch failed", meta={"url": getattr(result, "url", url)})

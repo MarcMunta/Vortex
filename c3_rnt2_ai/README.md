@@ -14,6 +14,25 @@ Nota de rol:
 ## Ruta recomendada (RTX 4080 16GB)
 Ver `docs/rtx4080.md`.
 
+## RTX 4080 16GB Quickstart (Windows, perfil safe)
+Comandos recomendados (core backend, sin descargas, web deny-by-default):
+```bash
+pip install -e .
+python -m c3rnt2 doctor --profile rtx4080_16gb_safe
+python -m c3rnt2 doctor --deep --profile rtx4080_16gb_safe
+python -m c3rnt2 bench --profile rtx4080_16gb_safe --max-new 64 --json-out data/bench/last.json
+```
+
+Self-train seguro (quarantine + aprobaciÃ³n manual):
+- `doctor --deep` escribe un adapter candidato en `data/continuous/quarantine/<run_id>/`.
+- Para promoverlo: crea `APPROVE.txt` dentro del directorio del run y ejecuta:
+```bash
+python -m c3rnt2 promote-quarantine --run-id <run_id>
+```
+
+Troubleshooting OOM:
+- Baja `kv.window_size`, `runtime.cache_vram_budget_mb`, `continuous.batch_tokens` o `decode.max_new_tokens` en tu perfil.
+
 ## Instalacion
 ```bash
 python -m venv .venv

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus, unquote, urlparse
 
+from ..config import resolve_web_allowlist, resolve_web_strict
 from .web_access import web_fetch
 from .web_ingest import canonicalize_url
 
@@ -162,7 +163,7 @@ def discover_urls(settings: dict, *, base_dir: Path, state: dict) -> dict[str, A
     max_sitemap = int(cfg.get("max_sitemap_urls", 200))
 
     tools_web = settings.get("tools", {}).get("web", {}) or {}
-    allow_domains = list(tools_web.get("allow_domains") or [])
+    allow_domains = resolve_web_allowlist(settings)
     if not allow_domains:
         return {"ok": False, "error": "allow_domains required"}
     search_domains = list(tools_web.get("search_domains") or [])
@@ -199,6 +200,7 @@ def discover_urls(settings: dict, *, base_dir: Path, state: dict) -> dict[str, A
                     rate_limit_per_min=rate_limit,
                     cache_ttl_s=cache_ttl_s,
                     allow_content_types=allow_types,
+                    strict=resolve_web_strict(settings),
                 )
                 if not fetch.ok:
                     continue
@@ -231,6 +233,7 @@ def discover_urls(settings: dict, *, base_dir: Path, state: dict) -> dict[str, A
                 rate_limit_per_min=rate_limit,
                 cache_ttl_s=cache_ttl_s,
                 allow_content_types=allow_types,
+                strict=resolve_web_strict(settings),
             )
             if not fetch.ok:
                 continue
@@ -259,6 +262,7 @@ def discover_urls(settings: dict, *, base_dir: Path, state: dict) -> dict[str, A
             rate_limit_per_min=rate_limit,
             cache_ttl_s=cache_ttl_s,
             allow_content_types=allow_types,
+            strict=resolve_web_strict(settings),
         )
         if not fetch.ok:
             continue

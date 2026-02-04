@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List
 
+from ..config import resolve_web_allowlist
 from ..model_loader import load_inference_model
 from ..prompting.chat_format import build_chat_prompt
 from .tools import AgentTools, ToolResult
@@ -118,7 +119,7 @@ def run_agent(
         {"role": "user", "content": task},
     ]
     tools_cfg = settings.get("tools", {}) or {}
-    allowlist = tools_cfg.get("web", {}).get("allow_domains", agent_cfg.get("web_allowlist", []))
+    allowlist = resolve_web_allowlist(settings)
     sandbox_root = Path(settings.get("selfimprove", {}).get("sandbox_root", "data/workspaces"))
     self_patch_cfg = dict(settings.get("self_patch", {}) or {})
     safety_cfg = settings.get("continuous", {}).get("safety", {}) or {}
@@ -130,6 +131,7 @@ def run_agent(
         web_cfg=tools_cfg,
         agent_cfg=agent_cfg,
         self_patch_cfg=self_patch_cfg,
+        security_cfg=settings.get("security", {}) or {},
         repo_root=base_dir,
     )
     model = None

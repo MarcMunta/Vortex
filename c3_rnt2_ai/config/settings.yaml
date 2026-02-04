@@ -316,6 +316,33 @@ profiles:
       min_tokens_per_sec: 10.0
       max_regression: 0.15
 
+  rtx4080_16gb_safe:
+    # RTX 4080 16GB safe core profile (no downloads, deny-by-default web).
+    base_profile: rtx4080_16gb_safe_vortex
+    core:
+      precision: bf16
+    kv:
+      window_size: 1024
+    runtime:
+      paged_lm_head: true
+      cache_vram_budget_mb: 3072
+      prefetch_depth: 2
+      kv_quant: int8
+      kv_quant_2bit_experimental: false
+      paged_lm_head_stream_topk: false
+    decode:
+      max_new_tokens: 64
+    continuous:
+      ingest_web: false
+      batch_tokens: 4096
+    tools:
+      web:
+        enabled: false
+    security:
+      web:
+        strict: true
+        allowlist_domains: []
+
   rtx4080_16gb_safe_windows_hf:
     # Windows-safe RTX 4080 16GB (HF). Defaults: safe, offline, fail-closed promotion.
     base_profile: qwen8b_train

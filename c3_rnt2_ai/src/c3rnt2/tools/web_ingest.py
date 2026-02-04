@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlsplit, urlunsplit
 
+from ..config import resolve_web_strict
 from .web_access import web_fetch
 
 
@@ -208,6 +209,7 @@ def ingest_urls(
             rate_limit_per_min=rate_limit,
             cache_ttl_s=cache_ttl_s,
             allow_content_types=allow_types,
+            strict=resolve_web_strict(settings),
         )
         web_state[key] = {"ts": now, "etag": fetch.etag, "last_modified": fetch.last_modified, "hash": fetch.content_hash}
         if not fetch.ok:

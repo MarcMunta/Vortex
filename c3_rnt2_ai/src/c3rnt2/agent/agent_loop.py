@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Dict
 
+from ..config import resolve_web_allowlist
 from .memory import MemoryStore
 from .tools import AgentTools
 
@@ -40,7 +41,7 @@ def run_demo_agent(settings: dict) -> Dict[str, str]:
     agent_cfg = settings.get("agent", {}) or {}
     tools_cfg = settings.get("tools", {}) or {}
     web_cfg = tools_cfg.get("web", {}) or {}
-    allowlist = web_cfg.get("allow_domains") or agent_cfg.get("web_allowlist", ["docs.python.org"])
+    allowlist = resolve_web_allowlist(settings)
     sandbox_root = Path(settings.get("selfimprove", {}).get("sandbox_root", "data/workspaces"))
     rate_limit = int(web_cfg.get("rate_limit_per_min", agent_cfg.get("rate_limit_per_min", 30)))
     self_patch_cfg = dict(settings.get("self_patch", {}) or {})
@@ -54,6 +55,7 @@ def run_demo_agent(settings: dict) -> Dict[str, str]:
         web_cfg=tools_cfg,
         agent_cfg=agent_cfg,
         self_patch_cfg=self_patch_cfg,
+        security_cfg=settings.get("security", {}) or {},
     )
     repo = _setup_demo_repo(sandbox_root)
 

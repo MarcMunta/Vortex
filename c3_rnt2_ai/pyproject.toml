@@ -12,6 +12,7 @@ dependencies = [
   "rich>=13",
   "pyyaml>=6",
   "numpy>=1.24",
+  "psutil>=5.9",
   "requests>=2.31",
   "zstandard>=0.22",
   "lz4>=4.3",

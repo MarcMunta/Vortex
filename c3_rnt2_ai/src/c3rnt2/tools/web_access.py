@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import threading
@@ -77,6 +78,46 @@ def _allow_url(url: str, allowlist: list[str]) -> bool:
     return any(domain == a or domain.endswith("." + a) for a in allowlist)
 
 
+def _host_from_url(url: str) -> str:
+    domain = urlparse(url).netloc.lower()
+    if not domain:
+        return ""
+    domain = domain.split("@")[-1]
+    if domain.startswith("[") and domain.endswith("]"):
+        domain = domain[1:-1]
+    domain = domain.split(":")[0]
+    return domain
+
+
+def _check_url_policy(url: str, allowlist: list[str], *, strict: bool) -> tuple[bool, str]:
+    try:
+        parts = urlparse(url)
+    except Exception:
+        return False, "invalid_url"
+    scheme = (parts.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        return False, f"scheme_blocked:{scheme or 'missing'}"
+    host = _host_from_url(url)
+    if not host:
+        return False, "host_missing"
+
+    if strict:
+        if host == "localhost" or host.endswith(".localhost"):
+            return False, "localhost_blocked"
+        try:
+            # Block direct IP literals (SSRF hardening), even if public.
+            ipaddress.ip_address(host)
+            return False, "ip_literal_blocked"
+        except Exception:
+            pass
+
+    if not allowlist:
+        return False, "strict_allowlist_empty" if strict else "allowlist_empty"
+    if not _allow_url(url, allowlist):
+        return False, "allowlist_blocked"
+    return True, "ok"
+
+
 def _cache_path(cache_dir: Path, url: str) -> Path:
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
     return cache_dir / f"{digest}.json"
@@ -148,15 +189,20 @@ def web_fetch(
     rate_limit_per_min: int = 30,
     cache_ttl_s: Optional[int] = None,
     allow_content_types: Optional[list[str]] = None,
+    *,
+    strict: bool = True,
+    max_redirects: int = 5,
+    user_agent: str = "KlimeAI-WebFetch/1.0",
 ) -> WebFetchResult:
     cache_dir = Path(cache_dir)
     base_dir = Path(".")
     allow_content_types = allow_content_types or ["text/", "application/json"]
     use_cache = cache_ttl_s is None or cache_ttl_s > 0
 
-    if not _allow_url(url, allowlist):
-        _log_event(base_dir, {"url": url, "ok": False, "error": "allowlist_blocked"})
-        return WebFetchResult(ok=False, url=url, status=None, text="", from_cache=False, error="allowlist_blocked")
+    policy_ok, policy_reason = _check_url_policy(url, allowlist, strict=strict)
+    if not policy_ok:
+        _log_event(base_dir, {"url": url, "ok": False, "error": policy_reason})
+        return WebFetchResult(ok=False, url=url, status=None, text="", from_cache=False, error=policy_reason)
 
     bucket = _bucket(cache_dir, rate_limit_per_min)
     if not bucket.allow():
@@ -191,12 +237,30 @@ def web_fetch(
             headers["If-None-Match"] = str(etag)
         if last_modified:
             headers["If-Modified-Since"] = str(last_modified)
+    headers.setdefault("User-Agent", user_agent)
 
     try:
-        resp = requests.get(url, timeout=timeout_s, stream=True, headers=headers)
+        session = requests.Session()
+        session.max_redirects = max(0, int(max_redirects))
+        resp = session.get(url, timeout=timeout_s, stream=True, headers=headers, allow_redirects=True)
     except Exception as exc:
         _log_event(base_dir, {"url": url, "ok": False, "error": str(exc)})
         return WebFetchResult(ok=False, url=url, status=None, text="", from_cache=False, error=str(exc))
+
+    # Enforce policy on redirects too (SSRF hardening).
+    try:
+        visited = [r.url for r in getattr(resp, "history", [])] + [getattr(resp, "url", url)]
+    except Exception:
+        visited = [url]
+    for visited_url in visited:
+        ok, reason = _check_url_policy(str(visited_url), allowlist, strict=strict)
+        if not ok:
+            try:
+                resp.close()
+            except Exception:
+                pass
+            _log_event(base_dir, {"url": url, "ok": False, "error": "redirect_blocked", "blocked_url": str(visited_url), "reason": reason})
+            return WebFetchResult(ok=False, url=url, status=None, text="", from_cache=False, error="redirect_blocked")
 
     status = resp.status_code
     if status == 304 and raw_cache is not None:

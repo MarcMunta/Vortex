@@ -9,6 +9,7 @@ from typing import List, Optional
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
+from ..config import resolve_web_allowlist
 from ..model.core_transformer import CoreTransformer
 from ..device import autocast_context
 from .dataset import collect_samples
@@ -60,8 +61,7 @@ class ContinualTrainer:
             torch.manual_seed(int(seed))
 
         try:
-            tools_cfg = self.settings.get("tools", {}).get("web", {}) or {}
-            allowlist = tools_cfg.get("allow_domains") or self.settings.get("agent", {}).get("web_allowlist", ["docs.python.org"])
+            allowlist = resolve_web_allowlist(self.settings)
             collected = collect_samples(self.base_dir, allowlist, self.settings, ingest=ingest)
             stats = collected.stats
             trigger_cfg = self.settings.get("continuous", {}).get("trigger", {})
@@ -248,12 +248,14 @@ class ContinualTrainer:
             finalize_run(
                 self.base_dir,
                 run_id,
-                promote=promoted,
+                promote=False,
                 meta={
                     "steps": int(step_idx),
                     "loss": new_loss,
                     "loss_holdout": new_loss,
                     "base_loss": base_loss,
+                    "passed_eval": bool(promoted),
+                    "manual_approval_required": True,
                     "anchor_loss": anchor_new_loss,
                     "anchor_base_loss": anchor_base_loss,
                     "anchor_regression": anchor_regression,
@@ -266,6 +268,7 @@ class ContinualTrainer:
                     "stats": stats.__dict__,
                     "stopped_early": stopped_early,
                     "ts": time.time(),
+                    "tokens_seen": int(tokens_seen),
                     "tokens_per_sec": tokens_per_sec,
                     "avg_seq_len": avg_seq_len,
                     "gpu_mem_mb": gpu_mem,

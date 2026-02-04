@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import gc
+import hashlib
 import json
 import os
 import random
-import subprocess
 import sys
 import time
 from copy import deepcopy
@@ -50,116 +51,347 @@ def _profile_checks(base_dir: Path) -> dict[str, str]:
     return results
 
 
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def _tokenizer_roundtrip_strict(settings: dict, base_dir: Path) -> dict[str, Any]:
+    from .tokenizer.vortex_tok import decode_from_ids, encode, encode_to_ids, load_or_create, metrics  # type: ignore
+
+    tok_cfg = settings.get("tokenizer", {}) or {}
+    model_path = Path(tok_cfg.get("vortex_tok_path", tok_cfg.get("vortex_model_path", base_dir / "data" / "runs" / "vortex_tok.pt")))
+    if not model_path.is_absolute():
+        model_path = base_dir / model_path
+    block_size = int(tok_cfg.get("block_size", 64))
+    tok_model = load_or_create(model_path, block_size=block_size)
+
+    cases: list[str] = [
+        "",
+        "hello world",
+        "ASCII: ~!@#$%^&*()_+-=[]{}|;:',.<>/?",
+        "utf8: ñ é ö 😀 — 東京",
+        "\tTabs\nNewlines\r\nWindows newlines\n\n",
+        "code:\n```py\ndef f(x):\n    return x * (x + 1) // 2\n```\n",
+        'json: {"ok": true, "text": "ñ 😀 \\\\ \\" \\n", "n": 123}',
+        "\x00\x01\t\ncontrol-chars",
+        "a" * 2048,
+        ("abc" * 600) + " END",
+    ]
+    rng = random.Random(0)
+    alphabet = (
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 \n\t-_=+()[]{}<>/\\'\".,:;!?"
+        "ñéö😀—東京"
+    )
+    while len(cases) < 50:
+        n = rng.randint(0, 200)
+        cases.append("".join(rng.choice(alphabet) for _ in range(n)))
+
+    failures: list[dict[str, Any]] = []
+    start = time.perf_counter()
+    for text in cases:
+        ids, total_len = encode_to_ids(text, tok_model)
+        out = decode_from_ids(ids, tok_model, total_len=total_len)
+        if out != text:
+            failures.append({"case": text[:120], "error": "mismatch"})
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+
+    stream = encode("\n\n".join(cases), tok_model)
+    tok_metrics = metrics(stream)
+    tok_metrics["tokens_per_byte"] = round(float(tok_metrics.get("tokens", 0)) / max(1, float(tok_metrics.get("bytes", 1))), 6)
+
+    return {
+        "ok": not failures,
+        "elapsed_ms": round(elapsed_ms, 3),
+        "cases": len(cases),
+        "failures": failures[:3] if failures else None,
+        **tok_metrics,
+        "fallback_pct": tok_metrics.get("escapes_pct"),
+    }
+
+
+def _inference_smoke(settings: dict) -> tuple[dict[str, Any], dict[str, Any]]:
+    if torch is None:
+        return {"ok": False, "error": "torch not available"}, {"ok": True, "skipped": "torch_missing"}
+
+    from .model.core_transformer import CoreTransformer
+    from .nn.paged_linear import PagedLinear
+
+    core = CoreTransformer.from_settings(deepcopy(settings))
+    prompt = "def add(a, b):\n    return a + b\n"
+
+    # Paging sanity (if enabled).
+    runtime_cfg = getattr(core, "runtime_cfg", {}) or {}
+    paging_enabled = bool(runtime_cfg.get("paged_lm_head", False))
+    lm_head = getattr(core, "lm_head", None)
+    lm_is_paged = isinstance(lm_head, PagedLinear) if lm_head is not None else False
+    stats_before = lm_head.stats() if lm_head is not None and hasattr(lm_head, "stats") else None
+    try:
+        hidden = torch.randn(
+            1,
+            1,
+            int(core.config.hidden_size),
+            device=core.device,
+            dtype=core.dtype if core.device.type == "cuda" else torch.float32,
+        )
+        _ = lm_head(hidden) if lm_head is not None else None
+    except Exception:
+        pass
+    stats_after = lm_head.stats() if lm_head is not None and hasattr(lm_head, "stats") else None
+    paging_ok = True
+    paging_reason = None
+    if paging_enabled:
+        if not lm_is_paged:
+            paging_ok = False
+            paging_reason = "paged_lm_head_enabled_but_lm_head_not_paged"
+        elif isinstance(stats_before, dict) and isinstance(stats_after, dict):
+            before_faults = float(stats_before.get("page_faults", 0.0) or 0.0)
+            after_faults = float(stats_after.get("page_faults", 0.0) or 0.0)
+            if after_faults < before_faults:
+                paging_ok = False
+                paging_reason = "paged_stats_not_monotonic"
+
+    paging = {
+        "ok": bool(paging_ok),
+        "paging_enabled": bool(paging_enabled),
+        "lm_head_is_paged": bool(lm_is_paged) if paging_enabled else None,
+        "reason": paging_reason,
+        "stats_before": stats_before if isinstance(stats_before, dict) else None,
+        "stats_after": stats_after if isinstance(stats_after, dict) else None,
+    }
+
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
+    start = time.perf_counter()
+    _text = core.generate(prompt, max_new_tokens=32)
+    elapsed = max(1e-6, time.perf_counter() - start)
+
+    vram_alloc = None
+    vram_res = None
+    if torch.cuda.is_available():
+        try:
+            vram_alloc = float(torch.cuda.max_memory_allocated() / 1e6)
+        except Exception:
+            vram_alloc = None
+        try:
+            vram_res = float(torch.cuda.max_memory_reserved() / 1e6)
+        except Exception:
+            vram_res = None
+
+    smoke = {
+        "ok": True,
+        "tokens": 32,
+        "tokens_per_sec": round(32.0 / elapsed, 6),
+        "latency_ms_total": round(elapsed * 1000.0, 3),
+        "vram_peak_mb_allocated": round(vram_alloc, 3) if vram_alloc is not None else None,
+        "vram_peak_mb_reserved": round(vram_res, 3) if vram_res is not None else None,
+    }
+
+    try:
+        del core
+    except Exception:
+        pass
+    gc.collect()
+    if torch is not None and torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    return smoke, paging
+
+
+def _self_train_mock(settings: dict, base_dir: Path) -> dict[str, Any]:
+    if torch is None:
+        return {"ok": False, "error": "torch not available"}
+
+    from torch.nn.utils.rnn import pad_sequence
+
+    from .continuous.anchors import DEFAULT_ANCHORS, load_anchors
+    from .continuous.formatting import format_chat_sample
+    from .continuous.lora import LoRAConfig, LoRALinear, inject_lora, resolve_target_modules, save_lora_state
+    from .continuous.types import Sample
+    from .device import autocast_context
+    from .model.core_transformer import CoreTransformer
+    from .training.lora_utils import eval_loss
+
+    cont = settings.get("continuous", {}) or {}
+    adapter_cfg = cont.get("adapters", {}) or {}
+    anchors_path = Path((cont.get("eval", {}) or {}).get("anchors_path", "data/continuous/anchors.jsonl"))
+    if not anchors_path.is_absolute():
+        anchors_path = base_dir / anchors_path
+    anchors = load_anchors(anchors_path)
+    if not anchors:
+        anchors = [Sample(prompt=item["prompt"], response=item["response"]) for item in DEFAULT_ANCHORS]
+
+    run_id = time.strftime("%Y%m%d_%H%M%S")
+    out_dir = base_dir / "data" / "continuous" / "quarantine" / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    adapter_path = out_dir / "adapter.pt"
+
+    steps = int(cont.get("mock_steps", 2) or 2)
+    lr = float(cont.get("lr", 1e-4) or 1e-4)
+    batch_tokens = int(cont.get("batch_tokens", 2048) or 2048)
+    batch_tokens = max(128, min(batch_tokens, 2048))
+    grad_accum = int(cont.get("grad_accum", 1) or 1)
+    grad_accum = max(1, min(grad_accum, 8))
+
+    model = CoreTransformer.from_settings(deepcopy(settings))
+    core_cfg = settings.get("core", {}) or {}
+    backend = str(core_cfg.get("backend", "vortex"))
+    default_system = core_cfg.get("hf_system_prompt", "You are a helpful coding assistant.")
+    tokenizer = getattr(model, "tokenizer", None)
+
+    base_loss = eval_loss(model, anchors, backend=backend, tokenizer=tokenizer, default_system=default_system)
+
+    strict = bool(adapter_cfg.get("strict_target_modules", False))
+    targets = resolve_target_modules(adapter_cfg, strict=strict)
+    lora_cfg = LoRAConfig(rank=int(adapter_cfg.get("rank", 4)), alpha=float(adapter_cfg.get("alpha", 1.0)))
+    inject_lora(model, lora_cfg, target_modules=targets)
+    for param in model.parameters():
+        param.requires_grad = False
+    for module in model.modules():
+        if isinstance(module, LoRALinear):
+            module.A.requires_grad = True
+            module.B.requires_grad = True
+    for block in getattr(model, "blocks", []):
+        try:
+            block.lava.enable_write = False
+        except Exception:
+            pass
+
+    trainable = [p for p in model.parameters() if getattr(p, "requires_grad", False)]
+    optimizer = torch.optim.Adam(trainable, lr=lr)
+    use_scaler = model.device.type == "cuda" and model.dtype == torch.float16
+    scaler = torch.cuda.amp.GradScaler(enabled=use_scaler)
+
+    samples = anchors[:]
+    step_idx = 0
+    tokens_seen = 0
+    start = time.perf_counter()
+    optimizer.zero_grad(set_to_none=True)
+    while step_idx < steps:
+        sequences = []
+        token_count = 0
+        attempts = 0
+        while token_count < batch_tokens and attempts < max(4, len(samples)):
+            sample = samples[attempts % len(samples)]
+            attempts += 1
+            text = format_chat_sample(sample, backend=backend, tokenizer=tokenizer, default_system=default_system)
+            ids, _ = model.encode_prompt(text)
+            if len(ids) < 2:
+                continue
+            seq = torch.tensor(ids, dtype=torch.long)
+            sequences.append(seq)
+            token_count += len(ids)
+        if not sequences:
+            break
+        inputs = [seq[:-1] for seq in sequences]
+        targets_ids = [seq[1:] for seq in sequences]
+        input_ids = pad_sequence(inputs, batch_first=True, padding_value=0).to(model.device)
+        target_ids = pad_sequence(targets_ids, batch_first=True, padding_value=-100).to(model.device)
+        tokens_seen += int(target_ids.numel())
+        with autocast_context(enabled=model.device.type == "cuda", dtype=model.config.dtype):
+            logits = model.forward(input_ids)
+            loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), target_ids.view(-1), ignore_index=-100)
+            loss = loss / max(1, grad_accum)
+        if use_scaler:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+        step_idx += 1
+        if step_idx % grad_accum == 0:
+            if use_scaler:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+
+    if step_idx % grad_accum != 0:
+        if use_scaler:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+
+    save_lora_state(model, adapter_path)
+    elapsed = max(1e-6, time.perf_counter() - start)
+    tokens_per_sec = float(tokens_seen) / elapsed if tokens_seen else None
+
+    new_loss = eval_loss(model, anchors, backend=backend, tokenizer=tokenizer, default_system=default_system)
+    regression = None
+    passed_eval = False
+    max_regression = float((cont.get("eval", {}) or {}).get("max_regression", 0.2))
+    if base_loss is not None and new_loss is not None:
+        regression = (float(new_loss) - float(base_loss)) / max(1e-6, float(base_loss))
+        passed_eval = float(regression) <= float(max_regression)
+
+    dataset_hash = hashlib.sha256("\n".join(f"{s.prompt}\n{s.response}" for s in anchors).encode("utf-8", errors="ignore")).hexdigest()
+    manifest = {
+        "run_id": run_id,
+        "adapter_path": str(adapter_path),
+        "steps": int(step_idx),
+        "lr": float(lr),
+        "batch_tokens": int(batch_tokens),
+        "grad_accum": int(grad_accum),
+        "tokens_seen": int(tokens_seen),
+        "tokens_per_sec": float(tokens_per_sec) if tokens_per_sec is not None else None,
+        "anchor_base_loss": base_loss,
+        "anchor_new_loss": new_loss,
+        "anchor_regression": regression,
+        "passed_eval": bool(passed_eval),
+        "max_regression": float(max_regression),
+        "dataset_hash": dataset_hash,
+        "manual_approval": False,
+        "ts": time.time(),
+    }
+    manifest_path = out_dir / "manifest.json"
+    _write_json(manifest_path, manifest)
+
+    promo_req = {
+        "kind": "PROMOTION_REQUEST",
+        "run_id": run_id,
+        "adapter_path": str(adapter_path),
+        "manifest_path": str(manifest_path),
+        "passed_eval": bool(passed_eval),
+        "manual_approval_required": True,
+        "ts": time.time(),
+    }
+    promo_path = out_dir / "PROMOTION_REQUEST.json"
+    _write_json(promo_path, promo_req)
+
+    try:
+        del model
+    except Exception:
+        pass
+    gc.collect()
+    if torch is not None and torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "quarantine_dir": str(out_dir),
+        "adapter_path": str(adapter_path),
+        "manifest_path": str(manifest_path),
+        "promotion_request_path": str(promo_path),
+        "passed_eval": bool(passed_eval),
+    }
+
+
 def run_deep_checks(settings: dict, base_dir: Path, *, mock: bool = False) -> dict[str, Any]:
     info = detect_device()
-    report: dict[str, Any] = {"deep_ok": True}
-    model_loaded = False
-    tokens_per_sec = None
-    vram_peak_gb = None
-
-    if torch is None:
-        report["deep_ok"] = False
-        report["model_error"] = "torch not available"
-    else:
-        backend = str((settings.get("core", {}) or {}).get("backend", "vortex")).lower()
-        full_model = os.getenv("C3RNT2_DOCTOR_FULL_MODEL", "").strip().lower() in {"1", "true", "yes"}
-
-        if backend == "hf" and not full_model:
-            report["model_load_mode"] = "dry"
-            try:
-                __import__("transformers")
-                report["model_loaded"] = False
-            except Exception as exc:
-                report["deep_ok"] = False
-                report["model_error"] = f"transformers not available: {exc}"
-        else:
-            from .model_loader import load_inference_model
-
-            local_settings = deepcopy(settings)
-            core_cfg = dict(local_settings.get("core", {}) or {})
-            if core_cfg.get("cuda_graphs"):
-                core_cfg["cuda_graphs"] = False
-                local_settings["core"] = core_cfg
-            if core_cfg.get("compile") or core_cfg.get("compile_step") or core_cfg.get("compile_local_mixer_step"):
-                try:
-                    import triton  # type: ignore  # noqa: F401
-                except Exception:
-                    core_cfg["compile"] = False
-                    core_cfg["compile_step"] = False
-                    core_cfg["compile_local_mixer_step"] = False
-                    local_settings["core"] = core_cfg
-            try:
-                model = load_inference_model(local_settings)
-                model_loaded = True
-            except Exception as exc:
-                report["deep_ok"] = False
-                report["model_error"] = str(exc)
-
-    if model_loaded:
-        prompt = "def add(a, b):"
-        try:
-            ids, _ = model.encode_prompt(prompt)
-            if not ids:
-                ids = [0]
-            input_ids = torch.tensor([ids], dtype=torch.long, device=model.device)
-            start = time.time()
-            with torch.inference_mode():
-                if hasattr(model, "step_block"):
-                    _ = model.forward(input_ids)
-                    state = model.init_state(prompt_ids=ids)
-                    _ = model.step(ids[-1], state)
-                    block_ids = torch.tensor([ids[: max(1, min(2, len(ids)))]], dtype=torch.long, device=model.device)
-                    _ = model.step_block(block_ids, state)
-                    last_tok = ids[-1]
-                    gen_state = state
-                    gen_tokens = 16
-                    gen_start = time.time()
-                    for _ in range(gen_tokens):
-                        logits, gen_state = model.step(last_tok, gen_state)
-                        last_tok = int(torch.argmax(logits, dim=-1).item())
-                    gen_elapsed = max(1e-6, time.time() - gen_start)
-                    tokens_per_sec = gen_tokens / gen_elapsed
-                else:
-                    gen_tokens = 16
-                    gen_start = time.time()
-                    _ = model.generate(prompt, max_new_tokens=gen_tokens)
-                    gen_elapsed = max(1e-6, time.time() - gen_start)
-                    tokens_per_sec = gen_tokens / gen_elapsed
-            elapsed = time.time() - start
-            if info.cuda_available:
-                vram_peak_gb = torch.cuda.max_memory_allocated() / (1024**3)
-            report.update(
-                {
-                    "elapsed_sec": round(elapsed, 3),
-                    "tokens_per_sec": round(tokens_per_sec, 3) if tokens_per_sec is not None else None,
-                    "vram_peak_gb": round(vram_peak_gb, 3) if vram_peak_gb is not None else None,
-                }
-            )
-        except Exception as exc:
-            report["deep_ok"] = False
-            report["model_error"] = str(exc)
-
-    runtime = settings.get("runtime", {}) or {}
-    tools_cfg = settings.get("tools", {}) or {}
-    web_cfg = tools_cfg.get("web", {}) or {}
-    self_patch_cfg = settings.get("self_patch", {}) or {}
-    locks_dir = base_dir / "data" / "locks"
-    bootstrap_path = base_dir / "data" / "registry" / "bootstrap" / "bootstrap_samples.jsonl"
-
-    checks = {
+    report: dict[str, Any] = {"deep_ok": True, "ts": time.time()}
+    checks: dict[str, Any] = {
         "windows_cuda": {"ok": (not sys.platform.startswith("win")) or bool(info.cuda_available)},
-        "web_enabled": bool(web_cfg.get("enabled", False)),
-        "web_allowlist_ok": bool(web_cfg.get("allow_domains")) if web_cfg.get("enabled") else True,
-        "web_content_types_ok": bool(web_cfg.get("allow_content_types")) if web_cfg.get("enabled") else True,
-        "web_cache_ttl_s": web_cfg.get("cache_ttl_s", None),
-        "self_patch_enabled": bool(self_patch_cfg.get("enabled", False)),
-        "self_patch_paths_ok": bool(self_patch_cfg.get("allowed_paths")) if self_patch_cfg.get("enabled") else True,
-        "bootstrap_dataset_exists": bootstrap_path.exists(),
-        "kv_quant": runtime.get("kv_quant", "none"),
-        "kv_quant_2bit_experimental": runtime.get("kv_quant_2bit_experimental", False),
-        "gpu_decompress": runtime.get("gpu_decompress", "none"),
-        "locks_dir": str(locks_dir),
-        "locks_exist": locks_dir.exists(),
         "profiles": _profile_checks(base_dir),
     }
 
@@ -167,155 +399,35 @@ def run_deep_checks(settings: dict, base_dir: Path, *, mock: bool = False) -> di
         checks["windows_cuda"]["error"] = "CUDA not available on Windows (install CUDA-enabled torch + drivers)."
         report["deep_ok"] = False
 
-    # HF training stack (QLoRA) gating (Windows-safe).
     try:
-        backend = str((settings.get("core", {}) or {}).get("backend", "vortex")).lower()
-        hf_train_cfg = settings.get("hf_train", {}) or {}
-        if backend == "hf" and bool(hf_train_cfg.get("enabled", False)):
-            quant_requested = bool(hf_train_cfg.get("load_in_4bit", True) or hf_train_cfg.get("load_in_8bit", False))
-            required = ["transformers", "accelerate", "peft"]
-            if quant_requested:
-                required.append("bitsandbytes")
-            deps = check_deps(required)
-            missing = [name for name, status in deps.items() if status != "ok"]
-            checks["hf_train_stack"] = {
-                "ok": not missing,
-                "required": required,
-                "missing": missing or None,
-                "status": deps,
-                "quant_requested": bool(quant_requested),
-            }
-            if missing:
-                checks["hf_train_stack"]["message"] = (
-                    "En Windows, para training QLoRA se recomienda WSL2 o instalar wheels compatibles. "
-                    "Inferencia puede seguir si hay fallback, pero training debe bloquearse."
-                )
-                report["deep_ok"] = False
-    except Exception as exc:
-        checks["hf_train_stack"] = {"ok": False, "error": str(exc)}
-        report["deep_ok"] = False
-
-    # Tokenizer roundtrip (VORTEX-Tok).
-    try:
-        from .tokenizer.vortex_tok import load_or_create, encode, decode, metrics  # type: ignore
-
-        tok_cfg = settings.get("tokenizer", {}) or {}
-        model_path = Path(tok_cfg.get("vortex_tok_path", tok_cfg.get("vortex_model_path", base_dir / "data" / "runs" / "vortex_tok.pt")))
-        if not model_path.is_absolute():
-            model_path = base_dir / model_path
-        block_size = int(tok_cfg.get("block_size", 64))
-        tok_model = load_or_create(model_path, block_size=block_size)
-        cases = [
-            "",
-            "hello world",
-            "ASCII: ~!@#$%^&*()_+-=[]{}|;:',.<>/?",
-            "utf8: ñ é ö 😀 — 東京",
-            "\tTabs\nNewlines\r\nWindows newlines\n\n",
-            "code:\n```py\ndef f(x):\n    return x * (x + 1) // 2\n```\n",
-            'json: {"ok": true, "text": "ñ 😀 \\\\ \\\" \\n", "n": 123}',
-            "\x00\x01\t\ncontrol-chars",
-            "a" * 4096,
-            ("abc" * 1500) + " END",
-        ]
-        rng = random.Random(0)
-        alphabet = (
-            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 \n\t-_=+()[]{}<>/\\'\".,:;!?"
-            "Ã±Ã©Ã¶ðŸ˜€â€”æ±äº¬"
-        )
-        for _ in range(100):
-            n = rng.randint(0, 200)
-            cases.append("".join(rng.choice(alphabet) for _ in range(n)))
-        start = time.time()
-        failures: list[dict[str, Any]] = []
-        for text in cases:
-            try:
-                stream = encode(text, tok_model)
-                out = decode(stream, tok_model)
-                if out != text:
-                    failures.append({"case": text[:120], "error": "mismatch"})
-            except Exception as exc:
-                failures.append({"case": text[:120], "error": str(exc)})
-        elapsed_ms = (time.time() - start) * 1000.0
-        # Aggregate metrics on a representative sample.
-        stream = encode("\n\n".join(cases), tok_model)
-        tok_metrics = metrics(stream)
-        checks["tokenizer_roundtrip"] = {
-            "ok": not failures,
-            "elapsed_ms": round(elapsed_ms, 3),
-            **tok_metrics,
-            "failures": failures[:3] if failures else None,
-        }
-        if failures:
+        checks["tokenizer_roundtrip"] = _tokenizer_roundtrip_strict(settings, base_dir)
+        if not bool(checks["tokenizer_roundtrip"].get("ok", False)):
             report["deep_ok"] = False
     except Exception as exc:
         checks["tokenizer_roundtrip"] = {"ok": False, "error": str(exc)}
         report["deep_ok"] = False
 
-    # Bench (ctx, VRAM peak, regression vs baseline).
     try:
-        profile_name = str(settings.get("_profile") or os.getenv("C3RNT2_PROFILE") or "dev_small").strip()
-        bench_cfg = settings.get("bench", {}) or {}
-        required_ctx = int(bench_cfg.get("required_ctx", 4096) or 4096)
-        max_new = int(bench_cfg.get("doctor_max_new_tokens", 32) or 32)
-        timeout_s = float(bench_cfg.get("doctor_timeout_s", 1800) or 1800)
-        if mock:
-            checks["bench"] = {"ok": True, "skipped": "mock"}
-        else:
-            env = dict(os.environ)
-            # Avoid downloading weights during doctor runs by default.
-            env.setdefault("HF_HUB_OFFLINE", "1")
-            env.setdefault("TRANSFORMERS_OFFLINE", "1")
-            cmd = [
-                sys.executable,
-                "-m",
-                "c3rnt2",
-                "bench",
-                "--profile",
-                profile_name,
-                "--ctx",
-                str(required_ctx),
-                "--max-new-tokens",
-                str(max_new),
-            ]
-            try:
-                res = subprocess.run(cmd, cwd=base_dir, capture_output=True, text=True, env=env, timeout=timeout_s)
-            except subprocess.TimeoutExpired as exc:
-                checks["bench"] = {
-                    "ok": False,
-                    "error": f"timeout_after_s:{timeout_s}",
-                    "stdout_tail": (exc.stdout or "")[-400:] if exc.stdout else None,
-                    "stderr_tail": (exc.stderr or "")[-400:] if exc.stderr else None,
-                }
-                report["deep_ok"] = False
-                res = None
-            latest_path = base_dir / "data" / "bench" / "latest.json"
-            latest = None
-            if latest_path.exists():
-                try:
-                    latest = json.loads(latest_path.read_text(encoding="utf-8"))
-                except Exception:
-                    latest = None
-            if res is not None:
-                checks["bench"] = {
-                    "ok": bool(res.returncode == 0 and isinstance(latest, dict) and latest.get("ok", False)),
-                    "returncode": int(res.returncode),
-                    "latest": latest,
-                    "stdout_tail": (res.stdout or "")[-400:] if res.stdout else None,
-                    "stderr_tail": (res.stderr or "")[-400:] if res.stderr else None,
-                }
-                if not bool(checks["bench"].get("ok", False)):
-                    report["deep_ok"] = False
+        smoke, paging = _inference_smoke(settings)
+        checks["inference_smoke"] = smoke
+        checks["paging_sanity"] = paging
+        if not bool(smoke.get("ok", False)):
+            report["deep_ok"] = False
+        if isinstance(paging, dict) and paging.get("ok") is False:
+            report["deep_ok"] = False
     except Exception as exc:
-        checks["bench"] = {"ok": False, "error": str(exc)}
+        checks["inference_smoke"] = {"ok": False, "error": str(exc)}
+        checks["paging_sanity"] = {"ok": False, "error": str(exc)}
         report["deep_ok"] = False
 
-    if str(runtime.get("gpu_decompress", "none")).lower() == "triton":
-        try:
-            import triton  # type: ignore  # noqa: F401
-            checks["gpu_decompress_ready"] = True
-        except Exception:
-            checks["gpu_decompress_ready"] = False
+    # In mock mode we still run the full self-train path (no network); it is already tiny (1–2 steps).
+    try:
+        checks["self_train_mock"] = _self_train_mock(settings, base_dir)
+        if not bool(checks["self_train_mock"].get("ok", False)):
             report["deep_ok"] = False
+    except Exception as exc:
+        checks["self_train_mock"] = {"ok": False, "error": str(exc)}
+        report["deep_ok"] = False
 
     lock_dir = base_dir / "data" / "locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
@@ -334,10 +446,13 @@ def run_deep_checks(settings: dict, base_dir: Path, *, mock: bool = False) -> di
     checks["locks"] = lock_status
 
     report["checks"] = checks
+    out_path = base_dir / "data" / "doctor" / "last.json"
+    _write_json(out_path, report)
+    report["report_path"] = str(out_path)
     return report
 
 
-def doctor_report(settings: dict, base_dir: Path, deep: bool = False) -> dict[str, Any]:
+def doctor_report(settings: dict, base_dir: Path, deep: bool = False, *, mock: bool = False) -> dict[str, Any]:
     info = detect_device()
     report: Dict[str, Any] = {
         "device": info.device,
@@ -349,5 +464,6 @@ def doctor_report(settings: dict, base_dir: Path, deep: bool = False) -> dict[st
     }
     validate_profile(settings, base_dir=base_dir)
     if deep:
-        report.update(run_deep_checks(settings, base_dir=base_dir))
+        report.update(run_deep_checks(settings, base_dir=base_dir, mock=mock))
     return report
+

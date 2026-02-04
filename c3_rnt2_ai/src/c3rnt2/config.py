@@ -103,6 +103,15 @@ def normalize_settings(settings: dict) -> dict:
     tools["web"] = web
     normalized["tools"] = tools
 
+    security = normalized.get("security", {}) or {}
+    security = dict(security) if isinstance(security, dict) else {}
+    web_sec = security.get("web", {}) or {}
+    web_sec = dict(web_sec) if isinstance(web_sec, dict) else {}
+    web_sec.setdefault("strict", True)
+    web_sec.setdefault("allowlist_domains", None)
+    security["web"] = web_sec
+    normalized["security"] = security
+
     self_patch = normalized.get("self_patch", {}) or {}
     self_patch.setdefault("enabled", False)
     self_patch.setdefault("auto_sandbox", True)
@@ -344,6 +353,84 @@ def normalize_settings(settings: dict) -> dict:
     return normalized
 
 
+def resolve_web_allowlist(settings: dict) -> list[str]:
+    security = settings.get("security", {}) or {}
+    web_sec = security.get("web", {}) or {}
+    allowlist_domains = web_sec.get("allowlist_domains")
+    if isinstance(allowlist_domains, list):
+        return [str(item) for item in allowlist_domains if item]
+    tools_cfg = settings.get("tools", {}) or {}
+    web_cfg = tools_cfg.get("web", {}) or {}
+    if isinstance(web_cfg.get("allow_domains"), list) and web_cfg.get("allow_domains"):
+        return [str(item) for item in web_cfg.get("allow_domains") if item]
+    agent_cfg = settings.get("agent", {}) or {}
+    return [str(item) for item in agent_cfg.get("web_allowlist", []) if item]
+
+
+def resolve_web_strict(settings: dict) -> bool:
+    security = settings.get("security", {}) or {}
+    web_sec = security.get("web", {}) or {}
+    strict = web_sec.get("strict")
+    if strict is None:
+        return True
+    return bool(strict)
+
+
+def _get_nested(d: dict, keys: list[str], default: object = None) -> object:
+    cur: object = d
+    for key in keys:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(key)
+    return cur if cur is not None else default
+
+
+def _set_nested(d: dict, keys: list[str], value: object) -> None:
+    cur = d
+    for key in keys[:-1]:
+        nxt = cur.get(key)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[key] = nxt
+        cur = nxt
+    cur[keys[-1]] = value
+
+
+def _clamp_int(settings: dict, keys: list[str], *, max_value: int, label: str) -> None:
+    raw = _get_nested(settings, keys, None)
+    if raw is None:
+        return
+    try:
+        val = int(raw)
+    except Exception:
+        return
+    if val > int(max_value):
+        warnings.warn(f"{label} clamped to {int(max_value)} for rtx4080_16gb_safe (was {val})")
+        _set_nested(settings, keys, int(max_value))
+
+
+def _apply_rtx4080_16gb_safe_clamps(settings: dict) -> dict:
+    # Hard safety clamps for RTX 4080 16GB profiles. These are NOT usage quotas;
+    # they prevent runaway VRAM/ctx/cache settings that can OOM the process.
+    profile = str(settings.get("_profile") or "")
+    if profile != "rtx4080_16gb_safe":
+        return settings
+
+    _clamp_int(settings, ["decode", "max_new_tokens"], max_value=128, label="decode.max_new_tokens")
+    _clamp_int(settings, ["core", "local_window"], max_value=2048, label="core.local_window")
+    _clamp_int(settings, ["kv", "window_size"], max_value=2048, label="kv.window_size")
+    _clamp_int(settings, ["runtime", "cache_vram_budget_mb"], max_value=4096, label="runtime.cache_vram_budget_mb")
+    _clamp_int(settings, ["c3", "cache_vram_budget_mb"], max_value=4096, label="c3.cache_vram_budget_mb")
+    _clamp_int(settings, ["runtime", "prefetch_depth"], max_value=4, label="runtime.prefetch_depth")
+    _clamp_int(settings, ["continuous", "batch_tokens"], max_value=8192, label="continuous.batch_tokens")
+
+    runtime = dict(settings.get("runtime", {}) or {})
+    if str(runtime.get("kv_quant_2bit_experimental", "")).lower() not in {"1", "true", "yes"}:
+        runtime["kv_quant_2bit_experimental"] = False
+    settings["runtime"] = runtime
+    return settings
+
+
 
 def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
     missing: list[str] = []
@@ -575,4 +662,5 @@ def load_settings(profile: str | None = None, settings_path: str | Path | None =
         raise KeyError(f"Profile '{resolved}' not found in {path}")
     settings = normalize_settings(_resolve_profile(profiles, resolved, []))
     settings["_profile"] = resolved
+    settings = _apply_rtx4080_16gb_safe_clamps(settings)
     return settings

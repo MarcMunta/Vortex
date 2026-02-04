@@ -14,6 +14,7 @@ except Exception:  # pragma: no cover
 
 from ..continuous.trainer import ContinualTrainer
 from ..continuous.registry import load_registry
+from ..continuous.promotion import promote_quarantine_run, quarantine_run_dir, write_promotion_request, approval_present
 
 
 @dataclass
@@ -23,11 +24,16 @@ class CoreTrainResult:
     ok_eval: bool
     run_id: str
     adapter_dir: Path | None
-    loss: float | None
-    steps: int
-    samples: int
-    tokens_per_sec: float | None
-    vram_peak_mb: float | None
+    quarantine_dir: Path | None = None
+    promotion_request_path: Path | None = None
+    promoted: bool = False
+    approval_present: bool = False
+    loss: float | None = None
+    steps: int = 0
+    samples: int = 0
+    tokens_seen: int = 0
+    tokens_per_sec: float | None = None
+    vram_peak_mb: float | None = None
     eval_ok: bool | None = None
     improvement: float | None = None
     regression: float | None = None
@@ -100,6 +106,12 @@ def train_once(settings: dict, base_dir: Path, *, reuse_dataset: bool = False, m
     except Exception:
         steps_val = 0
 
+    tokens_seen = meta.get("tokens_seen")
+    try:
+        tokens_seen_val = int(tokens_seen) if tokens_seen is not None else 0
+    except Exception:
+        tokens_seen_val = 0
+
     tps = meta.get("tokens_per_sec")
     try:
         tokens_per_sec = float(tps) if tps is not None else None
@@ -126,15 +138,65 @@ def train_once(settings: dict, base_dir: Path, *, reuse_dataset: bool = False, m
     except Exception:
         samples_val = 0
 
-    # Mirror HF behavior: write a simple "latest adapter" registry pointer.
-    if eval_ok:
-        _write_latest_registry(base_dir, adapter_path=adapter_path, run_id=tick.run_id)
-    else:
-        # Best-effort rollback pointer: keep registry.json pointing to currently promoted adapter.
-        state = load_registry(base_dir)
-        if state.current_run_id:
-            current_path = base_dir / "data" / "registry" / "adapters" / f"{state.current_run_id}.pt"
-            _write_latest_registry(base_dir, adapter_path=current_path if current_path.exists() else None, run_id=tick.run_id)
+    quarantine_dir = None
+    promotion_request_path = None
+    promoted = False
+    has_approval = False
+    # Quarantine adapters: never promote without explicit human approval.
+    if adapter_path is not None:
+        quarantine_dir = quarantine_run_dir(base_dir, tick.run_id)
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+        q_adapter = quarantine_dir / "adapter.pt"
+        try:
+            q_adapter.write_bytes(adapter_path.read_bytes())
+        except Exception:
+            q_adapter = adapter_path
+        manifest = {
+            "run_id": str(tick.run_id),
+            "adapter_path": str(q_adapter),
+            "passed_eval": bool(eval_ok),
+            "loss": loss_val,
+            "base_loss": meta.get("base_loss"),
+            "steps": steps_val,
+            "samples": samples_val,
+            "tokens_seen": tokens_seen_val,
+            "tokens_per_sec": tokens_per_sec,
+            "vram_peak_mb": vram_peak_mb,
+            "anchor_regression": meta.get("anchor_regression"),
+            "gold_regression": meta.get("gold_regression"),
+            "ts": time.time(),
+        }
+        try:
+            (quarantine_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=True, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        promotion_request_path = write_promotion_request(
+            quarantine_dir,
+            {
+                "kind": "PROMOTION_REQUEST",
+                "run_id": str(tick.run_id),
+                "adapter_path": str(q_adapter),
+                "manifest_path": str(quarantine_dir / "manifest.json"),
+                "passed_eval": bool(eval_ok),
+                "manual_approval_required": True,
+                "metrics": {
+                    "loss": loss_val,
+                    "base_loss": meta.get("base_loss"),
+                    "improvement": improvement,
+                    "anchor_regression": meta.get("anchor_regression"),
+                    "gold_regression": meta.get("gold_regression"),
+                    "tokens_seen": tokens_seen_val,
+                    "tokens_per_sec": tokens_per_sec,
+                    "vram_peak_mb": vram_peak_mb,
+                    "samples": samples_val,
+                    "steps": steps_val,
+                },
+                "ts": time.time(),
+            },
+        )
+        has_approval = approval_present(quarantine_dir)
+        promote_res = promote_quarantine_run(base_dir, run_id=str(tick.run_id), require_approval=True)
+        promoted = bool(promote_res.promoted)
 
     return CoreTrainResult(
         ok=bool(ok_train and ok_eval),
@@ -142,9 +204,14 @@ def train_once(settings: dict, base_dir: Path, *, reuse_dataset: bool = False, m
         ok_eval=bool(ok_eval),
         run_id=str(tick.run_id),
         adapter_dir=adapter_path,
+        quarantine_dir=quarantine_dir,
+        promotion_request_path=promotion_request_path,
+        promoted=bool(promoted),
+        approval_present=bool(has_approval),
         loss=loss_val,
         steps=steps_val,
         samples=samples_val,
+        tokens_seen=tokens_seen_val,
         tokens_per_sec=tokens_per_sec,
         vram_peak_mb=vram_peak_mb,
         eval_ok=bool(eval_ok),
@@ -152,4 +219,3 @@ def train_once(settings: dict, base_dir: Path, *, reuse_dataset: bool = False, m
         regression=None,
         error=str(reason) if reason else None,
     )
-

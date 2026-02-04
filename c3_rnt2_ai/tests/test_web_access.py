@@ -62,12 +62,45 @@ def test_web_allowlist_blocks(tmp_path, monkeypatch):
             timeout_s=2,
             cache_dir=tmp_path / "cache",
             rate_limit_per_min=5,
+            strict=False,
         )
         assert not result.ok
         assert result.error == "allowlist_blocked"
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_web_strict_blocks_ip_literals(tmp_path, monkeypatch):
+    reset_rate_limits()
+    monkeypatch.delenv("C3RNT2_NO_NET", raising=False)
+    result = web_fetch(
+        "http://127.0.0.1:1234/test",
+        allowlist=["127.0.0.1"],
+        max_bytes=64,
+        timeout_s=1,
+        cache_dir=tmp_path / "cache",
+        rate_limit_per_min=5,
+        strict=True,
+    )
+    assert not result.ok
+    assert result.error == "ip_literal_blocked"
+
+
+def test_web_strict_blocks_file_scheme(tmp_path, monkeypatch):
+    reset_rate_limits()
+    monkeypatch.delenv("C3RNT2_NO_NET", raising=False)
+    result = web_fetch(
+        "file:///etc/passwd",
+        allowlist=["example.com"],
+        max_bytes=64,
+        timeout_s=1,
+        cache_dir=tmp_path / "cache",
+        rate_limit_per_min=5,
+        strict=True,
+    )
+    assert not result.ok
+    assert str(result.error).startswith("scheme_blocked:")
 
 
 def test_web_cache_hits(tmp_path, monkeypatch):
@@ -85,6 +118,7 @@ def test_web_cache_hits(tmp_path, monkeypatch):
             cache_dir=tmp_path / "cache",
             rate_limit_per_min=10,
             cache_ttl_s=3600,
+            strict=False,
         )
         second = web_fetch(
             url,
@@ -94,6 +128,7 @@ def test_web_cache_hits(tmp_path, monkeypatch):
             cache_dir=tmp_path / "cache",
             rate_limit_per_min=10,
             cache_ttl_s=3600,
+            strict=False,
         )
         assert first.ok
         assert second.ok
@@ -119,6 +154,7 @@ def test_web_rate_limit(tmp_path, monkeypatch):
             cache_dir=tmp_path / "cache",
             rate_limit_per_min=1,
             cache_ttl_s=0,
+            strict=False,
         )
         second = web_fetch(
             url,
@@ -128,6 +164,7 @@ def test_web_rate_limit(tmp_path, monkeypatch):
             cache_dir=tmp_path / "cache",
             rate_limit_per_min=1,
             cache_ttl_s=0,
+            strict=False,
         )
         assert first.ok
         assert not second.ok

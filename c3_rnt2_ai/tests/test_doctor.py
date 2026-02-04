@@ -102,15 +102,17 @@ def test_doctor_deep_mock_skips_bench(tmp_path: Path, monkeypatch) -> None:
 
     from c3rnt2 import doctor as doctor_mod
 
-    monkeypatch.setattr(doctor_mod, "detect_device", lambda: SimpleNamespace(device="cuda", cuda_available=True, name="gpu", vram_gb=16.0, dtype="bf16"))
+    monkeypatch.setattr(
+        doctor_mod,
+        "detect_device",
+        lambda: SimpleNamespace(device="cuda", cuda_available=True, name="gpu", vram_gb=16.0, dtype="bf16"),
+    )
     monkeypatch.setattr(doctor_mod, "_profile_checks", lambda _base_dir: {})
-    monkeypatch.setattr(doctor_mod.subprocess, "run", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("bench should be skipped in mock")))
+    monkeypatch.setattr(doctor_mod, "_tokenizer_roundtrip_strict", lambda *_a, **_k: {"ok": True})
+    monkeypatch.setattr(doctor_mod, "_inference_smoke", lambda *_a, **_k: ({"ok": True}, {"ok": True}))
+    monkeypatch.setattr(doctor_mod, "_self_train_mock", lambda *_a, **_k: {"ok": True, "run_id": "r1"})
 
-    settings = {
-        "_profile": "rtx4080_16gb_safe_windows_hf",
-        "core": {"backend": "hf"},
-        "bench": {"required_ctx": 4096},
-    }
+    settings = {"_profile": "p", "core": {"backend": "vortex"}}
     report = doctor_mod.run_deep_checks(settings, base_dir=tmp_path, mock=True)
     assert report["deep_ok"] is True
-    assert report["checks"]["bench"]["skipped"] == "mock"
+    assert (tmp_path / "data" / "doctor" / "last.json").exists()
