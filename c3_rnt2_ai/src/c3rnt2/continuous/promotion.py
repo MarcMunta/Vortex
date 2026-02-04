@@ -16,6 +16,7 @@ from ..promotion.gating import bench_gate, log_promotion_decision, resolve_bench
 
 
 APPROVAL_FILES = ("APPROVE.txt", "APPROVE.json")
+HF_EXPERT_APPROVAL_FILE = "APPROVE_PROMOTION"
 
 
 @dataclass(frozen=True)
@@ -226,3 +227,135 @@ def promote_quarantine_run(
         adapter_path=str(adapter_dst),
         current_adapter_path=str(state.get("current_adapter_path")),
     )
+
+
+def _load_profile_bench_baseline_tps(base_dir: Path, *, profile: str, backend: str) -> float | None:
+    path = base_dir / "data" / "bench" / "baseline.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    prof = payload.get(str(profile))
+    if not isinstance(prof, dict):
+        return None
+    entry = prof.get(str(backend))
+    if not isinstance(entry, dict):
+        return None
+    val = entry.get("tokens_per_sec")
+    try:
+        return float(val) if val is not None else None
+    except Exception:
+        return None
+
+
+def promote_hf_expert(
+    quarantine_dir: str | Path,
+    registry_dir: str | Path,
+    settings: dict,
+    *,
+    require_manual_approval: bool = True,
+) -> dict[str, Any]:
+    """Promote a HF expert adapter directory from quarantine into a registry folder.
+
+    This is intentionally fail-closed for the 120B-like profile: it requires a manual
+    approval file (data/APPROVE_PROMOTION) and enforces bench_thresholds gates.
+    """
+    base_dir = Path(".").resolve()
+    qdir = Path(str(quarantine_dir))
+    if not qdir.is_absolute():
+        qdir = base_dir / qdir
+    run_dir = qdir.parent if qdir.name.lower() == "adapter" else qdir
+    manifest_path = run_dir / "manifest.json"
+    manifest = _load_json(manifest_path)
+    profile = str(settings.get("_profile") or "unknown")
+
+    domain = str(manifest.get("domain") or run_dir.parent.name or "unknown").strip() or "unknown"
+    run_id = str(manifest.get("run_id") or run_dir.name or "").strip() or run_dir.name
+    adapter_src_raw = manifest.get("adapter_dir") or str(run_dir / "adapter")
+    adapter_src = Path(str(adapter_src_raw))
+    if not adapter_src.is_absolute():
+        adapter_src = base_dir / adapter_src
+
+    if not run_dir.exists():
+        return {"ok": False, "promoted": False, "reason": "quarantine_missing", "domain": domain, "run_id": run_id}
+    if not adapter_src.exists():
+        return {"ok": False, "promoted": False, "reason": "adapter_missing", "domain": domain, "run_id": run_id, "adapter_dir": str(adapter_src)}
+
+    passed_eval = bool(manifest.get("passed_eval", False))
+    if not passed_eval:
+        log_promotion_decision(base_dir, {"kind": "promotion_gate", "backend": "hf_experts", "profile": profile, "domain": domain, "run_id": run_id, "promote_ok": False, "reason": "passed_eval_false"})
+        return {"ok": True, "promoted": False, "reason": "passed_eval_false", "domain": domain, "run_id": run_id}
+
+    if require_manual_approval and profile == "rtx4080_16gb_120b_like":
+        approval = base_dir / "data" / HF_EXPERT_APPROVAL_FILE
+        if not approval.exists():
+            log_promotion_decision(base_dir, {"kind": "promotion_gate", "backend": "hf_experts", "profile": profile, "domain": domain, "run_id": run_id, "promote_ok": False, "reason": "approval_missing", "approval_file": str(approval)})
+            return {"ok": True, "promoted": False, "reason": "approval_missing", "domain": domain, "run_id": run_id, "approval_file": str(approval)}
+
+    thresholds = resolve_bench_thresholds(settings)
+    bench = manifest.get("bench") if isinstance(manifest.get("bench"), dict) else {}
+    candidate = {
+        "tokens_per_sec": bench.get("tokens_per_sec"),
+        "vram_peak_mb": bench.get("vram_peak_mb"),
+        "ctx": bench.get("ctx"),
+    }
+    baseline_tps = _load_profile_bench_baseline_tps(base_dir, profile=profile, backend="hf")
+    baseline = {"tokens_per_sec": baseline_tps} if baseline_tps is not None else None
+    verdict = bench_gate(candidate, baseline, thresholds)
+    bench_ok = bool(verdict.get("ok", False))
+    if not bench_ok:
+        reason = verdict.get("reason") or "bench_failed"
+        log_promotion_decision(
+            base_dir,
+            {
+                "kind": "promotion_gate",
+                "backend": "hf_experts",
+                "profile": profile,
+                "domain": domain,
+                "run_id": run_id,
+                "promote_ok": False,
+                "reason": reason,
+                "thresholds": thresholds,
+                "baseline": baseline,
+                "candidate": candidate,
+                "bench_gate": verdict,
+                "manifest": str(manifest_path),
+            },
+        )
+        return {"ok": True, "promoted": False, "reason": f"bench_failed:{reason}", "domain": domain, "run_id": run_id, "bench_gate": verdict}
+
+    reg_dir = Path(str(registry_dir))
+    if not reg_dir.is_absolute():
+        reg_dir = base_dir / reg_dir
+    version_dir = reg_dir / "experts" / domain / run_id
+    adapter_dst = version_dir / "adapter"
+    if adapter_dst.exists():
+        return {"ok": False, "promoted": False, "reason": "already_promoted", "domain": domain, "run_id": run_id, "adapter_dir": str(adapter_dst)}
+    version_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(adapter_src, adapter_dst)
+    if manifest_path.exists():
+        shutil.copy2(manifest_path, version_dir / "manifest.json")
+
+    log_promotion_decision(
+        base_dir,
+        {
+            "kind": "promotion_gate",
+            "backend": "hf_experts",
+            "profile": profile,
+            "domain": domain,
+            "run_id": run_id,
+            "promote_ok": True,
+            "reason": "promoted",
+            "thresholds": thresholds,
+            "baseline": baseline,
+            "candidate": candidate,
+            "bench_gate": verdict,
+            "src": str(adapter_src),
+            "dst": str(adapter_dst),
+        },
+    )
+    return {"ok": True, "promoted": True, "reason": "promoted", "domain": domain, "run_id": run_id, "adapter_dir": str(adapter_dst), "version_dir": str(version_dir)}

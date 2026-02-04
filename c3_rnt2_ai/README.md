@@ -12,7 +12,7 @@ Nota de rol:
 - **Vortex-Tok** es para los backends Vortex/C3 (no se usa para HF). Bench: `python scripts/bench_tokenizer.py --profile dev_small`.
 
 ## Ruta recomendada (RTX 4080 16GB)
-Ver `docs/rtx4080.md` y `docs/120b_like.md` (perfil recomendado: `rtx4080_16gb_120b_like`).
+Ver `docs/rtx4080.md`, `docs/120b_like.md` y `docs/WINDOWS_SELF_TRAIN_WSL.md` (perfil recomendado: `rtx4080_16gb_120b_like`).
 
 ## RTX 4080 16GB Quickstart (Windows, perfil safe)
 Comandos recomendados (core backend, sin descargas, web deny-by-default):

@@ -103,30 +103,66 @@ def _coerce_train_result(payload: dict | object) -> SimpleNamespace:
     return SimpleNamespace(ok=False, ok_eval=False, ok_train=False, error="invalid_train_result")
 
 
-def _run_train_subprocess(settings: dict, reuse_dataset: bool, *, timeout_s: float | None = None) -> dict:
+def _run_train_subprocess(
+    settings: dict,
+    reuse_dataset: bool,
+    *,
+    timeout_s: float | None = None,
+    env: dict[str, str] | None = None,
+) -> dict:
     profile = settings.get("_profile") or resolve_profile(None)
     cmd = [sys.executable, "-m", "c3rnt2", "train-once", "--profile", str(profile)]
     if reuse_dataset:
         cmd.append("--reuse-dataset")
     try:
-        result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=timeout_s)
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=timeout_s, env=env)
     except subprocess.TimeoutExpired:
         return {"ok": False, "ok_train": False, "ok_eval": False, "error": "train_subprocess_timeout"}
     if result.returncode != 0:
         return {"ok": False, "ok_train": False, "ok_eval": False, "error": result.stderr.strip() or "train subprocess failed"}
-    payload = None
-    for line in reversed(result.stdout.splitlines()):
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith("{") and line.endswith("}"):
-            try:
-                payload = json.loads(line)
-                break
-            except Exception:
-                continue
-    if payload is None:
+    try:
+        from .utils.wsl import parse_last_json_object
+
+        payload = parse_last_json_object(result.stdout)
+    except Exception:
+        payload = None
+    if not isinstance(payload, dict):
         return {"ok": False, "ok_train": False, "ok_eval": False, "error": "train subprocess output not parseable"}
+    return payload
+
+
+def _run_train_subprocess_wsl(settings: dict, reuse_dataset: bool, *, timeout_s: float | None = None, env: dict[str, str] | None = None) -> dict:
+    from .utils.wsl import build_bash_lc_script, build_wsl_bash_command, is_wsl_available, parse_last_json_object
+
+    profile = str(settings.get("_profile") or resolve_profile(None))
+    server_cfg = settings.get("server", {}) or {}
+    wsl_python = str(server_cfg.get("wsl_python", "python") or "python")
+    wsl_workdir = server_cfg.get("wsl_workdir")
+    wsl_workdir_str = str(wsl_workdir) if wsl_workdir else None
+
+    # Fail-closed with actionable error if WSL is not available.
+    status = is_wsl_available(timeout_s=1.5)
+    if not bool(status.ok):
+        return {"ok": False, "ok_train": False, "ok_eval": False, "error": f"wsl_unavailable:{status.error or 'unknown'}"}
+
+    inner_cmd = [wsl_python, "-m", "c3rnt2", "train-once", "--profile", str(profile)]
+    if reuse_dataset:
+        inner_cmd.append("--reuse-dataset")
+    script = build_bash_lc_script(inner_cmd, workdir=wsl_workdir_str, env=env)
+    cmd = build_wsl_bash_command(script)
+
+    try:
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=timeout_s)
+    except FileNotFoundError:
+        return {"ok": False, "ok_train": False, "ok_eval": False, "error": "wsl.exe not found"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "ok_train": False, "ok_eval": False, "error": "train_wsl_subprocess_timeout"}
+    if result.returncode != 0:
+        err = (result.stderr or "").strip() or (result.stdout or "").strip() or "train wsl subprocess failed"
+        return {"ok": False, "ok_train": False, "ok_eval": False, "error": err}
+    payload = parse_last_json_object(result.stdout)
+    if not isinstance(payload, dict):
+        return {"ok": False, "ok_train": False, "ok_eval": False, "error": "train wsl subprocess output not parseable"}
     return payload
 
 
@@ -713,7 +749,9 @@ def cmd_self_train(args: argparse.Namespace) -> None:
             continue
         try:
             strategy = str((settings.get("server", {}) or {}).get("train_strategy", "subprocess")).lower()
-            if strategy.startswith("subprocess"):
+            if strategy == "wsl_subprocess_unload":
+                train_result = _run_train_subprocess_wsl(settings, reuse_dataset=bool(args.reuse_dataset))
+            elif strategy.startswith("subprocess"):
                 train_result = _run_train_subprocess(settings, reuse_dataset=bool(args.reuse_dataset))
             else:
                 train_result = train_once_backend(settings, base_dir, reuse_dataset=bool(args.reuse_dataset))
@@ -813,7 +851,7 @@ def _run_self_train_tick(
         if maintenance_window_s and maintenance_window_s > 0 and not block_during_training:
             state.maintenance_until = time.time() + float(maintenance_window_s)
         try:
-            if train_strategy in {"unload_reload", "subprocess_unload"}:
+            if train_strategy in {"unload_reload", "subprocess_unload", "wsl_subprocess_unload"}:
                 _unload_models_for_train(app)
                 did_unload = True
             core_cfg = settings.get("core", {}) or {}
@@ -836,6 +874,16 @@ def _run_self_train_tick(
                 except Exception:
                     timeout_s = None
                 result_dict = _run_train_subprocess(settings, reuse_dataset=reuse_dataset, timeout_s=timeout_s)
+                result = _coerce_train_result(result_dict)
+            elif train_strategy in {"wsl_subprocess_unload"}:
+                timeout_s = None
+                max_walltime_min = budgets_cfg.get("max_walltime_min")
+                try:
+                    if max_walltime_min is not None and float(max_walltime_min) > 0:
+                        timeout_s = float(max_walltime_min) * 60.0
+                except Exception:
+                    timeout_s = None
+                result_dict = _run_train_subprocess_wsl(settings, reuse_dataset=reuse_dataset, timeout_s=timeout_s)
                 result = _coerce_train_result(result_dict)
             else:
                 result = _run_train_inprocess(settings, base_dir, reuse_dataset, train_fn=train_fn)
@@ -1005,36 +1053,22 @@ def _run_autopilot_train_with_server(
     did_unload = False
     reload_error = None
     payload: dict = {"ok": False, "ok_train": False, "ok_eval": False, "error": "train_not_started"}
+    env = dict(os.environ)
+    if max_steps is not None and int(max_steps) > 0:
+        env["C3RNT2_TRAIN_MAX_STEPS"] = str(int(max_steps))
     try:
         state.training_active = True
         if maintenance_window_s and maintenance_window_s > 0 and not block_during_training:
             state.maintenance_until = time.time() + float(maintenance_window_s)
 
-        if train_strategy in {"unload_reload", "subprocess_unload"}:
+        if train_strategy in {"unload_reload", "subprocess_unload", "wsl_subprocess_unload"}:
             _unload_models_for_train(app)
             did_unload = True
 
         if train_strategy in {"subprocess", "subprocess_unload"}:
-            cmd = [sys.executable, "-m", "c3rnt2", "train-once", "--profile", str(profile)]
-            if reuse_dataset:
-                cmd.append("--reuse-dataset")
-            env = dict(os.environ)
-            if max_steps is not None and int(max_steps) > 0:
-                env["C3RNT2_TRAIN_MAX_STEPS"] = str(int(max_steps))
-            result = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env)
-            if result.returncode != 0:
-                payload = {"ok": False, "ok_train": False, "ok_eval": False, "error": result.stderr.strip() or "train subprocess failed"}
-            else:
-                parsed = None
-                for line in reversed(result.stdout.splitlines()):
-                    line = line.strip()
-                    if line.startswith("{") and line.endswith("}"):
-                        try:
-                            parsed = json.loads(line)
-                            break
-                        except Exception:
-                            continue
-                payload = parsed if isinstance(parsed, dict) else {"ok": False, "ok_train": False, "ok_eval": False, "error": "train subprocess output not parseable"}
+            payload = _run_train_subprocess(settings, reuse_dataset=reuse_dataset, env=env)
+        elif train_strategy in {"wsl_subprocess_unload"}:
+            payload = _run_train_subprocess_wsl(settings, reuse_dataset=reuse_dataset, env=env)
         else:
             lock_path = base_dir / "data" / "locks" / "train.lock"
             tlock = FileLock(lock_path)
@@ -1319,6 +1353,36 @@ def cmd_tokenizer_train(args: argparse.Namespace) -> None:
     _run_module("c3rnt2.tokenizer.rnt2_train", args.extra)
 
 
+def cmd_train_hf_experts(args: argparse.Namespace) -> None:
+    from .training.train_hf_experts import train_hf_experts
+
+    settings = _load_and_validate(args.profile)
+    base_dir = Path(".")
+    data_root = Path(str(getattr(args, "data", "data/corpora")))
+    output_root = Path(str(getattr(args, "output", "data/experts_hf")))
+    domains_raw = str(getattr(args, "domains", "") or "")
+    domains = [d.strip() for d in domains_raw.split(",") if d.strip()]
+    if not domains:
+        try:
+            scan_root = data_root if data_root.is_absolute() else base_dir / data_root
+            domains = [p.name for p in sorted(scan_root.iterdir(), key=lambda p: p.name) if p.is_dir()]
+        except Exception:
+            domains = []
+    result = train_hf_experts(
+        settings,
+        domains,
+        data_root=data_root,
+        output_root=output_root,
+        mock=bool(getattr(args, "mock", False)),
+        steps=getattr(args, "steps", None),
+        lr=getattr(args, "lr", None),
+        max_seq_len=getattr(args, "max_seq_len", None),
+    )
+    print(json.dumps(result, ensure_ascii=True))
+    if not bool(result.get("ok", False)):
+        sys.exit(1)
+
+
 def cmd_train_experts(args: argparse.Namespace) -> None:
     _run_module("c3rnt2.training.train_experts", args.extra)
 
@@ -1577,6 +1641,17 @@ def main() -> None:
     tok = sub.add_parser("tokenizer-train")
     tok.add_argument("extra", nargs=argparse.REMAINDER)
     tok.set_defaults(func=cmd_tokenizer_train)
+
+    the = sub.add_parser("train-hf-experts")
+    the.add_argument("--profile", default=None)
+    the.add_argument("--data", default="data/corpora")
+    the.add_argument("--output", default="data/experts_hf")
+    the.add_argument("--domains", default="")
+    the.add_argument("--steps", type=int, default=None)
+    the.add_argument("--lr", type=float, default=None)
+    the.add_argument("--max-seq-len", type=int, default=None, dest="max_seq_len")
+    the.add_argument("--mock", action="store_true")
+    the.set_defaults(func=cmd_train_hf_experts)
 
     te = sub.add_parser("train-experts")
     te.add_argument("extra", nargs=argparse.REMAINDER)

@@ -607,6 +607,64 @@ def _deep_check_120b_like_profile(settings: dict, base_dir: Path, *, mock: bool)
     if not bool(experts_chk.get("ok", False)):
         errors.append("experts_router_invalid")
 
+    if not mock:
+        try:
+            from .model_loader import load_inference_model
+
+            offline_env = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_DATASETS_OFFLINE": "1"}
+            old_env = {k: os.environ.get(k) for k in offline_env}
+            for k, v in offline_env.items():
+                os.environ[k] = v
+            model = None
+            try:
+                model = load_inference_model(settings)
+                quant_info: dict[str, Any] = {"ok": True}
+                if bool(getattr(model, "is_llama_cpp", False)):
+                    quant_info.update({"backend": "llama_cpp", "quant_active": True})
+                elif bool(getattr(model, "is_hf", False)):
+                    core = settings.get("core", {}) or {}
+                    quant_requested = bool(core.get("hf_load_in_4bit") or core.get("hf_load_in_8bit"))
+                    quant_fallback = bool(getattr(model, "quant_fallback", False))
+                    quant_active = bool(quant_requested and not quant_fallback)
+                    quant_info.update(
+                        {
+                            "backend": "hf",
+                            "quant_requested": bool(quant_requested),
+                            "quant_fallback": bool(quant_fallback),
+                            "quant_active": bool(quant_active),
+                        }
+                    )
+                    if not quant_active:
+                        quant_info["ok"] = False
+                        quant_info["error"] = "120b_like_requires_quant_backend"
+                else:
+                    quant_info.update({"ok": False, "error": "120b_like_requires_quant_backend", "backend": "unknown"})
+                info["quant_active"] = quant_info
+                if not bool(quant_info.get("ok", False)):
+                    errors.append(str(quant_info.get("error") or "120b_like_requires_quant_backend"))
+            except Exception as exc:
+                info["quant_active"] = {"ok": False, "error": "120b_like_requires_quant_backend", "detail": str(exc)}
+                errors.append("120b_like_requires_quant_backend")
+            finally:
+                for k, prev in old_env.items():
+                    if prev is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = prev
+                try:
+                    del model
+                except Exception:
+                    pass
+                gc.collect()
+                if torch is not None and torch.cuda.is_available():
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+        except Exception as exc:
+            info["quant_active"] = {"ok": False, "error": "120b_like_requires_quant_backend", "detail": str(exc)}
+            errors.append("120b_like_requires_quant_backend")
+
     if mock:
         try:
             from .bench import BenchArgs, run_bench
@@ -650,6 +708,30 @@ def _deep_check_120b_like_profile(settings: dict, base_dir: Path, *, mock: bool)
     return {"ok": not errors, "errors": errors or None, "info": info}
 
 
+def _wsl_available_deep_check(settings: dict, *, timeout_s: float = 1.5) -> dict[str, Any]:
+    if not sys.platform.startswith("win"):
+        return {"ok": True, "skipped": "not_windows"}
+
+    profile = str(settings.get("_profile") or "")
+    if profile not in {"rtx4080_16gb_120b_like", "rtx4080_16gb_safe_windows_hf"}:
+        return {"ok": True, "skipped": "not_target_profile"}
+
+    hf_train_enabled = bool((settings.get("hf_train", {}) or {}).get("enabled", False))
+    train_strategy = str((settings.get("server", {}) or {}).get("train_strategy", "") or "").strip().lower()
+    if not hf_train_enabled and train_strategy != "wsl_subprocess_unload":
+        return {"ok": True, "skipped": "hf_train_disabled"}
+
+    try:
+        from .utils.wsl import is_wsl_available
+    except Exception as exc:
+        return {"ok": False, "error": f"wsl_check_unavailable:{exc}"}
+
+    status = is_wsl_available(timeout_s=float(timeout_s))
+    if not bool(status.ok):
+        return {"ok": False, "error": status.error or "wsl_unavailable"}
+    return {"ok": True}
+
+
 def run_deep_checks(settings: dict, base_dir: Path, *, mock: bool = False) -> dict[str, Any]:
     info = detect_device()
     report: dict[str, Any] = {"deep_ok": True, "ts": time.time()}
@@ -677,6 +759,17 @@ def run_deep_checks(settings: dict, base_dir: Path, *, mock: bool = False) -> di
             report["deep_ok"] = False
     except Exception as exc:
         checks["profile_120b_like"] = {"ok": False, "error": str(exc)}
+        report["deep_ok"] = False
+
+    try:
+        if mock:
+            checks["wsl_available"] = {"ok": True, "skipped": "mock"}
+        else:
+            checks["wsl_available"] = _wsl_available_deep_check(settings)
+            if not bool(checks["wsl_available"].get("ok", False)):
+                report["deep_ok"] = False
+    except Exception as exc:
+        checks["wsl_available"] = {"ok": False, "error": str(exc)}
         report["deep_ok"] = False
 
     try:

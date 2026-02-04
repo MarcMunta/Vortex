@@ -365,6 +365,8 @@ profiles:
       reload_interval_s: 30
     hf_train:
       enabled: false
+      # Tip (Windows): to run HF self-train without double-loading/VRAM spikes, use WSL2 and set
+      # `server.train_strategy: wsl_subprocess_unload` + `server.wsl_workdir` (see docs/WINDOWS_SELF_TRAIN_WSL.md).
       max_seq_len: 2048
       micro_batch_size: 1
       grad_accum_steps: 8
@@ -439,9 +441,13 @@ profiles:
         strict: true
         allowlist_domains: []
     server:
-      train_strategy: subprocess_unload
+      # Windows HF training via WSL2 to avoid double-load/OOM.
+      train_strategy: wsl_subprocess_unload
       block_during_training: true
       auto_reload_adapter: true
+      # Optional: override WSL Python/workdir for training subprocess.
+      wsl_python: python
+      wsl_workdir: null
 
   rtx4080_16gb_safe_windows_core:
     # Windows-safe RTX 4080 16GB (core backend).

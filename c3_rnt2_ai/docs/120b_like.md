@@ -64,7 +64,7 @@ Real:
 python -m c3rnt2 bench --profile rtx4080_16gb_120b_like --max-new-tokens 64 --json-out data\bench\last_120b_like.json
 ```
 
-El JSON incluye `tokens_per_sec`, `vram_peak_mb` (o `null`), `backend`, `active_adapters` y `adapter_load_ms`.
+El JSON incluye `tokens_per_sec`, `prefill_tokens_per_sec`, `decode_tokens_per_sec`, `vram_peak_mb` (o `null`), `backend`, `active_adapters` y `adapter_load_ms`.
 
 ## Serve
 
@@ -72,11 +72,29 @@ El JSON incluye `tokens_per_sec`, `vram_peak_mb` (o `null`), `backend`, `active_
 python -m c3rnt2 serve --profile rtx4080_16gb_120b_like --host 0.0.0.0 --port 8000
 ```
 
-## Serve + self-train (subprocess_unload)
+## Serve + self-train (WSL2 / wsl_subprocess_unload)
 
 ```bash
 python -m c3rnt2 serve-self-train --profile rtx4080_16gb_120b_like --host 0.0.0.0 --port 8000
 ```
+
+En Windows, el perfil usa por defecto `server.train_strategy: wsl_subprocess_unload` (ver `docs/WINDOWS_SELF_TRAIN_WSL.md`).
+
+## Entrenar expertos HF por dominio (PEFT)
+
+Mock (sin descargar pesos; genera estructura + `manifest.json` por dominio):
+
+```bash
+python -m c3rnt2 train-hf-experts --profile rtx4080_16gb_120b_like --data data\\corpora --output data\\experts_hf --domains code,docs --mock
+```
+
+## Promoción manual (fail-closed)
+
+Para el perfil 120B-like, la promoción de expertos HF requiere un archivo de aprobación:
+
+- `data/APPROVE_PROMOTION`
+
+La promoción aplica gates (`bench_thresholds`) y deja motivo en `data/logs/promotions.jsonl`.
 
 ## Notas de rendimiento (HF vs llama.cpp)
 
@@ -84,6 +102,7 @@ El perfil arranca con `core.backend: hf`, pero:
 
 - si **HF** falla por OOM/carga, puede hacer **fallback** a `llama_cpp` **si** hay GGUF disponible.
 - si quieres **preferir** `llama.cpp` cuando exista GGUF, configura `core.llama_cpp_model_path` a un `.gguf` real.
+- `doctor --deep` para el perfil 120B-like falla si no hay cuantización real activa (HF sin `bitsandbytes` o sin GGUF).
 
 ## Checklist de aceptación (local)
 

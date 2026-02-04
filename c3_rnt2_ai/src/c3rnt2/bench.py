@@ -290,6 +290,8 @@ def run_bench(settings: dict, base_dir: Path, args: BenchArgs) -> dict[str, Any]
             "tokens_per_sec_warmup": None,
             "tokens_per_sec_steady": round(float(tokens_per_sec_steady), 6),
             "tokens_per_sec": round(float(tokens_per_sec_steady), 6),
+            "prefill_tokens_per_sec": round(float(tokens_per_sec_steady), 6),
+            "decode_tokens_per_sec": round(float(tokens_per_sec_steady), 6),
             "latency_ms_total": round(float(steady_total_s) * 1000.0, 3),
             "latency_ms_per_token": round(float(steady_total_s) * 1000.0 / max(1, steady_tokens), 6),
             "latency_p50_ms": None,
@@ -357,6 +359,16 @@ def run_bench(settings: dict, base_dir: Path, args: BenchArgs) -> dict[str, Any]
         _generate(warmup_tokens)
         warmup_s.append(max(1e-9, time.perf_counter() - start))
 
+    # Prefill/decode estimate: time for 1 token ~= prefill + 1 decode step.
+    one_token_s = None
+    if int(args.max_new) > 1:
+        try:
+            start = time.perf_counter()
+            _generate(1)
+            one_token_s = max(1e-9, time.perf_counter() - start)
+        except Exception:
+            one_token_s = None
+
     # Reset peak stats for steady-state measurement.
     if torch is not None and torch.cuda.is_available():
         try:
@@ -393,6 +405,27 @@ def run_bench(settings: dict, base_dir: Path, args: BenchArgs) -> dict[str, Any]
 
     rss_mb = _rss_mb()
 
+    prefill_tps = None
+    decode_tps = None
+    try:
+        repeats = int(max(1, int(args.repeat)))
+        avg_full_s = float(steady_total_s) / float(repeats)
+        max_new = int(args.max_new)
+        if one_token_s is not None and max_new > 1:
+            decode_s = float(avg_full_s - float(one_token_s)) / float(max(1, max_new - 1))
+            if decode_s <= 1e-12:
+                decode_s = float(avg_full_s) / float(max(1, max_new))
+            decode_tps = float(1.0 / max(1e-9, decode_s))
+            prefill_s = max(0.0, float(one_token_s) - float(decode_s))
+            if isinstance(ctx_len_prompt, int) and ctx_len_prompt > 0 and prefill_s > 1e-9:
+                prefill_tps = float(ctx_len_prompt) / float(prefill_s)
+        else:
+            decode_tps = float(tokens_per_sec_steady)
+            prefill_tps = None
+    except Exception:
+        prefill_tps = None
+        decode_tps = None
+
     report: dict[str, Any] = {
         "ok": True,
         "ts": time.time(),
@@ -412,6 +445,8 @@ def run_bench(settings: dict, base_dir: Path, args: BenchArgs) -> dict[str, Any]
         "tokens_per_sec_warmup": round(float(tokens_per_sec_warmup), 6) if tokens_per_sec_warmup is not None else None,
         "tokens_per_sec_steady": round(float(tokens_per_sec_steady), 6),
         "tokens_per_sec": round(float(tokens_per_sec_steady), 6),
+        "prefill_tokens_per_sec": round(float(prefill_tps), 6) if prefill_tps is not None else None,
+        "decode_tokens_per_sec": round(float(decode_tps), 6) if decode_tps is not None else None,
         "latency_ms_total": round(float(steady_total_s) * 1000.0, 3),
         "latency_ms_per_token": round(float(steady_total_s) * 1000.0 / max(1, steady_tokens), 6),
         "latency_p50_ms": round(float(_pct_ms(steady_s, 50.0) or 0.0), 3) if steady_s else None,

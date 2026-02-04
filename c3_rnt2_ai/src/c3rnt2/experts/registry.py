@@ -36,6 +36,31 @@ def _discover_hf_train_adapters(base_dir: Path, settings: dict) -> dict[str, str
     return discovered
 
 
+def _discover_promoted_hf_experts(base_dir: Path, settings: dict) -> dict[str, str]:
+    cfg = settings.get("experts", {}) or {}
+    reg_dir = _resolve_dir(base_dir, cfg.get("registry_dir"), base_dir / "data" / "experts_hf" / "registry")
+    root = reg_dir / "experts"
+    if not root.exists():
+        return {}
+    discovered: dict[str, str] = {}
+    try:
+        for domain_dir in sorted(root.iterdir(), key=lambda p: p.name):
+            if not domain_dir.is_dir():
+                continue
+            domain = domain_dir.name
+            for version_dir in sorted(domain_dir.iterdir(), key=lambda p: p.name):
+                if not version_dir.is_dir():
+                    continue
+                adapter_dir = version_dir / "adapter"
+                if not adapter_dir.is_dir():
+                    continue
+                name = f"expert_{domain}_{version_dir.name}"
+                discovered.setdefault(name, str(adapter_dir))
+    except Exception:
+        return {}
+    return discovered
+
+
 @dataclass(frozen=True)
 class ExpertRegistry:
     enabled: bool
@@ -64,11 +89,20 @@ class ExpertRegistry:
             paths[str(name)] = str(p)
 
         if enabled and not paths:
-            # Optional auto-discovery: treat HF training runs as experts.
-            # Keeps Windows workflows viable without editing settings.yaml on each train.
-            discovered = _discover_hf_train_adapters(base_dir, settings)
+            # Optional auto-discovery: promoted HF experts registry (fail-closed for 120B-like).
+            discovered = _discover_promoted_hf_experts(base_dir, settings)
             if discovered:
                 paths.update(discovered)
+            profile = str(settings.get("_profile") or "")
+            discover_hf_train = cfg.get("discover_hf_train")
+            if discover_hf_train is None:
+                discover_hf_train = profile != "rtx4080_16gb_120b_like"
+            if not paths and bool(discover_hf_train):
+                # Legacy auto-discovery: treat HF training runs as experts.
+                # Keeps workflows viable without editing settings.yaml on each train.
+                discovered = _discover_hf_train_adapters(base_dir, settings)
+                if discovered:
+                    paths.update(discovered)
 
         if not paths:
             enabled = False
@@ -82,4 +116,3 @@ class ExpertRegistry:
     @property
     def names(self) -> list[str]:
         return sorted(self.paths.keys())
-
