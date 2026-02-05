@@ -41,11 +41,21 @@ export interface ChatSession {
   updatedAt: number;
 }
 
+export interface LlmSettings {
+  baseUrl: string;
+  token?: string;
+  model: string;
+  temperature: number;
+  topP: number;
+  maxTokens: number;
+}
+
 export interface UserSettings {
   categoryOrder: string[];
   codeTheme: 'dark' | 'light' | 'match-app';
   fontSize: FontSize;
   language: Language;
+  llm: LlmSettings;
 }
 
 export interface LogEntry {

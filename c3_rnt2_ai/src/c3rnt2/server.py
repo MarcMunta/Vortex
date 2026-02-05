@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
+from dataclasses import dataclass, field
 
 try:
     import torch
@@ -32,9 +34,222 @@ from .adapters.router import AdapterRouter
 from .experts.registry import ExpertRegistry
 from .experts.router import ExpertRouter
 from .episodes import EpisodeIndex
+from .logging import get_logger
 from .runtime.router import build_features, load_router, log_router_event
 from .runtime.vram_governor import decide_max_new_tokens
 from .utils.oom import is_oom_error, clear_cuda_cache
+
+
+LOG = get_logger("klimeai.api")
+
+
+def _openai_error(
+    message: str,
+    *,
+    type: str = "invalid_request_error",
+    code: str | None = None,
+    param: str | None = None,
+) -> dict[str, Any]:
+    err: dict[str, Any] = {"message": str(message), "type": str(type)}
+    if code is not None:
+        err["code"] = str(code)
+    if param is not None:
+        err["param"] = str(param)
+    return {"error": err}
+
+
+def _resolve_api_token(settings: dict) -> str | None:
+    raw = os.getenv("KLIMEAI_API_TOKEN") or os.getenv("C3RNT2_API_TOKEN")
+    if raw is None:
+        raw = (settings.get("server", {}) or {}).get("api_token")
+    token = str(raw or "").strip()
+    return token or None
+
+
+def _resolve_cors_origins(settings: dict) -> list[str]:
+    raw = os.getenv("KLIMEAI_CORS_ORIGINS") or os.getenv("C3RNT2_CORS_ORIGINS")
+    if raw is None:
+        raw = (settings.get("server", {}) or {}).get("cors_origins")
+    if raw is None:
+        return ["http://localhost:3000", "http://127.0.0.1:3000"]
+    if isinstance(raw, str):
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return []
+
+
+def _safe_str(value: object | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    return text or None
+
+
+def _resolve_quant_label(settings: dict, model_id: str) -> str | None:
+    core = settings.get("core", {}) or {}
+    mid = _normalize_backend_label(model_id)
+    if mid == "hf":
+        if bool(core.get("hf_load_in_4bit", False)):
+            return "4bit"
+        if bool(core.get("hf_load_in_8bit", False)):
+            return "8bit"
+        return _safe_str(core.get("hf_quant")) or None
+    if mid == "llama_cpp":
+        return _safe_str(core.get("llama_cpp_quant")) or _safe_str(core.get("llama_cpp_kv_type")) or None
+    return _safe_str(core.get("quant")) or None
+
+
+def _resolve_context_length(settings: dict, model: object | None) -> int | None:
+    ctx_max = _resolve_ctx_max_tokens(settings)
+    if ctx_max is not None:
+        return int(ctx_max)
+    cfg = getattr(getattr(model, "model", None), "config", None) or getattr(model, "config", None)
+    for attr in ("max_position_embeddings", "n_ctx", "context_length"):
+        val = getattr(cfg, attr, None)
+        try:
+            ival = int(val) if val is not None else None
+        except Exception:
+            ival = None
+        if isinstance(ival, int) and ival > 0:
+            return int(ival)
+    return None
+
+
+def _collect_model_ids(app_state, settings: dict, base_dir: Path) -> list[str]:
+    ids: set[str] = set((getattr(app_state, "models", {}) or {}).keys())
+    core = settings.get("core", {}) or {}
+
+    default = _normalize_backend_label(core.get("backend", "vortex"))
+    if default:
+        ids.add(default)
+
+    fallback = core.get("backend_fallback") or core.get("hf_fallback")
+    if fallback:
+        ids.add(_normalize_backend_label(fallback))
+
+    if core.get("hf_model") or core.get("hf_repo") or core.get("hf_path"):
+        ids.add("hf")
+
+    if core.get("external_base_url") or core.get("external_url"):
+        ids.add("external")
+
+    if _llama_cpp_ready(settings, base_dir):
+        ids.add("llama_cpp")
+
+    router_cfg = settings.get("core", {}).get("router", settings.get("router", {})) or {}
+    if bool(router_cfg.get("enabled", False)):
+        ids.add("auto")
+
+    ordered = [mid for mid in ("auto", "core", "hf", "llama_cpp", "external") if mid in ids]
+    ordered.extend(sorted([mid for mid in ids if mid not in set(ordered)]))
+    return ordered
+
+
+def _models_list_payload(app_state, settings: dict, base_dir: Path) -> dict[str, Any]:
+    models = getattr(app_state, "models", {}) or {}
+    data: list[dict[str, Any]] = []
+    for model_id in _collect_model_ids(app_state, settings, base_dir):
+        mdl = models.get(model_id)
+        loaded = mdl is not None
+        device = None
+        dtype = None
+        if loaded and mdl is not None:
+            device, dtype = _resolve_device_dtype(mdl, settings)
+        core = settings.get("core", {}) or {}
+        if device is None and model_id == "hf":
+            device = core.get("hf_device")
+        if dtype is None and model_id == "hf":
+            dtype = core.get("hf_dtype") or core.get("dtype")
+        context_len = _resolve_context_length(settings, mdl)
+        entry: dict[str, Any] = {
+            "id": str(model_id),
+            "object": "model",
+            "owned_by": "klimeai",
+            "loaded": bool(loaded),
+            "backend": str("router" if model_id == "auto" else model_id),
+            "device": _safe_str(device),
+            "dtype": _safe_str(dtype),
+            "context_length": int(context_len) if isinstance(context_len, int) else None,
+            "quant": _resolve_quant_label(settings, model_id),
+        }
+        data.append(entry)
+    return {"object": "list", "data": data}
+
+
+@dataclass
+class _MetricsState:
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    chat_requests_total: int = 0
+    chat_stream_requests_total: int = 0
+    chat_prompt_tokens_est_total: int = 0
+    chat_completion_tokens_est_total: int = 0
+    chat_latency_ms_sum: float = 0.0
+    chat_latency_ms_count: int = 0
+    chat_vram_peak_mb: float | None = None
+    last_request_ts: float | None = None
+
+    def observe_chat(
+        self,
+        *,
+        stream: bool,
+        prompt_tokens_est: int,
+        completion_tokens_est: int,
+        latency_ms: float,
+        vram_peak_mb: float | None,
+    ) -> None:
+        with self.lock:
+            self.chat_requests_total += 1
+            if stream:
+                self.chat_stream_requests_total += 1
+            self.chat_prompt_tokens_est_total += max(0, int(prompt_tokens_est))
+            self.chat_completion_tokens_est_total += max(0, int(completion_tokens_est))
+            self.chat_latency_ms_sum += max(0.0, float(latency_ms))
+            self.chat_latency_ms_count += 1
+            self.last_request_ts = time.time()
+            if vram_peak_mb is not None:
+                try:
+                    self.chat_vram_peak_mb = float(vram_peak_mb)
+                except Exception:
+                    pass
+
+    def render_prometheus(self) -> str:
+        with self.lock:
+            lines = [
+                "# HELP klimeai_up Server is up.",
+                "# TYPE klimeai_up gauge",
+                "klimeai_up 1",
+                "# HELP klimeai_chat_requests_total Total chat completion requests.",
+                "# TYPE klimeai_chat_requests_total counter",
+                f"klimeai_chat_requests_total {int(self.chat_requests_total)}",
+                "# HELP klimeai_chat_stream_requests_total Total streamed chat completion requests.",
+                "# TYPE klimeai_chat_stream_requests_total counter",
+                f"klimeai_chat_stream_requests_total {int(self.chat_stream_requests_total)}",
+                "# HELP klimeai_chat_prompt_tokens_est_total Estimated prompt tokens processed.",
+                "# TYPE klimeai_chat_prompt_tokens_est_total counter",
+                f"klimeai_chat_prompt_tokens_est_total {int(self.chat_prompt_tokens_est_total)}",
+                "# HELP klimeai_chat_completion_tokens_est_total Estimated completion tokens generated.",
+                "# TYPE klimeai_chat_completion_tokens_est_total counter",
+                f"klimeai_chat_completion_tokens_est_total {int(self.chat_completion_tokens_est_total)}",
+                "# HELP klimeai_chat_latency_ms_sum Sum of request latencies in milliseconds.",
+                "# TYPE klimeai_chat_latency_ms_sum counter",
+                f"klimeai_chat_latency_ms_sum {float(self.chat_latency_ms_sum):.3f}",
+                "# HELP klimeai_chat_latency_ms_count Count of latency observations.",
+                "# TYPE klimeai_chat_latency_ms_count counter",
+                f"klimeai_chat_latency_ms_count {int(self.chat_latency_ms_count)}",
+            ]
+            if self.chat_vram_peak_mb is not None:
+                lines.extend(
+                    [
+                        "# HELP klimeai_chat_vram_peak_mb Last observed VRAM peak (MB).",
+                        "# TYPE klimeai_chat_vram_peak_mb gauge",
+                        f"klimeai_chat_vram_peak_mb {float(self.chat_vram_peak_mb):.3f}",
+                    ]
+                )
+            return "\n".join(lines) + "\n"
 
 
 def _normalize_weights(raw: list[object], *, n: int) -> list[float] | None:
@@ -970,12 +1185,65 @@ def _inject_rag_context(
 
 def create_app(settings: dict, base_dir: Path) -> "FastAPI":
     try:
-        from fastapi import FastAPI, HTTPException
-        from fastapi.responses import JSONResponse, StreamingResponse
+        from fastapi import FastAPI, HTTPException, Request
+        from fastapi.middleware.cors import CORSMiddleware
+        from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(f"FastAPI not available: {exc}")
 
     app = FastAPI()
+    app.state.metrics = _MetricsState()
+    app.state.api_token = _resolve_api_token(settings)
+    app.state.cors_origins = _resolve_cors_origins(settings)
+
+    cors_origins = list(getattr(app.state, "cors_origins", []) or [])
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    @app.middleware("http")
+    async def _auth_middleware(req: Request, call_next):
+        token = getattr(app.state, "api_token", None)
+        path = req.url.path
+        if token and req.method != "OPTIONS":
+            if path.startswith("/v1/") and path not in {"/healthz"}:
+                auth = str(req.headers.get("authorization") or "").strip()
+                expected = f"Bearer {token}"
+                if auth != expected:
+                    return JSONResponse(
+                        status_code=401,
+                        content=_openai_error("Unauthorized", type="authentication_error", code="unauthorized"),
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+        return await call_next(req)
+
+    @app.exception_handler(HTTPException)
+    async def _http_exception_handler(req: Request, exc: HTTPException):  # type: ignore[override]
+        headers = getattr(exc, "headers", None)
+        detail = exc.detail
+        if isinstance(detail, dict) and "error" in detail:
+            payload = detail
+        else:
+            code = "invalid_request"
+            typ = "invalid_request_error"
+            if int(getattr(exc, "status_code", 500) or 500) == 401:
+                typ = "authentication_error"
+                code = "unauthorized"
+            payload = _openai_error(str(detail or "error"), type=typ, code=code)
+        return JSONResponse(status_code=int(exc.status_code), content=payload, headers=headers)
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(req: Request, exc: Exception):  # type: ignore[override]
+        try:
+            LOG.exception("unhandled_error path=%s", str(req.url.path))
+        except Exception:
+            pass
+        return JSONResponse(status_code=500, content=_openai_error("Internal server error", type="server_error", code="internal_error"))
     router_cfg = settings.get("core", {}).get("router", settings.get("router", {})) or {}
     router_enabled = bool(router_cfg.get("enabled", False))
     router = None
@@ -1017,6 +1285,80 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
     app.state.training_active = False
     app.state.maintenance_until = 0.0
 
+    @app.get("/healthz")
+    async def healthz():
+        return PlainTextResponse("ok")
+
+    @app.get("/readyz")
+    async def readyz():
+        if getattr(app.state, "model", None) is None:
+            return JSONResponse(status_code=503, content=_openai_error("model_not_loaded", type="server_error", code="not_ready"))
+        return JSONResponse(content={"ok": True, "backends": list((getattr(app.state, "models", {}) or {}).keys())})
+
+    @app.get("/v1/models")
+    async def list_models():
+        return JSONResponse(content=_models_list_payload(app.state, settings, base_dir))
+
+    @app.get("/metrics")
+    async def metrics():
+        text = getattr(app.state, "metrics", _MetricsState()).render_prometheus()
+        return PlainTextResponse(text, media_type="text/plain; version=0.0.4")
+
+    @app.get("/doctor")
+    @app.post("/doctor")
+    async def doctor():
+        payload = {
+            "ok": True,
+            "profile": str(settings.get("_profile") or ""),
+            "backends": list((getattr(app.state, "models", {}) or {}).keys()),
+            "training_active": bool(getattr(app.state, "training_active", False)),
+            "torch": bool(torch is not None),
+            "cuda": bool(torch is not None and torch.cuda.is_available()),
+        }
+        if torch is not None and torch.cuda.is_available():
+            try:
+                payload["cuda_device"] = torch.cuda.get_device_name(0)
+            except Exception:
+                pass
+        return JSONResponse(content=payload)
+
+    @app.get("/doctor/deep")
+    async def doctor_deep():
+        payload = {
+            "ok": True,
+            "profile": str(settings.get("_profile") or ""),
+            "backends": list((getattr(app.state, "models", {}) or {}).keys()),
+            "deep": True,
+            "deep_ok": False,
+            "error": None,
+        }
+        mdl = getattr(app.state, "model", None)
+        lock = getattr(app.state, "model_lock", None)
+        ctx = lock.read_lock() if lock else nullcontext()
+        try:
+            with ctx:
+                if mdl is None or not hasattr(mdl, "generate"):
+                    payload["error"] = "model_missing"
+                else:
+                    _ = mdl.generate("ping", max_new_tokens=1, temperature=0.0, top_p=1.0)
+                    payload["deep_ok"] = True
+        except Exception as exc:  # pragma: no cover
+            payload["ok"] = False
+            payload["error"] = str(exc)
+        return JSONResponse(content=payload, status_code=200 if payload.get("ok") else 500)
+
+    @app.post("/v1/embeddings")
+    async def embeddings():
+        raise HTTPException(status_code=501, detail=_openai_error("Embeddings not implemented", type="server_error", code="not_implemented"))
+
+    @app.get("/v1/files")
+    async def list_files():
+        return JSONResponse(content={"object": "list", "data": []})
+
+    @app.post("/v1/files")
+    async def create_file():
+        raise HTTPException(status_code=501, detail=_openai_error("Files not implemented", type="server_error", code="not_implemented"))
+
     @app.post("/v1/chat/completions")
     async def chat_completions(request: StarletteRequest):
         payload = await request.json()
@@ -1024,9 +1366,17 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         block_during_training = bool(server_cfg.get("block_during_training", False))
         training_active = bool(getattr(app.state, "training_active", False))
         if block_during_training and training_active:
+            try:
+                LOG.info("chat_rejected_training_active request_id=%s", str(payload.get("request_id") or ""))
+            except Exception:
+                pass
             return JSONResponse(
                 status_code=503,
-                content={"ok": False, "error": "training_active"},
+                content=_openai_error(
+                    "training_active",
+                    type="server_error",
+                    code="training_active",
+                ),
                 headers={"Retry-After": "30"},
             )
         messages = _resolve_messages(payload)
@@ -1035,24 +1385,38 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         messages, _prompt_override, rag_info = _inject_rag_context(base_dir, settings, messages, None)
         backend_cfg = settings.get("core", {}).get("backend", "vortex")
         default_system = settings.get("core", {}).get("hf_system_prompt", "You are Vortex, a helpful coding assistant.")
-        prompt = build_chat_prompt(messages, backend_cfg, tokenizer=getattr(model, "tokenizer", None), default_system=default_system)
+        routing_prompt = build_chat_prompt(messages, backend_cfg, tokenizer=None, default_system=default_system)
         stream = bool(payload.get("stream", False))
         decode_args = _resolve_decode_args(settings, payload)
         created = int(time.time())
         request_id = _new_request_id(payload.get("request_id"))
         resp_id = f"chatcmpl-{request_id}"
 
+        requested_model = str(payload.get("model") or "").strip()
         chosen_backend = default_backend_label
         decision = None
-        if router is not None:
-            feats = build_features(prompt, decode_args["max_new_tokens"], settings)
+        requested_backend = None
+        use_router = False
+        if requested_model:
+            if requested_model.lower() in {"auto", "router"}:
+                use_router = True
+            else:
+                requested_backend = _normalize_backend_label(requested_model)
+        if requested_backend:
+            chosen_backend = requested_backend
+        elif router is not None and (use_router or not requested_model):
+            feats = build_features(routing_prompt, decode_args["max_new_tokens"], settings)
             decision = router.decide(feats)
             chosen_backend = decision.backend
         if training_active and not block_during_training:
             fb = _resolve_fallback_backend(settings, chosen_backend, base_dir)
             if fb:
                 chosen_backend = fb
-        selected_model = models.get(chosen_backend, model)
+        selected_model = models.get(chosen_backend)
+        if selected_model is None:
+            selected_model = _get_or_load_backend(models, settings, base_dir, chosen_backend)
+        if selected_model is None:
+            raise HTTPException(status_code=400, detail=_openai_error("model_not_found", type="invalid_request_error", code="model_not_found", param="model"))
         stream_topk_override = None
         if decision is not None and hasattr(selected_model, "runtime_cfg"):
             stream_topk_override = _maybe_set_stream_topk(
@@ -1062,6 +1426,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             )
         device, dtype = _resolve_device_dtype(selected_model, settings)
         decode_args["max_new_tokens"] = decide_max_new_tokens(decode_args["max_new_tokens"], device, dtype, settings)
+        prompt = build_chat_prompt(messages, backend_cfg, tokenizer=getattr(selected_model, "tokenizer", None), default_system=default_system)
 
         ctx_max = _resolve_ctx_max_tokens(settings)
         if ctx_max is not None:
@@ -1291,6 +1656,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             if stream_topk_override is not None:
                 _maybe_set_stream_topk(selected_model, enabled=bool(stream_topk_override), top_k=int(stream_topk_override) if stream_topk_override else None)
             tokens_out = _estimate_tokens(text, selected_model)
+            prompt_tokens = _estimate_tokens(prompt, selected_model)
             perf = {
                 "latency_ms": float(elapsed * 1000.0),
                 "tokens_out_est": int(tokens_out),
@@ -1322,11 +1688,21 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             }
             with app.state.episode_lock:
                 _log_chat_episode(base_dir, app.state.episode_index, episode)
+            try:
+                app.state.metrics.observe_chat(
+                    stream=False,
+                    prompt_tokens_est=int(prompt_tokens),
+                    completion_tokens_est=int(tokens_out),
+                    latency_ms=float(elapsed * 1000.0),
+                    vram_peak_mb=vram_peak,
+                )
+            except Exception:
+                pass
             data = {
                 "id": resp_id,
                 "object": "chat.completion",
                 "created": created,
-                "model": "vortex-x",
+                "model": str(chosen_backend),
                 "request_id": request_id,
                 "choices": [
                     {
@@ -1335,10 +1711,28 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                         "finish_reason": "stop",
                     }
                 ],
+                "usage": {
+                    "prompt_tokens": int(prompt_tokens),
+                    "completion_tokens": int(tokens_out),
+                    "total_tokens": int(prompt_tokens) + int(tokens_out),
+                },
             }
             if payload.get("include_sources"):
                 data["sources"] = rag_info.get("refs", [])
-            return JSONResponse(content=data)
+            try:
+                LOG.info(
+                    "chat_done request_id=%s model=%s stream=false prompt_tokens=%s completion_tokens=%s latency_ms=%.1f tok_s=%.2f vram_peak_mb=%s",
+                    str(request_id),
+                    str(chosen_backend),
+                    str(prompt_tokens),
+                    str(tokens_out),
+                    float(elapsed * 1000.0),
+                    float(perf.get("tokens_per_sec") or 0.0),
+                    str(vram_peak),
+                )
+            except Exception:
+                pass
+            return JSONResponse(content=data, headers={"X-Request-Id": str(request_id)})
 
         def event_stream() -> Iterable[str]:
             current_model = selected_model
@@ -1350,7 +1744,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 "id": resp_id,
                 "object": "chat.completion.chunk",
                 "created": created,
-                "model": "vortex-x",
+                "model": str(current_backend),
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
                 "request_id": request_id,
             }
@@ -1406,7 +1800,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                             "id": resp_id,
                             "object": "chat.completion.chunk",
                             "created": created,
-                            "model": "vortex-x",
+                            "model": str(current_backend),
                             "choices": [{"index": 0, "delta": {"content": first}, "finish_reason": None}],
                             "request_id": request_id,
                         }
@@ -1419,7 +1813,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                             "id": resp_id,
                             "object": "chat.completion.chunk",
                             "created": created,
-                            "model": "vortex-x",
+                            "model": str(current_backend),
                             "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
                             "request_id": request_id,
                         }
@@ -1439,6 +1833,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                     mem_cost = 0.0
             full_text = "".join(chunks)
             tokens_out = _estimate_tokens(full_text, current_model)
+            prompt_tokens = _estimate_tokens(prompt, current_model)
             perf = {
                 "latency_ms": float(elapsed * 1000.0),
                 "tokens_out_est": int(tokens_out),
@@ -1489,20 +1884,43 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             }
             with app.state.episode_lock:
                 _log_chat_episode(base_dir, app.state.episode_index, episode)
+            try:
+                app.state.metrics.observe_chat(
+                    stream=True,
+                    prompt_tokens_est=int(prompt_tokens),
+                    completion_tokens_est=int(tokens_out),
+                    latency_ms=float(elapsed * 1000.0),
+                    vram_peak_mb=vram_peak,
+                )
+            except Exception:
+                pass
             done = {
                 "id": resp_id,
                 "object": "chat.completion.chunk",
                 "created": created,
-                "model": "vortex-x",
+                "model": str(current_backend),
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                 "request_id": request_id,
             }
             if payload.get("include_sources"):
                 done["sources"] = rag_info.get("refs", [])
+            try:
+                LOG.info(
+                    "chat_done request_id=%s model=%s stream=true prompt_tokens=%s completion_tokens=%s latency_ms=%.1f tok_s=%.2f vram_peak_mb=%s",
+                    str(request_id),
+                    str(current_backend),
+                    str(prompt_tokens),
+                    str(tokens_out),
+                    float(elapsed * 1000.0),
+                    float(perf.get("tokens_per_sec") or 0.0),
+                    str(vram_peak),
+                )
+            except Exception:
+                pass
             yield f"data: {json.dumps(done)}\n\n"
             yield "data: [DONE]\n\n"
 
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"X-Request-Id": str(request_id)})
 
     @app.post("/v1/feedback")
     async def chat_feedback(request: StarletteRequest):

@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, GripVertical, Monitor, Moon, Sun, Type, Globe } from 'lucide-react';
 import { Reorder, AnimatePresence, motion } from 'framer-motion';
 import { UserSettings, FontSize, Language } from '../types';
 import { translations } from '../translations';
+import { KlimeAiApiError, KlimeAiModelInfo, listModels } from '../services/klimeaiClient';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -13,6 +14,40 @@ interface SettingsModalProps {
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings, onUpdateSettings }) => {
   const t = translations[settings.language];
+  const [availableModels, setAvailableModels] = useState<KlimeAiModelInfo[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+
+  const refreshModels = useCallback(async () => {
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const models = await listModels({ baseUrl: settings.llm.baseUrl, token: settings.llm.token });
+      setAvailableModels(models);
+    } catch (err: any) {
+      const msg = err instanceof KlimeAiApiError ? err.message : 'Failed to load models';
+      setModelsError(msg);
+      setAvailableModels([]);
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [settings.llm.baseUrl, settings.llm.token]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    refreshModels();
+  }, [isOpen, refreshModels]);
+
+  const modelOptions = useMemo(() => {
+    const ids = new Set<string>();
+    const options = [];
+    for (const m of availableModels) {
+      if (!m?.id || ids.has(m.id)) continue;
+      ids.add(m.id);
+      options.push(m);
+    }
+    return options;
+  }, [availableModels]);
 
   const handleReorder = (newOrder: string[]) => {
     onUpdateSettings({ ...settings, categoryOrder: newOrder });
@@ -28,6 +63,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
 
   const handleLanguageChange = (lang: Language) => {
     onUpdateSettings({ ...settings, language: lang });
+  };
+
+  const updateLlm = (partial: Partial<UserSettings['llm']>) => {
+    onUpdateSettings({ ...settings, llm: { ...settings.llm, ...partial } });
   };
 
   return (
@@ -56,6 +95,102 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
             </div>
             
             <div className="p-6 space-y-8 max-h-[60vh] overflow-y-auto custom-scrollbar">
+              <section>
+                <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-4">{t.settings_llm_title}</h3>
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-[11px] font-bold text-muted-foreground">{t.settings_api_base_url}</label>
+                    <input
+                      value={settings.llm.baseUrl}
+                      onChange={(e) => updateLlm({ baseUrl: e.target.value })}
+                      placeholder="http://localhost:8000"
+                      className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border text-foreground text-sm font-medium outline-none focus:border-primary/60 focus:ring-[6px] focus:ring-primary/5 transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[11px] font-bold text-muted-foreground">{t.settings_api_token}</label>
+                    <input
+                      value={settings.llm.token || ''}
+                      onChange={(e) => updateLlm({ token: e.target.value })}
+                      placeholder={t.settings_api_token_placeholder}
+                      type="password"
+                      autoComplete="off"
+                      className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border text-foreground text-sm font-medium outline-none focus:border-primary/60 focus:ring-[6px] focus:ring-primary/5 transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <label className="text-[11px] font-bold text-muted-foreground">{t.settings_model}</label>
+                      <button
+                        type="button"
+                        onClick={refreshModels}
+                        disabled={modelsLoading}
+                        className="text-[10px] font-black uppercase tracking-widest text-primary disabled:opacity-40"
+                      >
+                        {modelsLoading ? t.settings_models_loading : t.settings_refresh_models}
+                      </button>
+                    </div>
+                    <select
+                      value={settings.llm.model}
+                      onChange={(e) => updateLlm({ model: e.target.value })}
+                      className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border text-foreground text-sm font-medium outline-none focus:border-primary/60 focus:ring-[6px] focus:ring-primary/5 transition-all"
+                    >
+                      {modelOptions.length === 0 ? (
+                        <option value={settings.llm.model}>{settings.llm.model || 'core'}</option>
+                      ) : (
+                        modelOptions.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.id}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    {modelsError && <p className="text-[11px] text-red-500 font-bold">{t.settings_models_error}: {modelsError}</p>}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-2">
+                      <label className="text-[11px] font-bold text-muted-foreground">{t.settings_temperature}</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="2"
+                        value={settings.llm.temperature}
+                        onChange={(e) => updateLlm({ temperature: Number(e.target.value) })}
+                        className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border text-foreground text-sm font-bold outline-none focus:border-primary/60"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[11px] font-bold text-muted-foreground">{t.settings_top_p}</label>
+                      <input
+                        type="number"
+                        step="0.05"
+                        min="0"
+                        max="1"
+                        value={settings.llm.topP}
+                        onChange={(e) => updateLlm({ topP: Number(e.target.value) })}
+                        className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border text-foreground text-sm font-bold outline-none focus:border-primary/60"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[11px] font-bold text-muted-foreground">{t.settings_max_tokens}</label>
+                      <input
+                        type="number"
+                        step="1"
+                        min="1"
+                        max="32768"
+                        value={settings.llm.maxTokens}
+                        onChange={(e) => updateLlm({ maxTokens: Math.max(1, Math.floor(Number(e.target.value))) })}
+                        className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border text-foreground text-sm font-bold outline-none focus:border-primary/60"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
               <section>
                 <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-4">{t.language}</h3>
                 <div className="grid grid-cols-2 gap-3">

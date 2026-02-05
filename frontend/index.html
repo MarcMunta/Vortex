@@ -4,7 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Vortex | Asistente de IA</title>
-    <script src="https://cdn.tailwindcss.com"></script>
     <script>
       (function() {
         const savedMode = localStorage.getItem('dark-mode');
@@ -15,168 +14,11 @@
           document.documentElement.classList.remove('dark');
         }
       })();
-
-      tailwind.config = {
-        darkMode: 'class',
-        theme: {
-          extend: {
-            colors: {
-              border: "hsl(var(--border) / <alpha-value>)",
-              input: "hsl(var(--input) / <alpha-value>)",
-              ring: "hsl(var(--ring) / <alpha-value>)",
-              background: "hsl(var(--background) / <alpha-value>)",
-              foreground: "hsl(var(--foreground) / <alpha-value>)",
-              primary: {
-                DEFAULT: "hsl(var(--primary) / <alpha-value>)",
-                foreground: "hsl(var(--primary-foreground) / <alpha-value>)",
-              },
-              muted: {
-                DEFAULT: "hsl(var(--muted) / <alpha-value>)",
-                foreground: "hsl(var(--muted-foreground) / <alpha-value>)",
-              },
-              accent: {
-                DEFAULT: "hsl(var(--accent) / <alpha-value>)",
-                foreground: "hsl(var(--accent-foreground) / <alpha-value>)",
-              },
-            },
-            borderRadius: {
-              'xl': '1rem',
-              '2xl': '1.5rem',
-              '3xl': '2rem',
-              '4xl': '2.5rem',
-              '5xl': '3rem',
-            },
-            animation: {
-              'pulse-glow': 'pulseGlow 4s ease-in-out infinite',
-              'spin-slow': 'spin 12s linear infinite',
-              'shimmer': 'shimmer 2s infinite linear',
-            },
-            keyframes: {
-              pulseGlow: {
-                '0%, 100%': { opacity: '0.4', filter: 'blur(40px)' },
-                '50%': { opacity: '0.7', filter: 'blur(65px)' },
-              },
-              shimmer: {
-                '0%': { transform: 'translateX(-100%)' },
-                '100%': { transform: 'translateX(100%)' }
-              }
-            },
-          },
-        },
-      };
     </script>
-    <style>
-      @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-      
-      :root {
-        --background: 210 20% 98%;
-        --foreground: 224 71.4% 4.1%;
-        --primary: 221.2 83.2% 53.3%;
-        --primary-foreground: 210 40% 98%;
-        --muted: 220 14% 94%;
-        --muted-foreground: 215.4 16.3% 40%;
-        --border: 220 13% 88%;
-        --ring: 221.2 83.2% 53.3%;
-      }
-
-      .dark {
-        --background: 240 10% 4%;
-        --foreground: 0 0% 98%;
-        --primary: 217.2 91.2% 59.8%;
-        --primary-foreground: 222.2 47.4% 11.2%;
-        --muted: 240 6% 12%;
-        --muted-foreground: 240 5% 75%;
-        --border: 240 5% 18%;
-        --ring: 217.2 91.2% 59.8%;
-      }
-
-      * {
-        scroll-behavior: smooth;
-        -webkit-font-smoothing: antialiased;
-        -moz-osx-font-smoothing: grayscale;
-        outline: none !important;
-      }
-
-      body {
-        font-family: 'Plus Jakarta Sans', sans-serif;
-        background-color: hsl(var(--background));
-        color: hsl(var(--foreground));
-        overflow: hidden;
-        margin: 0;
-        transition: background-color 0.8s cubic-bezier(0.4, 0, 0.2, 1);
-      }
-
-      .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-      .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-      .custom-scrollbar::-webkit-scrollbar-thumb {
-        background: hsla(var(--muted-foreground) / 0.2);
-        border-radius: 20px;
-      }
-      .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-        background: hsla(var(--primary) / 0.5);
-      }
-
-      .accelerated {
-        will-change: transform, opacity;
-        backface-visibility: hidden;
-        transform: translateZ(0);
-      }
-
-      .glass-card {
-        background: hsla(var(--background) / 0.65);
-        backdrop-filter: blur(32px) saturate(180%);
-        border: 1px solid hsla(var(--border) / 0.4);
-        transition: border-color 0.4s ease, background-color 0.4s ease;
-      }
-      
-      .dark .glass-card {
-        background: hsla(var(--background) / 0.55);
-        border: 1px solid hsla(var(--border) / 0.35);
-      }
-
-      .markdown-content p { margin-bottom: 1.25rem; line-height: 1.8; }
-      .markdown-content code { font-family: 'JetBrains Mono', monospace; }
-
-      .typing-cursor {
-        display: inline-block;
-        width: 3px;
-        height: 1.2em;
-        background-color: hsl(var(--primary));
-        margin-left: 4px;
-        vertical-align: middle;
-        border-radius: 4px;
-        box-shadow: 0 0 12px hsl(var(--primary) / 0.6);
-        animation: blink 0.8s step-end infinite;
-      }
-
-      @keyframes blink {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0; }
-      }
-    </style>
-    <script type="importmap">
-    {
-      "imports": {
-        "react": "https://esm.sh/react@^19.2.4",
-        "react-dom": "https://esm.sh/react-dom@^19.2.4",
-        "react-markdown": "https://esm.sh/react-markdown@^9.0.1",
-        "remark-gfm": "https://esm.sh/remark-gfm@^4.0.0",
-        "react-syntax-highlighter": "https://esm.sh/react-syntax-highlighter@^15.6.1",
-        "react-syntax-highlighter/dist/esm/styles/prism": "https://esm.sh/react-syntax-highlighter@^15.6.1/dist/esm/styles/prism",
-        "@google/genai": "https://esm.sh/@google/genai@^1.38.0",
-        "lucide-react": "https://esm.sh/lucide-react@^0.563.0",
-        "framer-motion": "https://esm.sh/framer-motion@^12.4.7",
-        "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
-        "react/": "https://esm.sh/react@^19.2.4/",
-        "react-syntax-highlighter/": "https://esm.sh/react-syntax-highlighter@^16.1.0/"
-      }
-    }
-    </script>
-  <link rel="stylesheet" href="/index.css">
+    <link rel="stylesheet" href="/index.css">
 </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="index.tsx"></script>
-  <script type="module" src="/index.tsx"></script>
+    <script type="module" src="/index.tsx"></script>
 </body>
 </html>

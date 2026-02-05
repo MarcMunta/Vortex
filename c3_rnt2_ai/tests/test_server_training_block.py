@@ -33,5 +33,5 @@ def test_training_active_blocks_requests(monkeypatch, tmp_path: Path) -> None:
     client = TestClient(app)
     resp = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
     assert resp.status_code == 503
-    assert resp.json().get("error") == "training_active"
+    assert resp.json().get("error", {}).get("code") == "training_active"
     assert "Retry-After" in resp.headers

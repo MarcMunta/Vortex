@@ -24,6 +24,7 @@ interface MessageBubbleProps {
 const GroundingPill: React.FC<{ source: Source; index: number }> = ({ source }) => {
   const [isHovered, setIsHovered] = useState(false);
   const timeoutRef = useRef<number | null>(null);
+  const safeTitle = source.title || source.domain || source.url;
 
   const handleMouseEnter = () => {
     if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
@@ -44,16 +45,11 @@ const GroundingPill: React.FC<{ source: Source; index: number }> = ({ source }) 
         animate={{ opacity: 1, scale: 1 }}
         className="flex items-center gap-2 px-3 py-1.5 bg-background border border-border/60 hover:border-primary/60 rounded-xl transition-all shadow-sm group glass-card relative z-10"
       >
-        <div className="w-4 h-4 rounded-md bg-muted/40 flex items-center justify-center overflow-hidden shrink-0">
-          <img 
-            src={`https://www.google.com/s2/favicons?domain=${source.domain}&sz=64`} 
-            alt="" 
-            className="w-full h-full object-contain opacity-80"
-            onError={(e) => { (e.target as any).src = 'https://www.google.com/s2/favicons?domain=google.com&sz=64' }}
-          />
+        <div className="w-4 h-4 rounded-md bg-muted/40 flex items-center justify-center overflow-hidden shrink-0 text-muted-foreground/70">
+          <ExternalLink size={12} />
         </div>
         <span className="text-[10px] font-bold text-foreground/70 group-hover:text-primary transition-colors truncate max-w-[120px]">
-          {source.title || source.domain}
+          {safeTitle}
         </span>
       </motion.a>
 
@@ -66,21 +62,20 @@ const GroundingPill: React.FC<{ source: Source; index: number }> = ({ source }) 
             className="absolute bottom-full left-0 mb-4 w-72 z-[2000] pointer-events-none"
           >
             <div className="bg-[#050505] border-[2px] border-black rounded-[2rem] shadow-[0_40px_80px_-15px_rgba(0,0,0,0.8)] overflow-hidden relative ring-1 ring-white/10">
-              <div className="aspect-video w-full bg-zinc-900 overflow-hidden relative">
-                <img 
-                  src={`https://s.wordpress.com/mshots/v1/${encodeURIComponent(source.url)}?w=400`} 
-                  alt="Preview" 
-                  className="w-full h-full object-cover opacity-90 transition-opacity"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
+              <div className="aspect-video w-full bg-zinc-950 overflow-hidden relative flex items-center justify-center">
+                <div className="absolute inset-0 bg-gradient-to-b from-primary/10 to-transparent" />
+                <div className="relative z-10 flex items-center gap-3 text-white/60">
+                  <ExternalLink size={18} />
+                  <span className="text-[10px] font-black uppercase tracking-[0.3em]">Source</span>
+                </div>
               </div>
               <div className="px-4 py-3.5 bg-zinc-950 flex items-center gap-3">
-                <div className="w-8 h-8 bg-white rounded-lg p-1.5 shrink-0 shadow-sm">
-                  <img src={`https://www.google.com/s2/favicons?domain=${source.domain}&sz=64`} alt="" className="w-full h-full object-contain" />
+                <div className="w-8 h-8 bg-white/5 border border-white/10 rounded-lg shrink-0 shadow-sm flex items-center justify-center text-white/70">
+                  <ExternalLink size={16} />
                 </div>
                 <div className="flex flex-col min-w-0">
-                  <div className="text-[11px] font-black text-white truncate leading-tight tracking-tight">{source.title}</div>
-                  <div className="text-[9px] font-mono text-zinc-500 truncate mt-0.5">{source.url.replace(/^https?:\/\/(www\.)?/, '')}</div>
+                  <div className="text-[11px] font-black text-white truncate leading-tight tracking-tight">{safeTitle}</div>
+                  <div className="text-[9px] font-mono text-zinc-500 truncate mt-0.5">{String(source.url || '').replace(/^https?:\/\/(www\.)?/, '')}</div>
                 </div>
               </div>
             </div>

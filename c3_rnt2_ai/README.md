@@ -45,6 +45,29 @@ Para API local (serve):
 pip install -e .[api]
 ```
 
+## HTTP API (OpenAI-compatible)
+
+El servidor expone un contrato estilo OpenAI:
+- `GET /healthz`, `GET /readyz`
+- `GET /v1/models`
+- `POST /v1/chat/completions` (no-stream + streaming SSE con `data: ...` y `data: [DONE]`)
+- `GET /metrics`
+- `GET|POST /doctor`, `GET /doctor/deep`
+
+Arranque (ejemplo):
+```bash
+# opcional: auth dev (si se define, exige Authorization: Bearer ...)
+export KLIMEAI_API_TOKEN=devtoken
+
+klimeai serve --host 0.0.0.0 --port 8000
+```
+
+Smoke test:
+```bash
+pytest -q tests/test_openai_api_smoke.py
+python scripts/smoke_api.py --base-url http://localhost:8000
+```
+
 Para HF + entrenamiento QLoRA:
 ```bash
 pip install -e .[hf,train]

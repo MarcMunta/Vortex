@@ -12,15 +12,29 @@ import TerminalView from './components/TerminalView';
 import VirtualizedMessageList from './components/VirtualizedMessageList';
 import ModificationExplorerModal from './components/ModificationExplorerModal';
 import { ChatSession, Message, Role, UserSettings, ViewType, LogEntry, AppMode, Source, Language } from './types';
-import { vortexService } from './services/vortexService';
+import { klimeaiService } from './services/klimeaiService';
 import { translations } from './translations';
 import { motion, AnimatePresence, useScroll, useMotionValueEvent } from 'framer-motion';
+
+const _readNumberEnv = (key: string, fallback: number) => {
+  const raw = (import.meta as any).env?.[key];
+  const val = typeof raw === 'string' ? Number(raw) : Number(raw);
+  return Number.isFinite(val) ? val : fallback;
+};
 
 const DEFAULT_SETTINGS: UserSettings = {
   categoryOrder: ['Acciones Rápidas', 'Preferencias', 'Interfaz', 'Datos', 'Chats Recientes', 'Sistema'],
   codeTheme: 'dark',
   fontSize: 'medium',
-  language: 'es'
+  language: 'es',
+  llm: {
+    baseUrl: ((import.meta as any).env?.VITE_API_BASE_URL as string | undefined) ?? '',
+    token: ((import.meta as any).env?.VITE_API_TOKEN as string | undefined) ?? '',
+    model: ((import.meta as any).env?.VITE_DEFAULT_MODEL as string | undefined) ?? 'core',
+    temperature: _readNumberEnv('VITE_DEFAULT_TEMPERATURE', 0.7),
+    topP: _readNumberEnv('VITE_DEFAULT_TOP_P', 1.0),
+    maxTokens: Math.floor(_readNumberEnv('VITE_DEFAULT_MAX_TOKENS', 2048)),
+  }
 };
 
 const VIEW_INDEX: Record<ViewType, number> = { 'chat': 0, 'analysis': 1, 'terminal': 2 };
@@ -58,7 +72,7 @@ const App: React.FC = () => {
   
   const [isReasoningOpen, setIsReasoningOpen] = useState(false);
   const [activeThoughtMessageId, setActiveThoughtMessageId] = useState<string | null>(null);
-  const abortControllerRef = useRef<boolean>(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const mainScrollRef = useRef<HTMLDivElement>(null);
   
   const { scrollY } = useScroll({ container: mainScrollRef });
@@ -136,7 +150,14 @@ const App: React.FC = () => {
       setSessions(parsedSessions);
       if (parsedSessions.length > 0) setCurrentSessionId(parsedSessions[0].id);
     } else handleNewChat();
-    if (savedSettings) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(savedSettings) });
+    if (savedSettings) {
+      const parsed = JSON.parse(savedSettings);
+      setSettings({
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        llm: { ...DEFAULT_SETTINGS.llm, ...(parsed?.llm || {}) },
+      });
+    }
   }, []);
 
   useEffect(() => { document.documentElement.classList.toggle('dark', isDarkMode); localStorage.setItem('dark-mode', String(isDarkMode)); }, [isDarkMode]);
@@ -299,16 +320,30 @@ const VORTEX_CONFIG = {
       return prev.map(s => s.id === targetSessionId ? { ...s, messages: [...s.messages, userMessage, initialAiMessage], updatedAt: Date.now() } : s);
     });
 
-    setIsLoading(true); setIsSearching(useInternet); abortControllerRef.current = false;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = new AbortController();
+    setIsLoading(true); setIsSearching(useInternet);
     try {
       const history = isNewSession ? [] : (sessions.find(s => s.id === targetSessionId)?.messages || []);
-      const stream = vortexService.generateResponseStream(history, content, useInternet, useThinking);
+      const stream = klimeaiService.generateResponseStream({
+        history,
+        prompt: content,
+        api: settings.llm,
+        mode: selectedMode,
+        useInternet,
+        useThinking,
+        signal: abortControllerRef.current!.signal,
+      });
       for await (const chunk of stream) {
-        if (abortControllerRef.current) break;
         setIsSearching(false);
         setSessions(prev => prev.map(s => s.id === targetSessionId ? { ...s, messages: s.messages.map(m => m.id === aiMessageId ? { ...m, content: chunk.text, thought: chunk.thought || m.thought, sources: chunk.sources.length > 0 ? chunk.sources : m.sources, fileChanges: chunk.fileChanges || m.fileChanges } : m) } : s));
       }
-    } catch (error) { addLog('SYSTEM', 'Interrupción de flujo.'); } finally { setIsLoading(false); setIsSearching(false); resetInactivityTimer(); }
+    } catch (error: any) {
+      if (error?.name !== 'AbortError') addLog('SYSTEM', 'Interrupción de flujo.');
+    } finally {
+      abortControllerRef.current = null;
+      setIsLoading(false); setIsSearching(false); resetInactivityTimer();
+    }
   };
 
   const handleOpenModificationExplorer = (files: { path: string, diff: string }[]) => {
@@ -379,7 +414,7 @@ const VORTEX_CONFIG = {
 
           {!activeModificationFiles && (
             <motion.div initial={false} animate={{ y: footerVisible ? 0 : 200, opacity: footerVisible ? 1 : 0 }} transition={{ type: 'spring', damping: 30, stiffness: 200 }} className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background via-background/95 to-transparent pt-12 pb-8 z-30 pointer-events-auto accelerated ${mode === 'agent' ? 'from-primary/5' : ''}`}>
-              <div className="pointer-events-auto"><ChatInput onSend={handleSendMessage} isLoading={isLoading} isDarkMode={isDarkMode} onStop={() => { abortControllerRef.current = true; }} language={settings.language} onInteraction={() => { resetInactivityTimer(); if (!footerVisible) setFooterVisible(true); }} /></div>
+              <div className="pointer-events-auto"><ChatInput onSend={handleSendMessage} isLoading={isLoading} isDarkMode={isDarkMode} onStop={() => { abortControllerRef.current?.abort(); }} language={settings.language} onInteraction={() => { resetInactivityTimer(); if (!footerVisible) setFooterVisible(true); }} /></div>
             </motion.div>
           )}
         </main>

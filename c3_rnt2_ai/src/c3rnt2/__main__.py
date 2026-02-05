@@ -1765,13 +1765,19 @@ def main() -> None:
     chat.add_argument("--top-p", type=float, default=None)
     chat.set_defaults(func=cmd_chat)
 
+    default_host = os.getenv("KLIMEAI_API_HOST") or os.getenv("C3RNT2_API_HOST") or "0.0.0.0"
+    try:
+        default_port = int(os.getenv("KLIMEAI_API_PORT") or os.getenv("C3RNT2_API_PORT") or 8000)
+    except Exception:
+        default_port = 8000
+
     serve = sub.add_parser("serve")
     serve.add_argument("--profile", default=None)
     serve.add_argument("--backend", default=None)
     serve.add_argument("--model", default=None)
     serve.add_argument("--device", default=None)
-    serve.add_argument("--host", default="0.0.0.0")
-    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--host", default=default_host)
+    serve.add_argument("--port", type=int, default=default_port)
     serve.set_defaults(func=cmd_serve)
 
     serve_self = sub.add_parser("serve-self-train")
@@ -1779,8 +1785,8 @@ def main() -> None:
     serve_self.add_argument("--backend", default=None)
     serve_self.add_argument("--model", default=None)
     serve_self.add_argument("--device", default=None)
-    serve_self.add_argument("--host", default="0.0.0.0")
-    serve_self.add_argument("--port", type=int, default=8000)
+    serve_self.add_argument("--host", default=default_host)
+    serve_self.add_argument("--port", type=int, default=default_port)
     serve_self.add_argument("--once", action="store_true")
     serve_self.add_argument("--interval-minutes", type=float, default=None)
     serve_self.add_argument("--reuse-dataset", action="store_true")
@@ -1793,8 +1799,8 @@ def main() -> None:
     serve_auto.add_argument("--backend", default=None)
     serve_auto.add_argument("--model", default=None)
     serve_auto.add_argument("--device", default=None)
-    serve_auto.add_argument("--host", default="0.0.0.0")
-    serve_auto.add_argument("--port", type=int, default=8000)
+    serve_auto.add_argument("--host", default=default_host)
+    serve_auto.add_argument("--port", type=int, default=default_port)
     serve_auto.add_argument("--once", action="store_true")
     serve_auto.add_argument("--interval-minutes", type=float, default=None)
     serve_auto.add_argument("--no-web", action="store_true")

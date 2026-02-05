@@ -42,6 +42,9 @@ rag = [
 ]
 llama_cpp = ["llama-cpp-python>=0.2.0"]
 
+[project.scripts]
+klimeai = "c3rnt2.__main__:main"
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-q"

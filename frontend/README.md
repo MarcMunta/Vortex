@@ -4,10 +4,12 @@ This is the interface for the Vortex AI System. It is built with **React**, **Ty
 
 ## Configuration
 
-The frontend is configured to communicate with the local Vortex Backend.
+The frontend talks to the local **KlimeAI** backend (OpenAI-compatible).
 
-- **API URL**: `http://localhost:8000/chat`
-- **Service file**: `services/vortexService.ts`
+- Copy `frontend/.env.example` to `frontend/.env` (optional in dev).
+- Default endpoints used:
+  - `GET /v1/models`
+  - `POST /v1/chat/completions` (SSE streaming)
 
 ## Commands
 
@@ -28,6 +30,7 @@ npm run build
 
 ## Structure
 
-- **`services/vortexService.ts`**: Handles the streaming connection to the Python backend.
+- **`services/klimeaiClient.ts`**: Typed HTTP client + SSE parser.
+- **`services/klimeaiService.ts`**: UI-friendly stream adapter (thinking tags, sources, file diffs).
 - **`components/`**: UI components for the chat interface.
 - **`types.ts`**: TypeScript definitions for messages and API responses.
