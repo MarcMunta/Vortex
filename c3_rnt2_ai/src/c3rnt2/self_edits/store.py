@@ -253,7 +253,7 @@ class SelfEditsStore:
             raise SelfEditsError("invalid_proposal_id")
         return self.proposals_dir / pid
 
-    def list(self, *, status: str | None = None) -> list[dict[str, Any]]:
+    def list_proposals(self, *, status: str | None = None) -> list[dict[str, Any]]:
         root = self.proposals_dir
         if not root.exists():
             return []

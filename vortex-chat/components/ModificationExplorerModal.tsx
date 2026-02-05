@@ -89,7 +89,7 @@ const ModificationExplorerModal: React.FC<ModificationExplorerModalProps> = ({ f
 
   return (
     <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-zinc-950 p-4 md:p-10 overflow-hidden selection:bg-primary/30">
-      <div className="absolute inset-0 opacity-5 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)', backgroundSize: '40px 40px' }} />
+      <div className="absolute inset-0 opacity-5 pointer-events-none vortex-grid-bg" />
       
       <motion.div 
         initial={{ opacity: 0, scale: 0.95, y: 40 }}
@@ -116,6 +116,8 @@ const ModificationExplorerModal: React.FC<ModificationExplorerModalProps> = ({ f
           </div>
           <button 
             onClick={onClose}
+            aria-label={language === 'es' ? 'Cerrar' : 'Close'}
+            title={language === 'es' ? 'Cerrar' : 'Close'}
             className="w-11 h-11 bg-white/5 hover:bg-red-500/10 text-white/20 hover:text-red-500 rounded-xl border border-white/5 hover:border-red-500/20 transition-all active:scale-90 flex items-center justify-center group"
           >
             <X size={20} className="group-hover:rotate-90 transition-transform" />

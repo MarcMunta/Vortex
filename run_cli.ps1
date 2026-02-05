@@ -14,11 +14,11 @@ function Fail([string]$Message, [int]$Code = 1) {
   exit $Code
 }
 
-function Has-Command([string]$Name) {
+function Test-CommandAvailable([string]$Name) {
   return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
-function Ensure-Dir([string]$Path) {
+function New-DirectoryIfMissing([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) {
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
   }
@@ -51,8 +51,8 @@ function Wait-Port(
 
 function Get-ListeningPid([int]$Port) {
   try {
-    $matches = netstat -ano | Select-String -Pattern (":$Port\s")
-    foreach ($m in $matches) {
+    $netstatMatches = netstat -ano | Select-String -Pattern (":$Port\s")
+    foreach ($m in $netstatMatches) {
       $line = $m.Line
       if (-not $line) { continue }
       if ($line -notmatch "\sLISTENING\s") { continue }
@@ -70,7 +70,7 @@ function Get-ListeningPid([int]$Port) {
   return $null
 }
 
-function Assert-Port-Free([string]$Name, [int]$Port) {
+function Test-PortFree([string]$Name, [int]$Port) {
   $existingPid = Get-ListeningPid -Port $Port
   if ($existingPid) {
     Fail "$Name port $Port is already in use (pid=$existingPid). Run .\\stop.bat or set VORTEX_*_PORT."
@@ -107,8 +107,8 @@ function Start-LoggedProcess(
   [string]$PidPath,
   [int]$Port = 0
 ) {
-  Ensure-Dir (Split-Path -Parent $LogPath)
-  Ensure-Dir (Split-Path -Parent $PidPath)
+  New-DirectoryIfMissing (Split-Path -Parent $LogPath)
+  New-DirectoryIfMissing (Split-Path -Parent $PidPath)
   if (Test-Path -LiteralPath $LogPath) { Remove-Item -Force -LiteralPath $LogPath -ErrorAction SilentlyContinue }
 
   $cmd = "cd /d `"$WorkingDir`" && $CommandLine > `"$LogPath`" 2>&1"
@@ -163,9 +163,9 @@ Env:
   }
 }
 
-$profile = ($env:C3RNT2_PROFILE -as [string])
-if ($profile) { $profile = $profile.Trim() }
-if (-not $profile) { $profile = "dev_small" }
+$modelProfile = ($env:C3RNT2_PROFILE -as [string])
+if ($modelProfile) { $modelProfile = $modelProfile.Trim() }
+if (-not $modelProfile) { $modelProfile = "dev_small" }
 
 $backendPort = $env:VORTEX_BACKEND_PORT
 if (-not $backendPort) { $backendPort = $env:BACKEND_PORT }
@@ -177,14 +177,14 @@ if (-not $frontendPort) { $frontendPort = "5173" }
 
 $logsDir = Join-Path $root "logs"
 $pidsDir = Join-Path $root ".pids"
-Ensure-Dir $logsDir
-Ensure-Dir $pidsDir
+New-DirectoryIfMissing $logsDir
+New-DirectoryIfMissing $pidsDir
 
 $needPython = $runBack -or $runSelfTrain -or $runAutoEdits
 $needNode = $runFront
 
-if ($needPython -and -not (Has-Command "python")) { Fail "Python not found in PATH." }
-if ($needNode -and (-not (Has-Command "node") -or -not (Has-Command "npm"))) { Fail "Node.js/npm not found in PATH." }
+if ($needPython -and -not (Test-CommandAvailable "python")) { Fail "Python not found in PATH." }
+if ($needNode -and (-not (Test-CommandAvailable "node") -or -not (Test-CommandAvailable "npm"))) { Fail "Node.js/npm not found in PATH." }
 
 # Python venv
 $py = Join-Path $root ".venv\\Scripts\\python.exe"
@@ -194,11 +194,11 @@ if ($needPython) {
     python -m venv .venv
   }
   Write-Step "Checking Python deps..."
-  & $py -c "import importlib.util as u; import sys; mods=['c3rnt2','fastapi','uvicorn']; miss=[m for m in mods if u.find_spec(m) is None]; sys.exit(0 if not miss else 1)" 2>$null | Out-Null
+  & $py -c "import importlib.util as u; import sys; mods=['c3rnt2','fastapi','uvicorn','pytest']; miss=[m for m in mods if u.find_spec(m) is None]; sys.exit(0 if not miss else 1)" 2>$null | Out-Null
   if ($LASTEXITCODE -ne 0) {
     Write-Step "Installing backend deps (editable + api extras)..."
     & $py -m pip install -U pip
-    & $py -m pip install -e "c3_rnt2_ai[api]"
+    & $py -m pip install -e "c3_rnt2_ai[api]" pytest
   }
 }
 
@@ -222,19 +222,19 @@ if ($runFront) {
 
 # Start services
 if ($runBack) {
-  Assert-Port-Free -Name "backend" -Port ([int]$backendPort)
+  Test-PortFree -Name "backend" -Port ([int]$backendPort)
   $backendDir = Join-Path $root "c3_rnt2_ai"
   Start-LoggedProcess `
     -Name "backend" `
     -WorkingDir $backendDir `
-    -CommandLine "`"$py`" -m vortex serve --profile $profile --host 0.0.0.0 --port $backendPort" `
+    -CommandLine "`"$py`" -m vortex serve --profile $modelProfile --host 0.0.0.0 --port $backendPort" `
     -LogPath (Join-Path $logsDir "backend.log") `
     -PidPath (Join-Path $pidsDir "backend.pid") `
     -Port ([int]$backendPort)
 }
 
 if ($runFront) {
-  Assert-Port-Free -Name "frontend" -Port ([int]$frontendPort)
+  Test-PortFree -Name "frontend" -Port ([int]$frontendPort)
   $frontendDir = Join-Path $root "vortex-chat"
   Start-LoggedProcess `
     -Name "frontend" `
@@ -252,7 +252,7 @@ if ($runSelfTrain) {
   Start-LoggedProcess `
     -Name "self-train" `
     -WorkingDir $backendDir `
-    -CommandLine "set C3RNT2_NO_NET=1 && `"$py`" -m vortex self-train --profile $profile --interval-minutes $intervalMin" `
+    -CommandLine "set C3RNT2_NO_NET=1 && `"$py`" -m vortex self-train --profile $modelProfile --interval-minutes $intervalMin" `
     -LogPath (Join-Path $logsDir "self-train.log") `
     -PidPath (Join-Path $pidsDir "self-train.pid")
 }
@@ -262,7 +262,7 @@ if ($runAutoEdits) {
   Start-LoggedProcess `
     -Name "auto-edits" `
     -WorkingDir $backendDir `
-    -CommandLine "set C3RNT2_NO_NET=1 && set AUTO_EDITS_CREATE_DEMO=1 && `"$py`" scripts\\auto_edits_watcher.py --profile $profile --create-demo-on-start" `
+    -CommandLine "set C3RNT2_NO_NET=1 && set AUTO_EDITS_CREATE_DEMO=1 && `"$py`" scripts\\auto_edits_watcher.py --profile $modelProfile --create-demo-on-start" `
     -LogPath (Join-Path $logsDir "auto-edits.log") `
     -PidPath (Join-Path $pidsDir "auto-edits.pid")
 }

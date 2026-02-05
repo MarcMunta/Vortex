@@ -293,6 +293,10 @@ const VORTEX_CONFIG = {
     setMode(selectedMode);
     if (activeView !== 'chat') handleSelectView('chat');
     setHeaderVisible(true); setFooterVisible(true); resetInactivityTimer();
+    addLog('INFO', settings.language === 'es' ? `Prompt enviado (${content.length} chars) · modo=${selectedMode}` : `Prompt sent (${content.length} chars) · mode=${selectedMode}`);
+    if (useInternet) {
+      addLog('SEARCH', settings.language === 'es' ? 'Grounding web activado (include_sources).' : 'Web grounding enabled (include_sources).');
+    }
     const userMessage: Message = { id: Date.now().toString(), role: Role.USER, content, timestamp: Date.now() };
     const aiMessageId = (Date.now() + 1).toString();
     const initialAiMessage: Message = { id: aiMessageId, role: Role.AI, content: "", thought: "", sources: [], groundingSupports: [], timestamp: Date.now() };
@@ -301,10 +305,21 @@ const VORTEX_CONFIG = {
     try {
       const history = sessions.find(s => s.id === currentSessionId)?.messages || [];
       const stream = vortexService.generateResponseStream(history, content, useInternet, useThinking, selectedMode);
+      let started = false;
+      let aborted = false;
       for await (const chunk of stream) {
-        if (abortControllerRef.current) break;
+        if (abortControllerRef.current) { aborted = true; break; }
+        if (!started) {
+          started = true;
+          addLog('INFO', settings.language === 'es' ? 'Stream SSE conectado.' : 'SSE stream connected.');
+        }
         setIsSearching(false);
         setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, messages: s.messages.map(m => m.id === aiMessageId ? { ...m, content: chunk.text, thought: chunk.thought || m.thought, sources: chunk.sources.length > 0 ? chunk.sources : m.sources, fileChanges: chunk.fileChanges || m.fileChanges } : m) } : s));
+      }
+      if (aborted) {
+        addLog('SYSTEM', settings.language === 'es' ? 'Ejecución abortada por el usuario.' : 'Run aborted by user.');
+      } else {
+        addLog('LEARN', settings.language === 'es' ? 'Episodio registrado para self-train (data/episodes/chat.jsonl).' : 'Episode recorded for self-train (data/episodes/chat.jsonl).');
       }
     } catch (error) { addLog('SYSTEM', 'Interrupción de flujo.'); } finally { setIsLoading(false); setIsSearching(false); resetInactivityTimer(); }
   };

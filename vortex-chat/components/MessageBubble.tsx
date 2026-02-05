@@ -132,7 +132,7 @@ const DiffLine = ({ line, isDarkMode }: { line: any, isDarkMode: boolean }) => (
   </div>
 );
 
-const CodeBlock = React.memo(({ children, className, isCollapsed, onToggle, codeTheme }: any) => {
+const CodeBlock = React.memo(({ children, className, isCollapsed, onToggle, codeTheme, language }: any) => {
   const isFilePath = !!className?.includes('file:');
   const path = isFilePath ? className.split('file:')[1] : null;
   const [filter, setFilter] = useState<'all' | 'added' | 'removed'>('all');
@@ -305,7 +305,13 @@ const CodeBlock = React.memo(({ children, className, isCollapsed, onToggle, code
                 </motion.div>
               )}
             </AnimatePresence>
-            <button onClick={(e) => { e.stopPropagation(); onToggle(path); }} className="absolute inset-0 z-[45]" />
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onToggle(path); }}
+              aria-label={language === 'es' ? `Expandir o colapsar ${path}` : `Expand or collapse ${path}`}
+              title={language === 'es' ? 'Expandir/colapsar' : 'Expand/collapse'}
+              className="absolute inset-0 z-[45]"
+            />
           </motion.div>
         ) : (
           <motion.div
@@ -328,7 +334,15 @@ const CodeBlock = React.memo(({ children, className, isCollapsed, onToggle, code
                 <button onClick={handleCopy} className={`flex items-center gap-2 px-5 py-2.5 rounded-xl transition-all text-[10px] font-black uppercase tracking-widest border active:scale-95 ${isCodeDark ? 'bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white border-white/5' : 'bg-white hover:bg-zinc-100 text-zinc-600 hover:text-zinc-900 border-zinc-200'}`}>
                   {copied ? <CheckCircle2 size={12} className="text-emerald-500" /> : <Copy size={12} />} {copied ? 'Copiado' : 'Copiar'}
                 </button>
-                <button onClick={() => onToggle(path)} className={`p-2.5 rounded-xl transition-all border active:scale-95 ${isCodeDark ? 'bg-white/5 hover:bg-white/10 text-zinc-500 hover:text-white border-white/5' : 'bg-white hover:bg-zinc-100 text-zinc-500 border-zinc-200'}`}><Minimize2 size={18} /></button>
+                <button
+                  type="button"
+                  onClick={() => onToggle(path)}
+                  aria-label={language === 'es' ? 'Minimizar' : 'Minimize'}
+                  title={language === 'es' ? 'Minimizar' : 'Minimize'}
+                  className={`p-2.5 rounded-xl transition-all border active:scale-95 ${isCodeDark ? 'bg-white/5 hover:bg-white/10 text-zinc-500 hover:text-white border-white/5' : 'bg-white hover:bg-zinc-100 text-zinc-500 border-zinc-200'}`}
+                >
+                  <Minimize2 size={18} />
+                </button>
               </div>
             </div>
             <div className={`overflow-x-auto text-[13px] font-mono custom-scrollbar py-8 ${isCodeDark ? 'bg-[#050505]' : 'bg-white'}`}>
@@ -475,9 +489,9 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, fontSize = 'medi
     code({ node, inline, className, children, ...props }: any) {
       if (inline) return <code className="px-2 py-0.5 bg-muted rounded text-primary font-bold" {...props}>{children}</code>;
       const path = className?.includes('file:') ? className.split('file:')[1] : null;
-      return <CodeBlock key={path || 'code'} className={className} isCollapsed={path ? (collapsedPaths[path] ?? true) : false} onToggle={togglePath} codeTheme={codeTheme}>{children}</CodeBlock>;
+      return <CodeBlock key={path || 'code'} className={className} isCollapsed={path ? (collapsedPaths[path] ?? true) : false} onToggle={togglePath} codeTheme={codeTheme} language={language}>{children}</CodeBlock>;
     }
-  }), [collapsedPaths, togglePath, codeTheme]);
+  }), [collapsedPaths, togglePath, codeTheme, language]);
 
   const isThinking = isStreaming && !message.content && !!message.thought;
 

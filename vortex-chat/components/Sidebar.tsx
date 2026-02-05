@@ -122,7 +122,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                     {item.icon}
                   </motion.div>
                   <span className="relative z-10 flex-1 text-left">{item.label}</span>
-                  {"badge" in item && item.badge > 0 && (
+                  {typeof item.badge === 'number' && item.badge > 0 && (
                     <span className="relative z-10 px-2 py-0.5 rounded-full bg-red-500 text-white text-[9px] font-black tabular-nums">
                       {item.badge > 99 ? "99+" : item.badge}
                     </span>

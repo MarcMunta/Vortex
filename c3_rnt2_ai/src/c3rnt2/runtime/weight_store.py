@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import numpy as np
 
 try:
-    import torch
+    import torch as _torch
 except Exception:  # pragma: no cover
-    torch = None
+    _torch = None
+
+torch: Any = _torch
 
 from ..compression.entropy_coder import compress
 

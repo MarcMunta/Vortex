@@ -10,15 +10,11 @@ function Stop-Tree([int]$ProcessId) {
   & cmd.exe /c "taskkill /PID $ProcessId /T /F >nul 2>nul"
 }
 
-function Is-Alive([int]$ProcId) {
-  try { return $null -ne (Get-Process -Id $ProcId -ErrorAction SilentlyContinue) } catch { return $false }
-}
-
 function Get-ListeningPids([int]$Port) {
   $pids = @()
   try {
-    $matches = netstat -ano | Select-String -Pattern (":$Port\s")
-    foreach ($m in $matches) {
+    $netstatMatches = netstat -ano | Select-String -Pattern (":$Port\s")
+    foreach ($m in $netstatMatches) {
       $line = $m.Line
       if (-not $line) { continue }
       if ($line -notmatch "\sLISTENING\s") { continue }

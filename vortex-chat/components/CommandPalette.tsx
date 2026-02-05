@@ -184,7 +184,12 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({
                   setSelectedIndex(0);
                 }}
               />
-              <button onClick={onClose} className="p-3 hover:bg-muted dark:hover:bg-zinc-800 rounded-full transition-all">
+              <button
+                onClick={onClose}
+                aria-label={language === 'es' ? 'Cerrar' : 'Close'}
+                title={language === 'es' ? 'Cerrar' : 'Close'}
+                className="p-3 hover:bg-muted dark:hover:bg-zinc-800 rounded-full transition-all"
+              >
                 <X size={20} className="text-muted-foreground" />
               </button>
             </div>

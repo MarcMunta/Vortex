@@ -1,6 +1,6 @@
 param(
   [Parameter(ValueFromRemainingArguments = $true)]
-  [string[]]$Args
+  [string[]]$CliArgs = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,7 +13,7 @@ if (-not (Test-Path -LiteralPath $logsDir)) {
   exit 1
 }
 
-$name = ($Args | Select-Object -First 1)
+$name = ($CliArgs | Select-Object -First 1)
 if (-not $name) {
   @"
 [logs] Usage:

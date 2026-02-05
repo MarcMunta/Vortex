@@ -16,11 +16,11 @@ function Read-Pid([string]$Path) {
   return $null
 }
 
-function Is-Alive([int]$ProcId) {
+function Test-ProcessAlive([int]$ProcId) {
   try { return $null -ne (Get-Process -Id $ProcId -ErrorAction SilentlyContinue) } catch { return $false }
 }
 
-function Port-Listening([int]$Port) {
+function Test-PortListening([int]$Port) {
   try {
     $out = & netstat -ano | Select-String -Pattern (":" + $Port + "\s.*\sLISTENING\s")
     return $null -ne $out
@@ -53,10 +53,10 @@ foreach ($svc in $services) {
   $procId = $svc.pid
   $pidDisplay = if ($procId) { $procId } else { "-" }
   $alive = $false
-  if ($procId) { $alive = Is-Alive -ProcId $procId }
+  if ($procId) { $alive = Test-ProcessAlive -ProcId $procId }
   $port = $svc.port
   $listen = $false
-  if ($port) { $listen = Port-Listening -Port $port }
+  if ($port) { $listen = Test-PortListening -Port $port }
   $status = if ($procId -and $alive) { "RUNNING" } elseif ($procId -and -not $alive) { "STALE_PID" } else { "STOPPED" }
   if ($port) {
     Write-Host ("  {0,-10} {1,-9} pid={2} port={3} listen={4}" -f $svc.name, $status, $pidDisplay, $port, $listen)

@@ -97,6 +97,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, isLoading, isDarkMode, la
         <div className="flex items-center mb-1 ml-1 relative z-10 shrink-0">
           <button
             onClick={() => { setUseThinking(!useThinking); onInteraction?.(); }}
+            aria-label={useThinking ? (language === 'es' ? 'Modo Thinking activo' : 'Thinking mode active') : (language === 'es' ? 'Modo Fast activo' : 'Fast mode active')}
             title={useThinking ? (language === 'es' ? 'Modo Thinking Activo' : 'Thinking Mode Active') : (language === 'es' ? 'Modo Fast Activo' : 'Fast Mode Active')}
             className={`w-11 h-11 rounded-full transition-all duration-300 flex items-center justify-center border border-transparent ${
               useThinking 
@@ -136,6 +137,8 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, isLoading, isDarkMode, la
 
           <button
             onClick={() => { setIsInternetEnabled(!isInternetEnabled); onInteraction?.(); }}
+            aria-label={isInternetEnabled ? (language === 'es' ? 'Desactivar Internet' : 'Disable internet') : (language === 'es' ? 'Activar Internet' : 'Enable internet')}
+            title={isInternetEnabled ? (language === 'es' ? 'Internet activado' : 'Internet enabled') : (language === 'es' ? 'Internet desactivado' : 'Internet disabled')}
             className={`p-2.5 rounded-full transition-all duration-300 flex items-center justify-center border border-transparent ${
               isInternetEnabled 
                 ? 'bg-primary/15 text-primary border-primary/20 shadow-inner' 
@@ -146,13 +149,20 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, isLoading, isDarkMode, la
           </button>
 
           {isLoading ? (
-            <button onClick={onStop} className="w-11 h-11 bg-red-500 text-white rounded-full transition-all hover:scale-110 active:scale-90 shadow-xl flex items-center justify-center">
+            <button
+              onClick={() => onStop?.()}
+              aria-label={language === 'es' ? 'Detener' : 'Stop'}
+              title={language === 'es' ? 'Detener' : 'Stop'}
+              className="w-11 h-11 bg-red-500 text-white rounded-full transition-all hover:scale-110 active:scale-90 shadow-xl flex items-center justify-center"
+            >
               <Square size={14} fill="currentColor" />
             </button>
           ) : (
             <button
               onClick={handleSend}
               disabled={!input.trim()}
+              aria-label={language === 'es' ? 'Enviar mensaje' : 'Send message'}
+              title={language === 'es' ? 'Enviar mensaje' : 'Send message'}
               className={`w-11 h-11 rounded-full transition-all duration-300 shadow-xl flex items-center justify-center group/send ${
                 input.trim()
                   ? mode === 'agent' 

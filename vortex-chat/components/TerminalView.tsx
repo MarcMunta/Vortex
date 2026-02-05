@@ -148,8 +148,8 @@ const TerminalView: React.FC<TerminalViewProps> = ({ logs, onClear, language }) 
              </div>
           </div>
           <div className="flex gap-1.5">
-             {[0, 1, 2].map(i => (
-               <div key={i} className="w-3 h-3 rounded-full border border-white/10" style={{ backgroundColor: ['#ef4444', '#f59e0b', '#10b981'][i] }} />
+             {['bg-red-500', 'bg-amber-500', 'bg-emerald-500'].map((bg, i) => (
+               <div key={i} className={`w-3 h-3 rounded-full border border-white/10 ${bg}`} />
              ))}
           </div>
         </header>

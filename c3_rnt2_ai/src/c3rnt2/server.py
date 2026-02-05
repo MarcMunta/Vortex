@@ -1445,11 +1445,11 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         raw = str(status or "pending").strip().lower()
         status_filter = None if raw in {"", "all", "*"} else raw
         try:
-            data = store.list(status=status_filter)
+            data = store.list_proposals(status=status_filter)
         except SelfEditsError as exc:
             raise HTTPException(status_code=400, detail=_openai_error(str(exc), type="invalid_request_error", code="invalid_request"))
         try:
-            pending_count = len(store.list(status="pending"))
+            pending_count = len(store.list_proposals(status="pending"))
             ms = getattr(app.state, "metrics", None)
             if ms is not None and hasattr(ms, "observe_self_edits_pending"):
                 ms.observe_self_edits_pending(pending_count)
@@ -1506,7 +1506,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
             if ms is not None and hasattr(ms, "observe_self_edits_apply"):
                 ms.observe_self_edits_apply(ok=ok)
             if ms is not None and hasattr(ms, "observe_self_edits_pending"):
-                ms.observe_self_edits_pending(len(store.list(status="pending")))
+                ms.observe_self_edits_pending(len(store.list_proposals(status="pending")))
         except Exception:
             pass
         return JSONResponse(content=result or {"ok": False, "error": "apply_failed"})
@@ -1523,7 +1523,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         try:
             ms = getattr(app.state, "metrics", None)
             if ms is not None and hasattr(ms, "observe_self_edits_pending"):
-                ms.observe_self_edits_pending(len(store.list(status="pending")))
+                ms.observe_self_edits_pending(len(store.list_proposals(status="pending")))
         except Exception:
             pass
         return JSONResponse(content=created)

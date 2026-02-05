@@ -97,6 +97,8 @@ const ReasoningDrawer: React.FC<ReasoningDrawerProps> = ({ isOpen, onClose, thou
           </div>
           <button 
             onClick={onClose}
+            aria-label={language === 'es' ? 'Cerrar panel de razonamiento' : 'Close reasoning panel'}
+            title={language === 'es' ? 'Cerrar' : 'Close'}
             className="p-2.5 bg-white/5 hover:bg-white/10 rounded-xl text-zinc-400 transition-all border border-white/5"
           >
             <X size={18} />

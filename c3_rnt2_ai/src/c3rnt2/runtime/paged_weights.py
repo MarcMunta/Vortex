@@ -5,9 +5,11 @@ import time
 from typing import Any, Dict, Iterable, List
 
 try:
-    import torch
+    import torch as _torch
 except Exception:  # pragma: no cover
-    torch = None
+    _torch = None
+
+torch: Any = _torch
 
 from .cache_manager import CacheManager
 from .gpu_decompress import DecompressStats, decompress_to_tensor
@@ -52,7 +54,7 @@ class PagedWeights:
         self.gpu_decompress = gpu_decompress
         self.stats = PagedWeightsStats()
         self._prefetched: set[int] = set()
-        self._prefetch_events: Dict[int, object] = {}
+        self._prefetch_events: Dict[int, Any] = {}
         self.prefetcher = Prefetcher(
             self._load_tile_payload,
             depth=prefetch_depth,
@@ -69,7 +71,14 @@ class PagedWeights:
         if isinstance(tile, dict):
             payload = tile.get("payload")
             codec = tile.get("codec")
-            shape = tuple(tile.get("shape")) if tile.get("shape") else None
+            raw_shape = tile.get("shape")
+            if isinstance(raw_shape, (list, tuple)) and len(raw_shape) == 2:
+                try:
+                    shape = (int(raw_shape[0]), int(raw_shape[1]))
+                except Exception:
+                    shape = None
+            else:
+                shape = None
             if codec and payload is not None:
                 compressed_bytes = int(len(payload)) if isinstance(payload, (bytes, bytearray)) else int(tile.get("nbytes") or 0)
             else:
@@ -107,10 +116,11 @@ class PagedWeights:
         size_bytes = int(payload["size_bytes"])
         compressed_bytes = int(payload["compressed_bytes"])
         stats = payload.get("stats")
-        if isinstance(payload.get("ms_h2d"), (int, float)):
+        ms_h2d = payload.get("ms_h2d")
+        if isinstance(ms_h2d, (int, float)):
             if stats is None:
                 stats = DecompressStats()
-            stats.ms_h2d += float(payload.get("ms_h2d"))
+            stats.ms_h2d += float(ms_h2d)
         if stats is not None:
             self.stats.bytes_decompressed += int(getattr(stats, "bytes_decompressed", 0))
             self.stats.ms_cpu_decompress += float(getattr(stats, "ms_cpu_decompress", 0.0))

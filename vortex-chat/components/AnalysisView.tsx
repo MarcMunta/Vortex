@@ -320,14 +320,14 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ sessions, onNavigateToChat,
           <motion.div key="overview" custom={tabDirection} variants={slideVariants} initial="enter" animate="center" exit="exit" className="space-y-16">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
               {[
-                { label: 'Densidad Neural', value: metrics.nodes, sub: 'Nodos mapeados', color: 'hsl(var(--primary))', icon: <Layers size={22} /> },
-                { label: 'Fuentes de Verdad', value: metrics.learnedDomains.length, sub: 'Dominios contrastados', color: '#c084fc', icon: <BookOpen size={22} /> },
-                { label: 'Kernel Stability', value: `${learningRate.toFixed(1)}%`, sub: 'Tasa operativa', color: '#fbbf24', icon: <Zap size={22} /> },
-                { label: 'Índice de Confianza', value: `${metrics.totalTrust.toFixed(0)}%`, sub: 'Integridad Global', color: '#10b981', icon: <ShieldCheck size={22} /> }
+                { label: 'Densidad Neural', value: metrics.nodes, sub: 'Nodos mapeados', color: 'hsl(var(--primary))', textClass: 'text-primary', icon: <Layers size={22} /> },
+                { label: 'Fuentes de Verdad', value: metrics.learnedDomains.length, sub: 'Dominios contrastados', color: '#c084fc', textClass: 'text-purple-400', icon: <BookOpen size={22} /> },
+                { label: 'Kernel Stability', value: `${learningRate.toFixed(1)}%`, sub: 'Tasa operativa', color: '#fbbf24', textClass: 'text-amber-400', icon: <Zap size={22} /> },
+                { label: 'Índice de Confianza', value: `${metrics.totalTrust.toFixed(0)}%`, sub: 'Integridad Global', color: '#10b981', textClass: 'text-emerald-500', icon: <ShieldCheck size={22} /> }
               ].map((m, i) => (
                 <div key={i} className="p-10 bg-muted/5 border border-border/30 rounded-[3rem] relative overflow-hidden group hover:border-primary/40 transition-all glass-card hover:-translate-y-2 shadow-sm">
                   <div className="flex justify-between items-start mb-8">
-                    <div className="w-14 h-14 bg-background border border-border/50 rounded-2xl flex items-center justify-center shadow-inner group-hover:scale-110 transition-transform duration-500" style={{ color: m.color }}>{m.icon}</div>
+                    <div className={`w-14 h-14 bg-background border border-border/50 rounded-2xl flex items-center justify-center shadow-inner group-hover:scale-110 transition-transform duration-500 ${m.textClass}`}>{m.icon}</div>
                     <Sparkline color={m.color} />
                   </div>
                   <div className="space-y-2">
@@ -422,7 +422,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ sessions, onNavigateToChat,
                         </div>
                         <div className="space-y-4 relative z-10"><h5 className="text-2xl font-black tracking-tight text-foreground line-clamp-2 leading-tight group-hover:text-primary transition-colors">{item.source.title}</h5><p className="text-[10px] font-mono font-black text-muted-foreground uppercase tracking-widest flex items-center gap-3"><Globe size={14} className="opacity-40" /> {item.source.domain}</p></div>
                         <div className="flex flex-wrap gap-2 pt-2">{item.tags.map((t, idx) => (<span key={idx} className="px-3 py-1 bg-primary/5 border border-primary/10 rounded-lg text-[9px] font-black text-primary/60 uppercase tracking-widest">#{t}</span>))}</div>
-                        <div className="mt-auto pt-8 border-t border-border/40 flex items-center justify-between"><div className="flex items-center gap-3 text-muted-foreground/40"><Clock size={14} /><span className="text-[9px] font-black uppercase tracking-widest">Visto {new Date(item.lastSeen).toLocaleDateString()}</span></div><a href={item.source.url} target="_blank" rel="noopener noreferrer" className="w-12 h-12 bg-muted/50 hover:bg-primary hover:text-white rounded-2xl flex items-center justify-center transition-all border border-border/40 shadow-sm"><ExternalLink size={18} /></a></div>
+                        <div className="mt-auto pt-8 border-t border-border/40 flex items-center justify-between"><div className="flex items-center gap-3 text-muted-foreground/40"><Clock size={14} /><span className="text-[9px] font-black uppercase tracking-widest">Visto {new Date(item.lastSeen).toLocaleDateString()}</span></div><a href={item.source.url} target="_blank" rel="noopener noreferrer" aria-label={language === 'es' ? `Abrir ${item.source.domain}` : `Open ${item.source.domain}`} title={language === 'es' ? 'Abrir en nueva pestaña' : 'Open in new tab'} className="w-12 h-12 bg-muted/50 hover:bg-primary hover:text-white rounded-2xl flex items-center justify-center transition-all border border-border/40 shadow-sm"><ExternalLink size={18} /></a></div>
                       </div>
                     </motion.div>
                   ))

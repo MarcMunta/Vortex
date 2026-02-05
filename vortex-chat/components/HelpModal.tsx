@@ -52,7 +52,12 @@ const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose, isDarkMode, lang
                 </div>
                 <h2 className="text-lg font-bold">Ayuda y Atajos</h2>
               </div>
-              <button onClick={onClose} className="p-2 hover:bg-muted rounded-full text-muted-foreground transition-colors">
+              <button
+                onClick={onClose}
+                aria-label={language === 'es' ? 'Cerrar' : 'Close'}
+                title={language === 'es' ? 'Cerrar' : 'Close'}
+                className="p-2 hover:bg-muted rounded-full text-muted-foreground transition-colors"
+              >
                 <X size={20} />
               </button>
             </div>
