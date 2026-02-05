@@ -2,25 +2,32 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
-from typing import Any, Tuple
+from types import ModuleType
+from typing import Any, Tuple, TYPE_CHECKING, cast
 
 import numpy as np
 
 from ..compression.entropy_coder import decompress
 
+_torch: ModuleType | None
 try:
     import torch as _torch
 except Exception:  # pragma: no cover
     _torch = None
 
 try:
-    import triton
-    import triton.language as tl
+    import triton  # type: ignore[import-not-found]
+    import triton.language as tl  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover
     triton = None
     tl = None
 
-torch: Any = _torch
+torch: ModuleType | None = _torch
+
+if TYPE_CHECKING:  # pragma: no cover
+    from torch import Tensor as TorchTensor
+else:
+    TorchTensor = Any
 
 
 @dataclass
@@ -37,17 +44,20 @@ def _to_tensor(
     pin_memory: bool = False,
     non_blocking: bool = False,
     stream: object | None = None,
-) -> "torch.Tensor":
+) -> Any:
     if torch is None:
         raise RuntimeError("PyTorch not available")
+    torch_mod = cast(ModuleType, torch)
     if not tile.flags["C_CONTIGUOUS"]:
         tile = np.ascontiguousarray(tile)
-    tensor = torch.from_numpy(tile)
+    if not bool(tile.flags["WRITEABLE"]):
+        tile = np.array(tile, copy=True)
+    tensor = torch_mod.from_numpy(tile)
     if pin_memory:
         tensor = tensor.pin_memory()
     if device.startswith("cuda"):
-        if stream is not None and hasattr(torch.cuda, "stream"):
-            with torch.cuda.stream(stream):
+        if stream is not None and hasattr(torch_mod.cuda, "stream"):
+            with torch_mod.cuda.stream(stream):
                 tensor = tensor.to(device, non_blocking=non_blocking)
         else:
             tensor = tensor.to(device, non_blocking=non_blocking)
@@ -66,8 +76,9 @@ if triton is not None:  # pragma: no cover
         x = tl.load(in_ptr + offs, mask=mask)
         tl.store(out_ptr + offs, x, mask=mask)
 
-    def _triton_copy(inp: "torch.Tensor") -> "torch.Tensor":
-        out = torch.empty_like(inp)
+    def _triton_copy(inp: TorchTensor) -> TorchTensor:
+        torch_mod = cast(ModuleType, torch)
+        out = torch_mod.empty_like(inp)
         n = inp.numel()
         grid = (triton.cdiv(n, 1024),)
         _copy_kernel[grid](inp, out, n, BLOCK=1024)
@@ -75,7 +86,7 @@ if triton is not None:  # pragma: no cover
 
 else:
 
-    def _triton_copy(inp: "torch.Tensor") -> "torch.Tensor":
+    def _triton_copy(inp: TorchTensor) -> TorchTensor:
         return inp
 
 
@@ -89,7 +100,7 @@ def decompress_to_tensor(
     backend: str = "none",
     pinned: bool | None = None,
     stream: object | None = None,
-) -> tuple["torch.Tensor", DecompressStats]:
+) -> tuple[TorchTensor, DecompressStats]:
     """Decompress tile payload if needed and move to device."""
     if torch is None:
         raise RuntimeError("PyTorch not available")
@@ -116,8 +127,9 @@ def decompress_to_tensor(
 
     if device != "cpu":
         start = time.perf_counter()
-        if stream is not None and hasattr(torch.cuda, "stream"):
-            with torch.cuda.stream(stream):
+        torch_mod = cast(ModuleType, torch)
+        if stream is not None and hasattr(torch_mod.cuda, "stream"):
+            with torch_mod.cuda.stream(stream):
                 tensor = tensor.to(device, non_blocking=bool(use_non_blocking))
         else:
             tensor = tensor.to(device, non_blocking=bool(use_non_blocking))
