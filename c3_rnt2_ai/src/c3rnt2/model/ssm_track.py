@@ -21,12 +21,22 @@ class SSMTrack(nn.Module):
         self.gru = nn.GRU(hidden_size, state_size, batch_first=True)
         self.out_proj = nn.Linear(state_size, hidden_size)
 
+    def _ensure_non_inference(self, tensor: torch.Tensor) -> torch.Tensor:
+        # Guard against inference-mode tensors crossing into autograd-enabled ops.
+        try:
+            if tensor.is_inference():
+                return tensor.clone()
+        except Exception:
+            return tensor
+        return tensor
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_dtype = x.dtype
         x_in = x.contiguous()
         if orig_dtype == torch.bfloat16:
             x_in = x_in.float()
         try:
+            x_in = self._ensure_non_inference(x_in)
             out, _ = self.gru(x_in)
         except RuntimeError as exc:
             if "CUDNN_STATUS_NOT_SUPPORTED" in str(exc):
@@ -53,6 +63,8 @@ class SSMTrack(nn.Module):
             x_in = x_in.float()
             h_in = h_in.float()
         try:
+            x_in = self._ensure_non_inference(x_in)
+            h_in = self._ensure_non_inference(h_in)
             out, hidden = self.gru(x_in, h_in)
         except RuntimeError as exc:
             if "CUDNN_STATUS_NOT_SUPPORTED" in str(exc):
@@ -80,6 +92,8 @@ class SSMTrack(nn.Module):
             x_in = x_in.float()
             h_in = h_in.float()
         try:
+            x_in = self._ensure_non_inference(x_in)
+            h_in = self._ensure_non_inference(h_in)
             out, hidden = self.gru(x_in, h_in)
         except RuntimeError as exc:
             if "CUDNN_STATUS_NOT_SUPPORTED" in str(exc):

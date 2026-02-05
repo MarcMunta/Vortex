@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Any, Iterable, List, Tuple, overload, Literal
+from typing import Any, Iterable, List, Tuple, overload, Literal, cast
 
 import torch
 from torch import nn
@@ -38,7 +38,7 @@ def _maybe_enable_paged_lm_head(model: "CoreTransformer", settings: dict) -> Non
     compression = runtime_cfg.get("compression", c3_cfg.get("compression"))
     pin_memory = bool(runtime_cfg.get("pinned_memory", c3_cfg.get("pinned_memory", True)))
     gpu_decompress = runtime_cfg.get("gpu_decompress", "none")
-    model.lm_head = PagedLinear.from_linear(
+    model.lm_head = PagedLinear.from_linear(  # type: ignore[assignment]
         model.lm_head,
         tile_out=tile_out,
         tile_in=tile_in,
@@ -216,7 +216,7 @@ class CoreTransformer(nn.Module):
                     shared_lavas.append(block.lava)
             self.blocks.append(block)
         self.norm = nn.LayerNorm(config.hidden_size)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size)
+        self.lm_head: nn.Module = nn.Linear(config.hidden_size, config.vocab_size)
         self.mtp_k = int(getattr(config, "mtp_k", 0))
         self.mtp_head: nn.Linear | None = nn.Linear(config.hidden_size, config.vocab_size * self.mtp_k) if self.mtp_k > 0 else None
         self.kv_cache = KVHybridCache(window_size=config.window_size, kv_quant_bits=8, latent_slots=32)
@@ -227,6 +227,7 @@ class CoreTransformer(nn.Module):
         self.draft_model: DraftModel | None = None
         self.runtime_cfg: dict[str, Any] = {}
         self.checkpoint_meta: dict[str, Any] = {}
+        self.adapter_path: str | None = None
 
     @staticmethod
     def from_settings(settings: dict) -> "CoreTransformer":
@@ -340,6 +341,7 @@ class CoreTransformer(nn.Module):
         if kv_mode in {"low_rank", "low-rank", "mla"}:
             kv_mode = "lowrank"
         for block in model.blocks:
+            block = cast(VBlock, block)
             if hasattr(block, "lava") and hasattr(block.lava, "set_kv_quant"):
                 if kv_mode == "lowrank" and int(kv_lowrank_rank_i) > 0:
                     try:
@@ -399,6 +401,7 @@ class CoreTransformer(nn.Module):
             model.draft_model = draft_model
             if kv_mode:
                 for block in draft_model.blocks:
+                    block = cast(VBlock, block)
                     if hasattr(block, "lava") and hasattr(block.lava, "set_kv_quant"):
                         block.lava.set_kv_quant(kv_mode)
         # Sync device/dtype with actual parameters for downstream helpers
@@ -414,7 +417,9 @@ class CoreTransformer(nn.Module):
             model.step = torch.compile(model.step)  # type: ignore[method-assign,assignment]
         if core.get("compile_local_mixer_step") and hasattr(torch, "compile"):
             for block in model.blocks:
-                block.local.step = torch.compile(block.local.step)  # type: ignore[method-assign,assignment]
+                block = cast(VBlock, block)
+                local = cast(Any, block.local)
+                local.step = torch.compile(local.step)  # type: ignore[method-assign,assignment]
         return model
 
     def forward(self, input_ids: torch.Tensor, num_layers: int | None = None) -> torch.Tensor:
@@ -506,7 +511,7 @@ class CoreTransformer(nn.Module):
         return_logits: bool = False,
     ) -> List[VBlockState] | tuple[torch.Tensor | None, List[VBlockState]]:
         dtype = self.embed.weight.dtype
-        state = [block.init_state(batch, self.device, dtype) for block in self.blocks]
+        state = [cast(VBlock, block).init_state(batch, self.device, dtype) for block in self.blocks]
         if prompt_ids is None:
             return (None, state) if return_logits else state
         if isinstance(prompt_ids, torch.Tensor):
@@ -514,7 +519,7 @@ class CoreTransformer(nn.Module):
         else:
             prompt_list = list(prompt_ids)
         last_logits: torch.Tensor | None = None
-        with torch.inference_mode():
+        with torch.no_grad():
             for tok in prompt_list:
                 last_logits, state = self.step(int(tok), state, num_layers=num_layers, write_memory=write_memory)
         if return_logits:
@@ -523,7 +528,7 @@ class CoreTransformer(nn.Module):
 
     def reset_state(self) -> None:
         for block in self.blocks:
-            block.lava.reset_state()
+            cast(VBlock, block).lava.reset_state()
         if self.draft_model is not None:
             self.draft_model.reset_state()
 
@@ -531,12 +536,12 @@ class CoreTransformer(nn.Module):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         for idx, block in enumerate(self.blocks):
-            block.lava.save_state(path.with_suffix(f".layer{idx}.pt"))
+            cast(VBlock, block).lava.save_state(path.with_suffix(f".layer{idx}.pt"))
 
     def load_memory_state(self, path: str | Path) -> None:
         path = Path(path)
         for idx, block in enumerate(self.blocks):
-            block.lava.load_state(path.with_suffix(f".layer{idx}.pt"))
+            cast(VBlock, block).lava.load_state(path.with_suffix(f".layer{idx}.pt"))
 
     @overload
     def step(
@@ -603,6 +608,7 @@ class CoreTransformer(nn.Module):
                 max_depth = min(max_depth, self.config.layers)
                 min_depth = max(1, min(min_depth, max_depth))
                 for idx, block in enumerate(self.blocks[:min_depth]):
+                    block = cast(VBlock, block)
                     x, layer_state = block.step(x, state[idx], write_memory=write_memory)
                     new_state.append(layer_state)
                 logits_temp = self.lm_head(self.norm(x))
@@ -620,12 +626,14 @@ class CoreTransformer(nn.Module):
                 self._depth_last = depth_used
                 if depth_used > min_depth:
                     for idx, block in enumerate(self.blocks[min_depth:depth_used], start=min_depth):
+                        block = cast(VBlock, block)
                         x, layer_state = block.step(x, state[idx], write_memory=write_memory)
                         new_state.append(layer_state)
                 logits = self.lm_head(self.norm(x))
             else:
                 depth_used = num_layers or self.config.layers
                 for idx, block in enumerate(self.blocks[:depth_used]):
+                    block = cast(VBlock, block)
                     x, layer_state = block.step(x, state[idx], write_memory=write_memory)
                     new_state.append(layer_state)
                 x = self.norm(x)
@@ -658,7 +666,8 @@ class CoreTransformer(nn.Module):
             x = self.embed(input_ids).squeeze(1)
             new_state: List[VBlockState] = []
             depth_used = num_layers or self.config.layers
-            for idx, block in enumerate(self.blocks[:depth_used]):
+            blocks = cast(list[VBlock], list(self.blocks[:depth_used]))
+            for idx, block in enumerate(blocks):
                 x, layer_state = block.step(x, state[idx], write_memory=write_memory)
                 new_state.append(layer_state)
             x = self.norm(x)
@@ -681,7 +690,8 @@ class CoreTransformer(nn.Module):
             x = self.embed(token_ids)
             new_state: List[VBlockState] = []
             depth_used = num_layers or self.config.layers
-            for idx, block in enumerate(self.blocks[:depth_used]):
+            blocks = cast(list[VBlock], list(self.blocks[:depth_used]))
+            for idx, block in enumerate(blocks):
                 x, layer_state = block.step_block(x, state[idx], write_memory=write_memory)
                 new_state.append(layer_state)
             x = self.norm(x)
@@ -718,22 +728,20 @@ class CoreTransformer(nn.Module):
             return logits_seq, new_state
         with autocast_context(enabled=self.device.type == "cuda", dtype=self.config.dtype):
             x = self.embed(token_ids)
-            new_state: List[VBlockState] = []
+            new_state_list: List[VBlockState] = []
             depth_used = num_layers or self.config.layers
             for idx, block in enumerate(self.blocks[:depth_used]):
+                block = cast(VBlock, block)
                 x, layer_state = block.step_block(x, state[idx], write_memory=write_memory)
-                new_state.append(layer_state)
+                new_state_list.append(layer_state)
             x = self.norm(x)
             logits = self.lm_head(x)
             mtp_logits = None
             if return_mtp and self.mtp_k > 0 and self.mtp_head is not None:
                 mtp_logits = self.mtp_head(x).view(x.shape[0], x.shape[1], self.mtp_k, -1)
-        outputs: list[object] = [logits, new_state + state[depth_used:]]
         if return_mtp:
-            outputs.append(mtp_logits)
-        if len(outputs) == 2:
-            return outputs[0], outputs[1]  # type: ignore[return-value]
-        return tuple(outputs)
+            return logits, new_state_list + state[depth_used:], mtp_logits
+        return logits, new_state_list + state[depth_used:]
 
     def reset_depth_stats(self) -> None:
         self._depth_tokens = 0
@@ -746,7 +754,8 @@ class CoreTransformer(nn.Module):
 
     def lm_head_topk(self, x: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
         if hasattr(self.lm_head, "forward_topk"):
-            return self.lm_head.forward_topk(x, k)
+            lm_head = cast(Any, self.lm_head)
+            return lm_head.forward_topk(x, k)
         logits = self.lm_head(x)
         values, indices = torch.topk(logits, k=min(k, logits.size(-1)), dim=-1)
         return values, indices

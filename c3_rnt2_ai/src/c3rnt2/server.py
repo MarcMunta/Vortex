@@ -9,13 +9,18 @@ from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass, field
 
+from pathlib import Path
+from types import ModuleType
+from typing import Any, Dict, Iterable, TYPE_CHECKING, cast
+
+torch: ModuleType | None
 try:
     import torch
 except Exception:  # pragma: no cover
     torch = None
 
-from pathlib import Path
-from typing import Any, Dict, Iterable
+if TYPE_CHECKING:  # pragma: no cover
+    from fastapi import FastAPI
 
 try:
     from starlette.requests import Request as StarletteRequest  # type: ignore
@@ -23,6 +28,7 @@ except Exception:  # pragma: no cover
     StarletteRequest = Any  # type: ignore[misc,assignment]
 
 from .model.core_transformer import CoreTransformer
+from .model.vblock import VBlockState
 from .model_loader import load_inference_model
 from .prompting.chat_format import build_chat_prompt
 from .model.bad_decode import _sample_logits, _sample_logits_topk, _RepetitionTracker, _NgramTracker
@@ -286,7 +292,7 @@ def _normalize_weights(raw: list[object], *, n: int) -> list[float] | None:
     weights: list[float] = []
     for item in raw:
         try:
-            val = float(item)
+            val = float(cast(Any, item))
         except Exception:
             return None
         if val <= 0:
@@ -380,13 +386,14 @@ def _select_hf_adapter_for_request(payload: dict, prompt: str, registry: Adapter
                 return {"ok": False, "error": "adapter_not_found", "adapter": name}
         weights_raw = payload.get("expert_weights")
         if weights_raw is None:
-            weights = [1.0 / float(len(adapters)) for _ in adapters]
+            weights: list[float] = [1.0 / float(len(adapters)) for _ in adapters]
         else:
             if not isinstance(weights_raw, list):
                 return {"ok": False, "error": "expert_weights_invalid"}
-            weights = _normalize_weights(weights_raw, n=len(adapters))
-            if weights is None:
+            weights_opt = _normalize_weights(weights_raw, n=len(adapters))
+            if weights_opt is None:
                 return {"ok": False, "error": "expert_weights_invalid"}
+            weights = weights_opt
         return {"ok": True, "explicit": True, "adapters": adapters, "weights": weights, "reason": "request_weighted"}
 
     requested = payload.get("expert") if payload.get("expert") is not None else payload.get("adapter")
@@ -495,7 +502,8 @@ def _apply_hf_adapter_selection(model: object, settings: dict, registry: Adapter
     shared_name = str(shared_cfg.get("name")) if shared_cfg else None
     shared_path = str(shared_cfg.get("path")) if shared_cfg else None
     try:
-        shared_weight = float(shared_cfg.get("weight")) if shared_cfg is not None else 0.0
+        raw_weight = shared_cfg.get("weight") if shared_cfg is not None else None
+        shared_weight = float(raw_weight) if raw_weight is not None else 0.0
     except Exception:
         shared_weight = 0.2
     if shared_weight < 0:
@@ -618,7 +626,7 @@ def _maybe_load_adapter(model: CoreTransformer, settings: dict, base_dir: Path) 
             inject_lora(model, lora_cfg, target_modules=target_modules)
             load_lora_state(model, adapter_path)
             try:
-                model.adapter_path = str(adapter_path)
+                setattr(model, "adapter_path", str(adapter_path))
             except Exception:
                 pass
 
@@ -776,60 +784,63 @@ def _stream_generate(
     top_p_min_k: int,
     top_p_max_k: int,
 ) -> Iterable[str]:
-    ids, _total = model.encode_prompt(prompt)
-    if not ids:
-        ids = [0]
-    rep_tracker = _RepetitionTracker(penalty_window)
-    ngram_tracker = _NgramTracker(no_repeat_ngram)
-    for tok in ids:
-        rep_tracker.add(tok)
-        ngram_tracker.add(tok)
-    prev_text = model.decode_ids(ids, total_len=None)
+    torch_mod = cast(ModuleType, torch)
+    with torch_mod.no_grad():
+        ids, _total = model.encode_prompt(prompt)
+        if not ids:
+            ids = [0]
+        rep_tracker = _RepetitionTracker(penalty_window)
+        ngram_tracker = _NgramTracker(no_repeat_ngram)
+        for tok in ids:
+            rep_tracker.add(tok)
+            ngram_tracker.add(tok)
+        prev_text = model.decode_ids(ids, total_len=None)
 
-    stream_topk_cfg = getattr(model, "runtime_cfg", {}).get("paged_lm_head_stream_topk", False)
-    stream_topk = bool(stream_topk_cfg)
-    top_k = int(stream_topk_cfg) if isinstance(stream_topk_cfg, int) else 64
+        stream_topk_cfg = getattr(model, "runtime_cfg", {}).get("paged_lm_head_stream_topk", False)
+        stream_topk = bool(stream_topk_cfg)
+        top_k = int(stream_topk_cfg) if isinstance(stream_topk_cfg, int) else 64
 
-    model.reset_state()
-    _last_logits, state = model.init_state(prompt_ids=ids, return_logits=True, write_memory=True)
-    last_token = ids[-1]
+        model.reset_state()
+        _last_logits, state = model.init_state(prompt_ids=ids, return_logits=True, write_memory=True)
+        state = cast(list[VBlockState], state)
+        last_token = ids[-1]
 
-    for _ in range(max_new_tokens):
-        if stream_topk and hasattr(model, "step_topk"):
-            values, indices, state = model.step_topk(last_token, state, top_k=top_k, write_memory=True)
-            next_tok_t = _sample_logits_topk(
-                values,
-                indices,
-                temperature,
-                top_p,
-                repetition_penalty,
-                rep_tracker,
-                ngram_tracker,
-                top_p_min_k=top_p_min_k,
-                top_p_max_k=top_p_max_k,
-            )
-        else:
-            logits, state = model.step(last_token, state, write_memory=True)
-            next_tok_t = _sample_logits(
-                logits,
-                temperature,
-                top_p,
-                repetition_penalty,
-                rep_tracker,
-                ngram_tracker,
-                top_p_min_k=top_p_min_k,
-                top_p_max_k=top_p_max_k,
-            )
-        token_id = int(next_tok_t.item())
-        ids.append(token_id)
-        rep_tracker.add(token_id)
-        ngram_tracker.add(token_id)
-        last_token = token_id
-        text = model.decode_ids(ids, total_len=None)
-        delta = text[len(prev_text):]
-        prev_text = text
-        if delta:
-            yield delta
+        for _ in range(max_new_tokens):
+            if stream_topk and hasattr(model, "step_topk"):
+                values, indices, state = model.step_topk(last_token, state, top_k=top_k, write_memory=True)
+                next_tok_t = _sample_logits_topk(
+                    values,
+                    indices,
+                    temperature,
+                    top_p,
+                    repetition_penalty,
+                    rep_tracker,
+                    ngram_tracker,
+                    top_p_min_k=top_p_min_k,
+                    top_p_max_k=top_p_max_k,
+                )
+            else:
+                logits, state = model.step(last_token, state, write_memory=True)
+                next_tok_t = _sample_logits(
+                    logits,
+                    temperature,
+                    top_p,
+                    repetition_penalty,
+                    rep_tracker,
+                    ngram_tracker,
+                    top_p_min_k=top_p_min_k,
+                    top_p_max_k=top_p_max_k,
+                )
+            token_id = int(next_tok_t.item())
+            ids.append(token_id)
+            rep_tracker.add(token_id)
+            ngram_tracker.add(token_id)
+            last_token = token_id
+            text = model.decode_ids(ids, total_len=None)
+            delta = text[len(prev_text):]
+            prev_text = text
+            if delta:
+                yield delta
 
 
 def _resolve_decode_args(settings: dict, payload: dict) -> dict[str, Any]:
@@ -898,7 +909,7 @@ def _resolve_ctx_overflow_policy(settings: dict) -> str:
     return str(raw or "reject").strip().lower()
 
 
-def _trim_text_tokens(text: str, keep_tokens: int, tokenizer: object | None, *, tail: bool) -> str:
+def _trim_text_tokens(text: str, keep_tokens: int, tokenizer: Any | None, *, tail: bool) -> str:
     keep = int(keep_tokens)
     if keep <= 0:
         return ""
@@ -1062,7 +1073,7 @@ def reload_latest_adapter_for_app(app, base_dir: Path, settings: dict, *, force:
                 app.state.model = new_model
             model = new_model
         try:
-            model.adapter_path = str(adapter_path)
+            setattr(model, "adapter_path", str(adapter_path))
         except Exception:
             pass
         app.state.last_adapter_path = str(adapter_path)
@@ -1187,7 +1198,8 @@ def _inject_rag_context(
     query = _extract_query(messages, prompt)
     if not query:
         return messages, None, rag_info
-    top_k = rag_info["top_k"]
+    top_k_raw = rag_info.get("top_k", 0)
+    top_k = int(cast(Any, top_k_raw)) if top_k_raw is not None else 0
     start = time.time()
     context, refs = retrieve_context_details(base_dir, query, settings, top_k=top_k)
     if context and max_chars and len(context) > max_chars:
@@ -1211,7 +1223,7 @@ def _inject_rag_context(
     return new_messages, None, rag_info
 
 
-def create_app(settings: dict, base_dir: Path) -> "FastAPI":
+def create_app(settings: dict, base_dir: Path) -> FastAPI:
     try:
         from fastapi import FastAPI, HTTPException, Request
         from fastapi.middleware.cors import CORSMiddleware
@@ -1240,7 +1252,7 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         SkillStore = None  # type: ignore[misc,assignment]
         SkillsConfig = None  # type: ignore[misc,assignment]
         SelfEditsStore = None  # type: ignore[misc,assignment]
-        SelfEditsError = RuntimeError  # type: ignore[assignment]
+        SelfEditsError = RuntimeError  # type: ignore[misc,assignment]
 
     skills_store = None
     skills_router = None
@@ -1340,11 +1352,11 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
     model_lock = RWLock()
     episode_lock = threading.Lock()
     episode_index = EpisodeIndex(base_dir / "data" / "episodes" / "index.sqlite")
-    adapters_registry = ExpertRegistry.from_settings(settings, base_dir=base_dir)
-    adapters_router = ExpertRouter.from_settings(settings)
+    adapters_registry: AdapterRegistry | ExpertRegistry = ExpertRegistry.from_settings(settings, base_dir=base_dir)
+    adapters_router: AdapterRouter | ExpertRouter = ExpertRouter.from_settings(settings)
     if not bool(getattr(adapters_registry, "enabled", False)):
-        adapters_registry = AdapterRegistry.from_settings(settings, base_dir=base_dir)
-        adapters_router = AdapterRouter.from_settings(settings)
+        adapters_registry = cast(AdapterRegistry | ExpertRegistry, AdapterRegistry.from_settings(settings, base_dir=base_dir))
+        adapters_router = cast(AdapterRouter | ExpertRouter, AdapterRouter.from_settings(settings))
     app.state.model = model
     app.state.models = models
     app.state.settings = settings
@@ -1826,7 +1838,9 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
         ) and not bool(getattr(selected_model, "is_hf", False)):
             raise HTTPException(status_code=400, detail="adapter_only_supported_for_hf")
         if bool(getattr(selected_model, "is_hf", False)) and bool(adapters_registry.enabled):
-            adapter_sel = _select_hf_adapter_for_request(payload, prompt, adapters_registry, adapters_router)
+            adapter_registry = cast(AdapterRegistry, adapters_registry)
+            adapter_router = cast(AdapterRouter, adapters_router)
+            adapter_sel = _select_hf_adapter_for_request(payload, prompt, adapter_registry, adapter_router)
             if not adapter_sel.get("ok", False):
                 raise HTTPException(status_code=400, detail=adapter_sel.get("error", "adapter_error"))
             adapter_reason = adapter_sel.get("reason")
@@ -1838,7 +1852,8 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 adapter_ctx = getattr(selected_model, "adapter_lock", None) or nullcontext()
                 with adapter_ctx:
                     if adapter_sel is not None:
-                        applied = _apply_hf_adapter_selection(selected_model, settings, adapters_registry, adapter_sel)
+                        adapter_registry = cast(AdapterRegistry, adapters_registry)
+                        applied = _apply_hf_adapter_selection(selected_model, settings, adapter_registry, adapter_sel)
                         if not applied.get("ok", False):
                             raise HTTPException(status_code=400, detail=applied.get("error", "adapter_load_failed"))
                         adapter_active = applied.get("adapter")
@@ -2044,7 +2059,8 @@ def create_app(settings: dict, base_dir: Path) -> "FastAPI":
                 adapter_ctx = getattr(current_model, "adapter_lock", None) or nullcontext()
                 with adapter_ctx:
                     if adapter_sel is not None:
-                        applied = _apply_hf_adapter_selection(current_model, settings, adapters_registry, adapter_sel)
+                        adapter_registry = cast(AdapterRegistry, adapters_registry)
+                        applied = _apply_hf_adapter_selection(current_model, settings, adapter_registry, adapter_sel)
                         if not applied.get("ok", False):
                             raise RuntimeError(str(applied.get("error", "adapter_load_failed")))
                         current_adapter = applied.get("adapter")
@@ -2311,8 +2327,8 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
         base_dir,
     )
     fallback_model = None
-    adapters_registry = ExpertRegistry.from_settings(settings, base_dir=base_dir)
-    adapters_router = ExpertRouter.from_settings(settings)
+    adapters_registry: AdapterRegistry | ExpertRegistry = ExpertRegistry.from_settings(settings, base_dir=base_dir)
+    adapters_router: AdapterRouter | ExpertRouter = ExpertRouter.from_settings(settings)
     if not bool(getattr(adapters_registry, "enabled", False)):
         adapters_registry = AdapterRegistry.from_settings(settings, base_dir=base_dir)
         adapters_router = AdapterRouter.from_settings(settings)
