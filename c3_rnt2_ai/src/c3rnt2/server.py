@@ -40,7 +40,7 @@ from .runtime.vram_governor import decide_max_new_tokens
 from .utils.oom import is_oom_error, clear_cuda_cache
 
 
-LOG = get_logger("klimeai.api")
+LOG = get_logger("vortex.api")
 
 
 def _openai_error(
@@ -59,7 +59,7 @@ def _openai_error(
 
 
 def _resolve_api_token(settings: dict) -> str | None:
-    raw = os.getenv("KLIMEAI_API_TOKEN") or os.getenv("C3RNT2_API_TOKEN")
+    raw = os.getenv("VORTEX_API_TOKEN") or os.getenv("C3RNT2_API_TOKEN")
     if raw is None:
         raw = (settings.get("server", {}) or {}).get("api_token")
     token = str(raw or "").strip()
@@ -67,7 +67,7 @@ def _resolve_api_token(settings: dict) -> str | None:
 
 
 def _resolve_cors_origins(settings: dict) -> list[str]:
-    raw = os.getenv("KLIMEAI_CORS_ORIGINS") or os.getenv("C3RNT2_CORS_ORIGINS")
+    raw = os.getenv("VORTEX_CORS_ORIGINS") or os.getenv("C3RNT2_CORS_ORIGINS")
     if raw is None:
         raw = (settings.get("server", {}) or {}).get("cors_origins")
     if raw is None:
@@ -168,7 +168,7 @@ def _models_list_payload(app_state, settings: dict, base_dir: Path) -> dict[str,
         entry: dict[str, Any] = {
             "id": str(model_id),
             "object": "model",
-            "owned_by": "klimeai",
+            "owned_by": "vortex",
             "loaded": bool(loaded),
             "backend": str("router" if model_id == "auto" else model_id),
             "device": _safe_str(device),
@@ -219,34 +219,34 @@ class _MetricsState:
     def render_prometheus(self) -> str:
         with self.lock:
             lines = [
-                "# HELP klimeai_up Server is up.",
-                "# TYPE klimeai_up gauge",
-                "klimeai_up 1",
-                "# HELP klimeai_chat_requests_total Total chat completion requests.",
-                "# TYPE klimeai_chat_requests_total counter",
-                f"klimeai_chat_requests_total {int(self.chat_requests_total)}",
-                "# HELP klimeai_chat_stream_requests_total Total streamed chat completion requests.",
-                "# TYPE klimeai_chat_stream_requests_total counter",
-                f"klimeai_chat_stream_requests_total {int(self.chat_stream_requests_total)}",
-                "# HELP klimeai_chat_prompt_tokens_est_total Estimated prompt tokens processed.",
-                "# TYPE klimeai_chat_prompt_tokens_est_total counter",
-                f"klimeai_chat_prompt_tokens_est_total {int(self.chat_prompt_tokens_est_total)}",
-                "# HELP klimeai_chat_completion_tokens_est_total Estimated completion tokens generated.",
-                "# TYPE klimeai_chat_completion_tokens_est_total counter",
-                f"klimeai_chat_completion_tokens_est_total {int(self.chat_completion_tokens_est_total)}",
-                "# HELP klimeai_chat_latency_ms_sum Sum of request latencies in milliseconds.",
-                "# TYPE klimeai_chat_latency_ms_sum counter",
-                f"klimeai_chat_latency_ms_sum {float(self.chat_latency_ms_sum):.3f}",
-                "# HELP klimeai_chat_latency_ms_count Count of latency observations.",
-                "# TYPE klimeai_chat_latency_ms_count counter",
-                f"klimeai_chat_latency_ms_count {int(self.chat_latency_ms_count)}",
+                "# HELP vortex_up Server is up.",
+                "# TYPE vortex_up gauge",
+                "vortex_up 1",
+                "# HELP vortex_chat_requests_total Total chat completion requests.",
+                "# TYPE vortex_chat_requests_total counter",
+                f"vortex_chat_requests_total {int(self.chat_requests_total)}",
+                "# HELP vortex_chat_stream_requests_total Total streamed chat completion requests.",
+                "# TYPE vortex_chat_stream_requests_total counter",
+                f"vortex_chat_stream_requests_total {int(self.chat_stream_requests_total)}",
+                "# HELP vortex_chat_prompt_tokens_est_total Estimated prompt tokens processed.",
+                "# TYPE vortex_chat_prompt_tokens_est_total counter",
+                f"vortex_chat_prompt_tokens_est_total {int(self.chat_prompt_tokens_est_total)}",
+                "# HELP vortex_chat_completion_tokens_est_total Estimated completion tokens generated.",
+                "# TYPE vortex_chat_completion_tokens_est_total counter",
+                f"vortex_chat_completion_tokens_est_total {int(self.chat_completion_tokens_est_total)}",
+                "# HELP vortex_chat_latency_ms_sum Sum of request latencies in milliseconds.",
+                "# TYPE vortex_chat_latency_ms_sum counter",
+                f"vortex_chat_latency_ms_sum {float(self.chat_latency_ms_sum):.3f}",
+                "# HELP vortex_chat_latency_ms_count Count of latency observations.",
+                "# TYPE vortex_chat_latency_ms_count counter",
+                f"vortex_chat_latency_ms_count {int(self.chat_latency_ms_count)}",
             ]
             if self.chat_vram_peak_mb is not None:
                 lines.extend(
                     [
-                        "# HELP klimeai_chat_vram_peak_mb Last observed VRAM peak (MB).",
-                        "# TYPE klimeai_chat_vram_peak_mb gauge",
-                        f"klimeai_chat_vram_peak_mb {float(self.chat_vram_peak_mb):.3f}",
+                        "# HELP vortex_chat_vram_peak_mb Last observed VRAM peak (MB).",
+                        "# TYPE vortex_chat_vram_peak_mb gauge",
+                        f"vortex_chat_vram_peak_mb {float(self.chat_vram_peak_mb):.3f}",
                     ]
                 )
             return "\n".join(lines) + "\n"

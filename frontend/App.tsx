@@ -12,7 +12,7 @@ import TerminalView from './components/TerminalView';
 import VirtualizedMessageList from './components/VirtualizedMessageList';
 import ModificationExplorerModal from './components/ModificationExplorerModal';
 import { ChatSession, Message, Role, UserSettings, ViewType, LogEntry, AppMode, Source, Language } from './types';
-import { klimeaiService } from './services/klimeaiService';
+import { vortexService } from './services/vortexService';
 import { translations } from './translations';
 import { motion, AnimatePresence, useScroll, useMotionValueEvent } from 'framer-motion';
 
@@ -325,7 +325,7 @@ const VORTEX_CONFIG = {
     setIsLoading(true); setIsSearching(useInternet);
     try {
       const history = isNewSession ? [] : (sessions.find(s => s.id === targetSessionId)?.messages || []);
-      const stream = klimeaiService.generateResponseStream({
+      const stream = vortexService.generateResponseStream({
         history,
         prompt: content,
         api: settings.llm,

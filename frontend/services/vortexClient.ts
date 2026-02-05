@@ -1,11 +1,11 @@
-export type KlimeAiRole = 'system' | 'user' | 'assistant';
+export type VortexRole = 'system' | 'user' | 'assistant';
 
-export interface KlimeAiChatMessage {
-  role: KlimeAiRole;
+export interface VortexChatMessage {
+  role: VortexRole;
   content: string;
 }
 
-export interface KlimeAiModelInfo {
+export interface VortexModelInfo {
   id: string;
   object?: string;
   owned_by?: string;
@@ -17,18 +17,18 @@ export interface KlimeAiModelInfo {
   quant?: string | null;
 }
 
-export interface KlimeAiListModelsResponse {
+export interface VortexListModelsResponse {
   object: 'list';
-  data: KlimeAiModelInfo[];
+  data: VortexModelInfo[];
 }
 
-export interface KlimeAiChatCompletionUsage {
+export interface VortexChatCompletionUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
 }
 
-export interface KlimeAiChatCompletionChoice {
+export interface VortexChatCompletionChoice {
   index: number;
   message?: { role: 'assistant'; content: string };
   delta?: { role?: 'assistant'; content?: string };
@@ -36,20 +36,20 @@ export interface KlimeAiChatCompletionChoice {
   text?: string;
 }
 
-export interface KlimeAiChatCompletionResponse {
+export interface VortexChatCompletionResponse {
   id: string;
   object: string;
   created: number;
   model: string;
   request_id?: string;
-  choices: KlimeAiChatCompletionChoice[];
-  usage?: KlimeAiChatCompletionUsage;
+  choices: VortexChatCompletionChoice[];
+  usage?: VortexChatCompletionUsage;
   sources?: any[];
 }
 
-export interface KlimeAiChatCompletionRequest {
+export interface VortexChatCompletionRequest {
   model?: string;
-  messages: KlimeAiChatMessage[];
+  messages: VortexChatMessage[];
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
@@ -59,14 +59,14 @@ export interface KlimeAiChatCompletionRequest {
   include_sources?: boolean;
 }
 
-export class KlimeAiApiError extends Error {
+export class VortexApiError extends Error {
   status: number;
   code?: string;
   type?: string;
 
   constructor(message: string, status: number, opts?: { code?: string; type?: string }) {
     super(message);
-    this.name = 'KlimeAiApiError';
+    this.name = 'VortexApiError';
     this.status = status;
     this.code = opts?.code;
     this.type = opts?.type;
@@ -102,7 +102,7 @@ const readErrorFromResponse = async (res: Response) => {
       if (text) message = text;
     } catch {}
   }
-  return new KlimeAiApiError(message, res.status, { code, type });
+  return new VortexApiError(message, res.status, { code, type });
 };
 
 export const listModels = async (opts: { baseUrl: string; token?: string; signal?: AbortSignal }) => {
@@ -112,14 +112,14 @@ export const listModels = async (opts: { baseUrl: string; token?: string; signal
     signal: opts.signal,
   });
   if (!res.ok) throw await readErrorFromResponse(res);
-  const data = (await res.json()) as KlimeAiListModelsResponse;
+  const data = (await res.json()) as VortexListModelsResponse;
   return Array.isArray(data?.data) ? data.data : [];
 };
 
 export const chatCompletion = async (opts: {
   baseUrl: string;
   token?: string;
-  request: KlimeAiChatCompletionRequest;
+  request: VortexChatCompletionRequest;
   signal?: AbortSignal;
 }) => {
   const res = await fetch(joinUrl(opts.baseUrl, '/v1/chat/completions'), {
@@ -129,7 +129,7 @@ export const chatCompletion = async (opts: {
     signal: opts.signal,
   });
   if (!res.ok) throw await readErrorFromResponse(res);
-  return (await res.json()) as KlimeAiChatCompletionResponse;
+  return (await res.json()) as VortexChatCompletionResponse;
 };
 
 function* parseSseEventDataLines(eventText: string) {
@@ -143,9 +143,9 @@ function* parseSseEventDataLines(eventText: string) {
 export async function* chatCompletionStream(opts: {
   baseUrl: string;
   token?: string;
-  request: KlimeAiChatCompletionRequest;
+  request: VortexChatCompletionRequest;
   signal?: AbortSignal;
-}): AsyncGenerator<KlimeAiChatCompletionResponse, void, void> {
+}): AsyncGenerator<VortexChatCompletionResponse, void, void> {
   const res = await fetch(joinUrl(opts.baseUrl, '/v1/chat/completions'), {
     method: 'POST',
     headers: buildHeaders(opts.token),
@@ -153,7 +153,7 @@ export async function* chatCompletionStream(opts: {
     signal: opts.signal,
   });
   if (!res.ok) throw await readErrorFromResponse(res);
-  if (!res.body) throw new KlimeAiApiError('No response body', res.status);
+  if (!res.body) throw new VortexApiError('No response body', res.status);
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
@@ -175,7 +175,7 @@ export async function* chatCompletionStream(opts: {
         if (dataLine === '[DONE]') return;
         try {
           const evt = JSON.parse(dataLine);
-          if (evt && typeof evt === 'object') yield evt as KlimeAiChatCompletionResponse;
+          if (evt && typeof evt === 'object') yield evt as VortexChatCompletionResponse;
         } catch {
           continue;
         }
@@ -183,4 +183,3 @@ export async function* chatCompletionStream(opts: {
     }
   }
 }
-

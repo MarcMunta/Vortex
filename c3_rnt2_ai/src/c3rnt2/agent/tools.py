@@ -60,7 +60,7 @@ class AgentTools:
         self.max_bytes: int = int(self.web_cfg.get("max_bytes", 512_000))
         self.timeout_s: int = int(self.web_cfg.get("timeout_s", 10))
         self.max_redirects: int = int(self.web_cfg.get("max_redirects", security_web.get("max_redirects", 5) if isinstance(security_web, dict) else 5))
-        self.user_agent: str = str(self.web_cfg.get("user_agent", security_web.get("user_agent", "KlimeAI-WebFetch/1.0") if isinstance(security_web, dict) else "KlimeAI-WebFetch/1.0"))
+        self.user_agent: str = str(self.web_cfg.get("user_agent", security_web.get("user_agent", "Vortex-WebFetch/1.0") if isinstance(security_web, dict) else "Vortex-WebFetch/1.0"))
         cache_ttl = self.web_cfg.get("cache_ttl_s", None)
         self.cache_ttl_s: int | None = int(cache_ttl) if cache_ttl is not None else None
         allow_content_types = self.web_cfg.get("allow_content_types")

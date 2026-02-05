@@ -632,7 +632,7 @@ profiles:
 
   rtx4080_16gb_sglang_fast:
     # Optional fast path: run inference via an external engine (OpenAI-compatible endpoint),
-    # keeping KlimeAI as the control-plane (safety, gating, ctx policies, logging).
+    # keeping Vortex as the control-plane (safety, gating, ctx policies, logging).
     #
     # Doctor fails closed unless the selected engine is installed (vllm/sglang) and configured.
     base_profile: rtx4080_16gb_safe_windows_core

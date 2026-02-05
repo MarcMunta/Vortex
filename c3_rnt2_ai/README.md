@@ -57,9 +57,9 @@ El servidor expone un contrato estilo OpenAI:
 Arranque (ejemplo):
 ```bash
 # opcional: auth dev (si se define, exige Authorization: Bearer ...)
-export KLIMEAI_API_TOKEN=devtoken
+export VORTEX_API_TOKEN=devtoken
 
-klimeai serve --host 0.0.0.0 --port 8000
+vortex serve --host 0.0.0.0 --port 8000
 ```
 
 Smoke test:

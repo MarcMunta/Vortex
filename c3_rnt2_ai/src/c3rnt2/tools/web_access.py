@@ -192,7 +192,7 @@ def web_fetch(
     *,
     strict: bool = True,
     max_redirects: int = 5,
-    user_agent: str = "KlimeAI-WebFetch/1.0",
+    user_agent: str = "Vortex-WebFetch/1.0",
 ) -> WebFetchResult:
     cache_dir = Path(cache_dir)
     base_dir = Path(".")

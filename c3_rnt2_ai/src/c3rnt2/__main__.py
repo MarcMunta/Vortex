@@ -1765,9 +1765,9 @@ def main() -> None:
     chat.add_argument("--top-p", type=float, default=None)
     chat.set_defaults(func=cmd_chat)
 
-    default_host = os.getenv("KLIMEAI_API_HOST") or os.getenv("C3RNT2_API_HOST") or "0.0.0.0"
+    default_host = os.getenv("VORTEX_API_HOST") or os.getenv("C3RNT2_API_HOST") or "0.0.0.0"
     try:
-        default_port = int(os.getenv("KLIMEAI_API_PORT") or os.getenv("C3RNT2_API_PORT") or 8000)
+        default_port = int(os.getenv("VORTEX_API_PORT") or os.getenv("C3RNT2_API_PORT") or 8000)
     except Exception:
         default_port = 8000
 

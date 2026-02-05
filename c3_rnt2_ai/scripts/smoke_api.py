@@ -33,7 +33,7 @@ def main() -> int:
     args = parser.parse_args()
 
     base_url = str(args.base_url)
-    token = str(args.token) if args.token else os.getenv("KLIMEAI_API_TOKEN") or None
+    token = str(args.token) if args.token else os.getenv("VORTEX_API_TOKEN") or None
     model = str(args.model) if args.model else None
 
     sess = requests.Session()
@@ -94,4 +94,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

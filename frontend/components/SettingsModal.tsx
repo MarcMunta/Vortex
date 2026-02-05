@@ -3,7 +3,7 @@ import { X, GripVertical, Monitor, Moon, Sun, Type, Globe } from 'lucide-react';
 import { Reorder, AnimatePresence, motion } from 'framer-motion';
 import { UserSettings, FontSize, Language } from '../types';
 import { translations } from '../translations';
-import { KlimeAiApiError, KlimeAiModelInfo, listModels } from '../services/klimeaiClient';
+import { VortexApiError, VortexModelInfo, listModels } from '../services/vortexClient';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -14,7 +14,7 @@ interface SettingsModalProps {
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings, onUpdateSettings }) => {
   const t = translations[settings.language];
-  const [availableModels, setAvailableModels] = useState<KlimeAiModelInfo[]>([]);
+  const [availableModels, setAvailableModels] = useState<VortexModelInfo[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
 
@@ -25,7 +25,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
       const models = await listModels({ baseUrl: settings.llm.baseUrl, token: settings.llm.token });
       setAvailableModels(models);
     } catch (err: any) {
-      const msg = err instanceof KlimeAiApiError ? err.message : 'Failed to load models';
+      const msg = err instanceof VortexApiError ? err.message : 'Failed to load models';
       setModelsError(msg);
       setAvailableModels([]);
     } finally {

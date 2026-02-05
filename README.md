@@ -1,7 +1,7 @@
-# KlimeAI + Vortex UI (local)
+# Vortex API + Vortex UI (local)
 
 Monorepo con:
-- `c3_rnt2_ai/`: backend **KlimeAI** (FastAPI) con endpoints estilo OpenAI (`/v1/*`) y streaming SSE.
+- `c3_rnt2_ai/`: backend **Vortex** (FastAPI) con endpoints estilo OpenAI (`/v1/*`) y streaming SSE.
 - `frontend/`: UI **Vortex** (Vite + React) que **solo** llama al backend local (nunca a proveedores LLM desde el navegador).
 
 ## One-command (Windows)
@@ -12,7 +12,7 @@ Arranca backend + frontend:
 .\dev.ps1
 ```
 
-## Backend (KlimeAI)
+## Backend (Vortex)
 
 ```bash
 cd c3_rnt2_ai
@@ -22,10 +22,10 @@ python -m venv .venv
 pip install -e .[api]
 
 # opcional (AUTH dev)
-# Windows (PowerShell): $env:KLIMEAI_API_TOKEN=\"devtoken\"
-# Linux/macOS: export KLIMEAI_API_TOKEN=devtoken
+# Windows (PowerShell): $env:VORTEX_API_TOKEN=\"devtoken\"
+# Linux/macOS: export VORTEX_API_TOKEN=devtoken
 
-klimeai serve --host 0.0.0.0 --port 8000
+vortex serve --host 0.0.0.0 --port 8000
 ```
 
 Validación rápida:
@@ -36,7 +36,7 @@ curl http://localhost:8000/v1/models
 curl -X POST http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"core","messages":[{"role":"user","content":"hola"}]}'
 ```
 
-Si `KLIMEAI_API_TOKEN` está definido, añade:
+Si `VORTEX_API_TOKEN` está definido, añade:
 `-H "Authorization: Bearer devtoken"` a las llamadas `curl` a `/v1/*`.
 
 Streaming (SSE):

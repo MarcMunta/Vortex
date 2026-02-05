@@ -107,5 +107,4 @@ def test_metrics_endpoint(tmp_path: Path, monkeypatch) -> None:
     resp = client.get("/metrics")
     assert resp.status_code == 200
     text = resp.text
-    assert "klimeai_up 1" in text
-
+    assert "vortex_up 1" in text

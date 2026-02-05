@@ -1,5 +1,5 @@
 import { AppMode, LlmSettings, Message, Role, Source } from '../types';
-import { chatCompletionStream, KlimeAiChatMessage } from './klimeaiClient';
+import { chatCompletionStream, VortexChatMessage } from './vortexClient';
 
 type StreamChunk = {
   text: string;
@@ -48,7 +48,7 @@ const parseThinking = (rawBuffer: string) => {
   return { displayText: displayText.trim(), thoughtText: thoughtText.trim() };
 };
 
-const toOpenAiMessages = (history: Message[], prompt: string): KlimeAiChatMessage[] => {
+const toOpenAiMessages = (history: Message[], prompt: string): VortexChatMessage[] => {
   const mapped = history
     .filter((m) => !!m.content)
     .map((m) => ({
@@ -76,7 +76,7 @@ const sourcesFromRefs = (refs: any[] | undefined): Source[] => {
   });
 };
 
-export class KlimeAiService {
+export class VortexService {
   async *generateResponseStream(opts: {
     history: Message[];
     prompt: string;
@@ -145,5 +145,4 @@ export class KlimeAiService {
   }
 }
 
-export const klimeaiService = new KlimeAiService();
-
+export const vortexService = new VortexService();
