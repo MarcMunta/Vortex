@@ -17,10 +17,16 @@ set "PS_EXE="
 where /q pwsh.exe && set "PS_EXE=pwsh"
 if not defined PS_EXE where /q powershell.exe && set "PS_EXE=powershell"
 if not defined PS_EXE (
-  echo [status] ERROR: PowerShell not found in PATH.
-  echo [status] Install PowerShell 7: pwsh.exe, or Windows PowerShell: powershell.exe.
+  echo [restart] ERROR: PowerShell not found in PATH.
+  echo [restart] Install PowerShell 7: pwsh.exe, or Windows PowerShell: powershell.exe.
   exit /b 1
 )
 
-%PS_EXE% -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%status.ps1" %*
+%PS_EXE% -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%stop.ps1"
+set "STOP_RC=%errorlevel%"
+if not "%STOP_RC%"=="0" (
+  echo [restart] WARN: stop returned errorlevel %STOP_RC%.
+)
+
+%PS_EXE% -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%run.ps1" %*
 exit /b %errorlevel%
