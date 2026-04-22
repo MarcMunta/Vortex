@@ -355,6 +355,11 @@ class AutonomyConfigRequest(BaseModel):
     live_autoedit_enabled: bool | None = None
 
 
+class ObsidianConfigRequest(BaseModel):
+    enabled: bool | None = None
+    vault_path: str | None = None
+
+
 class ControlState:
     def __init__(
         self,
@@ -2243,6 +2248,38 @@ class ControlState:
             "runtime_models": runtime_models,
         }
 
+    def multimodal_status(self, runtime: dict[str, Any] | None = None) -> dict[str, Any]:
+        current_runtime = runtime or self.runtime_status()
+        status_payload = current_runtime.get("status") if isinstance(current_runtime.get("status"), dict) else {}
+        multimodal = status_payload.get("multimodal") if isinstance(status_payload, dict) else None
+        if isinstance(multimodal, dict) and multimodal:
+            return multimodal
+        voice = _http_json(f"{self.api_url}/v1/voice/status", timeout=2.0) or {"ok": False, "error": "voice_unavailable"}
+        spatial = _http_json(f"{self.api_url}/v1/spatial/session", timeout=2.0) or {"ok": False, "error": "spatial_unavailable"}
+        obsidian = _http_json(f"{self.api_url}/v1/obsidian/status", timeout=2.0) or {"ok": False, "error": "obsidian_unavailable"}
+        session = spatial.get("session") if isinstance(spatial, dict) else None
+        return {
+            "ok": True,
+            "voice": voice,
+            "spatial": session,
+            "camera": (session or {}).get("camera_state") if isinstance(session, dict) else None,
+            "gesture": (session or {}).get("gesture_state") if isinstance(session, dict) else None,
+            "obsidian": obsidian,
+            "fusion": {"enabled": False},
+        }
+
+    def voice_status(self) -> dict[str, Any]:
+        return _http_json(f"{self.api_url}/v1/voice/status", timeout=2.0) or {"ok": False, "error": "voice_unavailable"}
+
+    def restart_voice(self) -> dict[str, Any]:
+        return _http_post_json(f"{self.api_url}/v1/voice/restart", payload={}, timeout=10.0) or {"ok": False, "error": "voice_restart_failed"}
+
+    def obsidian_status(self) -> dict[str, Any]:
+        return _http_json(f"{self.api_url}/v1/obsidian/status", timeout=2.0) or {"ok": False, "error": "obsidian_unavailable"}
+
+    def configure_obsidian(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return _http_post_json(f"{self.api_url}/v1/obsidian/config", payload=payload, timeout=10.0) or {"ok": False, "error": "obsidian_config_failed"}
+
     def _runtime_allows_parallel_training(self, runtime: dict[str, Any] | None = None) -> bool:
         training_settings = self._load_profile_settings(self.training_profile)
         training_server = training_settings.get("server", {}) if isinstance(training_settings, dict) else {}
@@ -3643,6 +3680,13 @@ class ControlState:
         else:
             runtime["status"] = overlay
         runtime.update(overlay)
+        multimodal = None
+        if isinstance(runtime.get("status"), dict):
+            candidate = runtime["status"].get("multimodal")
+            if isinstance(candidate, dict):
+                multimodal = candidate
+        if multimodal is None:
+            multimodal = self.multimodal_status(runtime=runtime)
 
         return {
             "ok": True,
@@ -3653,6 +3697,7 @@ class ControlState:
             "frontend": self.frontend_status(),
             "internet": {"allowlist": self.get_allowlist()},
             "instructions": self._resolve_instruction_meta(),
+            "multimodal": multimodal,
             "learning_queue": self._learning_queue_summary(),
             "autonomy": self.autonomy_status(runtime=runtime, runs=runs),
             "active_run_id": self._active_run_id,
@@ -4831,6 +4876,42 @@ def create_control_app(state: ControlState) -> FastAPI:
     async def control_allowlist_post(payload: AllowlistRequest) -> dict[str, Any]:
         domains = await asyncio.to_thread(state.set_allowlist, payload.domains)
         return {"ok": True, "domains": domains}
+
+    @app.get("/control/voice/status")
+    async def control_voice_status() -> dict[str, Any]:
+        return await asyncio.to_thread(state.voice_status)
+
+    @app.post("/control/voice/restart")
+    async def control_voice_restart() -> dict[str, Any]:
+        return await asyncio.to_thread(state.restart_voice)
+
+    @app.get("/control/obsidian/status")
+    async def control_obsidian_status() -> dict[str, Any]:
+        return await asyncio.to_thread(state.obsidian_status)
+
+    @app.post("/control/obsidian/config")
+    async def control_obsidian_config(payload: ObsidianConfigRequest) -> dict[str, Any]:
+        patch = payload.model_dump(exclude_none=True)
+        return await asyncio.to_thread(state.configure_obsidian, patch)
+
+    @app.get("/control/multimodal/status")
+    async def control_multimodal_status() -> dict[str, Any]:
+        payload = await asyncio.to_thread(state.multimodal_status)
+        return {"ok": True, "status": payload}
+
+    @app.get("/control/multimodal/stream")
+    async def control_multimodal_stream():
+        def _events():
+            last = ""
+            while True:
+                payload = {"ts": _utc_ts(), "status": state.multimodal_status()}
+                raw = json.dumps(payload, ensure_ascii=True)
+                if raw != last:
+                    yield f"data: {raw}\n\n"
+                    last = raw
+                time.sleep(1.0)
+
+        return StreamingResponse(_events(), media_type="text/event-stream")
 
     @app.post("/control/training/start")
     async def control_training_start(payload: TrainingStartRequest) -> dict[str, Any]:

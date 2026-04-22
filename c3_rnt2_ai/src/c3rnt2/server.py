@@ -69,6 +69,14 @@ from .experts.registry import ExpertRegistry
 from .experts.router import ExpertRouter
 from .episodes import EpisodeIndex
 from .logging import get_logger
+from .multimodal import (
+    MemoryContextBuilder,
+    ObsidianSyncService,
+    PanelRegistry,
+    MultimodalSessionFusion,
+    SpatialStateStore,
+    VoiceService,
+)
 from .config import load_settings, resolve_web_allowlist
 from .agent.permissions import (
     build_agent_permission_context,
@@ -145,6 +153,8 @@ def _resolve_cors_origins(settings: dict) -> list[str]:
         return [
             "http://localhost:3000",
             "http://127.0.0.1:3000",
+            "http://localhost:4173",
+            "http://127.0.0.1:4173",
             "http://localhost:5173",
             "http://127.0.0.1:5173",
         ]
@@ -2540,6 +2550,7 @@ def _compose_dynamic_system_prompt(
     *,
     temporal_context: str | None,
     web_context: str | None,
+    multimodal_context: str | None = None,
 ) -> str:
     parts = [str(base_system or "").strip()]
     if temporal_context:
@@ -2549,6 +2560,11 @@ def _compose_dynamic_system_prompt(
             "When live web results are present, prefer them over stale prior knowledge for time-sensitive questions."
         )
         parts.append(web_context.strip())
+    if multimodal_context:
+        parts.append(
+            "Use the multimodal workspace context as situational grounding for the current request."
+        )
+        parts.append(multimodal_context.strip())
     return "\n\n".join(part for part in parts if part)
 
 
@@ -2723,7 +2739,7 @@ def _inject_chat_memory_context(
 def create_app(settings: dict, base_dir: Path) -> FastAPI:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+    from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
     app = FastAPI()
     app.state.metrics = _MetricsState()
@@ -2986,6 +3002,112 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
     app.state.model_lazy_enabled = lazy_model_load
     app.state.training_active = False
     app.state.maintenance_until = 0.0
+    app.state.panel_registry = PanelRegistry()
+    app.state.spatial_store = SpatialStateStore(
+        settings=settings,
+        base_dir=base_dir,
+        panel_registry=app.state.panel_registry,
+    )
+    app.state.obsidian_sync = ObsidianSyncService(settings=settings, base_dir=base_dir)
+    app.state.memory_context_builder = MemoryContextBuilder(
+        settings=settings,
+        obsidian_sync=app.state.obsidian_sync,
+    )
+    app.state.voice_service = VoiceService(settings=settings, base_dir=base_dir)
+    app.state.multimodal_fusion = MultimodalSessionFusion(
+        settings=settings,
+        spatial_store=app.state.spatial_store,
+        memory_context=app.state.memory_context_builder,
+    )
+
+    def _multimodal_status_payload() -> dict[str, Any]:
+        voice_status = {}
+        obsidian_status = {}
+        fusion = {}
+        try:
+            voice_status = app.state.voice_service.status()
+        except Exception as exc:
+            voice_status = {"ok": False, "error": str(exc)}
+        try:
+            obsidian_status = app.state.obsidian_sync.status()
+        except Exception as exc:
+            obsidian_status = {"ok": False, "error": str(exc)}
+        try:
+            fusion = app.state.multimodal_fusion.build_context(messages=[], payload={})
+        except Exception as exc:
+            fusion = {"enabled": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "voice": voice_status,
+            "spatial": app.state.spatial_store.get_session(),
+            "obsidian": obsidian_status,
+            "fusion": {
+                "enabled": bool(fusion.get("enabled", False)),
+                "summary": fusion.get("summary"),
+                "refs": fusion.get("refs") if isinstance(fusion.get("refs"), list) else [],
+            },
+        }
+
+    def _apply_voice_intent(intent: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(intent, dict):
+            return None
+        kind = str(intent.get("kind") or "").strip().lower()
+        session = app.state.spatial_store.get_session()
+        selected_panel_id = str(intent.get("panel_id") or session.get("selected_object_id") or "").strip() or None
+        if kind == "open_panel":
+            region = session.get("selected_region")
+            source = {"pages": ["Slide 1", "Slide 2", "Slide 3"], "intent": "voice_open"}
+            return app.state.spatial_store.open_panel(
+                {
+                    "type": str(intent.get("panel_type") or "presentation"),
+                    "title": str(intent.get("title") or "Spatial presentation"),
+                    "source": source,
+                    "page_count": 3,
+                    "region": region,
+                    "selected": True,
+                }
+            )
+        if kind == "transform_panel" and selected_panel_id:
+            transform_patch = dict(intent.get("transform") or {})
+            current = next(
+                (
+                    panel
+                    for panel in (session.get("panels") or [])
+                    if str(panel.get("id") or "") == selected_panel_id
+                ),
+                None,
+            )
+            if current is None:
+                return {"ok": False, "error": "panel_not_found"}
+            current_transform = dict(current.get("transform") or {})
+            if "x" in transform_patch:
+                transform_patch["x"] = float(current_transform.get("x") or 0.0) + float(transform_patch.get("x") or 0.0)
+            if "y" in transform_patch:
+                transform_patch["y"] = float(current_transform.get("y") or 0.0) + float(transform_patch.get("y") or 0.0)
+            if "rotation" in transform_patch:
+                transform_patch["rotation"] = float(current_transform.get("rotation") or 0.0) + float(transform_patch.get("rotation") or 0.0)
+            if "tilt_x" in transform_patch:
+                transform_patch["tilt_x"] = float(current_transform.get("tilt_x") or 0.0) + float(transform_patch.get("tilt_x") or 0.0)
+            if "tilt_y" in transform_patch:
+                transform_patch["tilt_y"] = float(current_transform.get("tilt_y") or 0.0) + float(transform_patch.get("tilt_y") or 0.0)
+            return app.state.spatial_store.update_panel(
+                selected_panel_id,
+                {"transform": transform_patch, "selected": True},
+            )
+        if kind == "navigate_panel" and selected_panel_id:
+            return app.state.spatial_store.navigate_panel(
+                selected_panel_id,
+                delta=int(intent.get("delta") or 1),
+            )
+        if kind == "save_obsidian":
+            return app.state.obsidian_sync.save_note(
+                note_type="session",
+                title="Spatial workspace capture",
+                content=app.state.spatial_store.describe_session(session),
+                metadata={"selected_panel_id": selected_panel_id},
+                tags=["vortex", "spatial", "voice"],
+            )
+        return None
 
     def _apply_loaded_settings(loaded_settings: dict, boot_fallback: dict[str, Any] | None) -> None:
         settings.clear()
@@ -3566,6 +3688,169 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             title = "Chat" if lang == "en" else "Conversación"
         return JSONResponse(content={"ok": True, "title": title})
 
+    @app.get("/v1/voice/status")
+    async def voice_status():
+        return JSONResponse(content=app.state.voice_service.status())
+
+    @app.post("/v1/voice/restart")
+    async def voice_restart():
+        return JSONResponse(content=app.state.voice_service.restart())
+
+    @app.get("/v1/voice/audio/{file_name}")
+    async def voice_audio(file_name: str):
+        target = app.state.voice_service.resolve_audio_file(file_name)
+        if target is None:
+            raise HTTPException(
+                status_code=404,
+                detail=_openai_error("voice_audio_not_found", code="not_found"),
+            )
+        return FileResponse(target)
+
+    @app.post("/v1/voice/transcribe")
+    async def voice_transcribe(request: StarletteRequest):
+        content_type = str(request.headers.get("content-type") or "").strip().lower()
+        text_hint = None
+        raw_audio = None
+        language = str(request.headers.get("x-vortex-voice-language") or "").strip() or None
+        if content_type.startswith("application/json"):
+            payload = await request.json()
+            text_hint = str(payload.get("text") or "").strip() or None
+            language = str(payload.get("language") or language or "").strip() or None
+        else:
+            raw_audio = await request.body()
+        result = app.state.voice_service.transcribe(
+            raw_audio=raw_audio,
+            content_type=content_type,
+            text_hint=text_hint,
+            language=language,
+            session=app.state.spatial_store.get_session(),
+        )
+        if not result.get("ok"):
+            return JSONResponse(status_code=400, content=result)
+        action_result = _apply_voice_intent(result.get("intent"))
+        if action_result is not None:
+            result["action_result"] = action_result
+        if result.get("transcript"):
+            app.state.spatial_store.apply_event(
+                {
+                    "kind": "voice",
+                    "transcript": result.get("transcript"),
+                    "intent": result.get("intent"),
+                }
+            )
+        return JSONResponse(content=result)
+
+    @app.post("/v1/voice/speak")
+    async def voice_speak(request: StarletteRequest):
+        payload = await request.json()
+        result = app.state.voice_service.speak(
+            text=str(payload.get("text") or ""),
+            language=str(payload.get("language") or "").strip() or None,
+        )
+        return JSONResponse(
+            content=result,
+            status_code=200 if bool(result.get("ok")) else 400,
+        )
+
+    @app.get("/v1/spatial/session")
+    async def spatial_session_get():
+        return JSONResponse(
+            content={"ok": True, "session": app.state.spatial_store.get_session()}
+        )
+
+    @app.post("/v1/spatial/session")
+    async def spatial_session_post(request: StarletteRequest):
+        payload = await request.json()
+        session = app.state.spatial_store.update_session(payload)
+        return JSONResponse(content={"ok": True, "session": session})
+
+    @app.post("/v1/spatial/events")
+    async def spatial_events(request: StarletteRequest):
+        payload = await request.json()
+        session = app.state.spatial_store.apply_event(payload)
+        return JSONResponse(content={"ok": True, "session": session})
+
+    @app.post("/v1/spatial/panels/open")
+    async def spatial_panels_open(request: StarletteRequest):
+        payload = await request.json()
+        result = app.state.spatial_store.open_panel(payload)
+        return JSONResponse(
+            content=result,
+            status_code=200 if bool(result.get("ok")) else 400,
+        )
+
+    @app.post("/v1/spatial/panels/update")
+    async def spatial_panels_update(request: StarletteRequest):
+        payload = await request.json()
+        panel_id = str(payload.get("panel_id") or payload.get("panelId") or "").strip()
+        if not panel_id:
+            raise HTTPException(
+                status_code=400,
+                detail=_openai_error("panel_id_required", code="invalid_request"),
+            )
+        patch = dict(payload)
+        patch.pop("panel_id", None)
+        patch.pop("panelId", None)
+        result = app.state.spatial_store.update_panel(panel_id, patch)
+        return JSONResponse(
+            content=result,
+            status_code=200 if bool(result.get("ok")) else 404,
+        )
+
+    @app.post("/v1/spatial/panels/navigate")
+    async def spatial_panels_navigate(request: StarletteRequest):
+        payload = await request.json()
+        panel_id = str(payload.get("panel_id") or payload.get("panelId") or "").strip()
+        if not panel_id:
+            raise HTTPException(
+                status_code=400,
+                detail=_openai_error("panel_id_required", code="invalid_request"),
+            )
+        delta = int(payload.get("delta") or 0)
+        index = payload.get("index")
+        result = app.state.spatial_store.navigate_panel(
+            panel_id,
+            delta=delta if delta else 1,
+            index=int(index) if index is not None else None,
+        )
+        return JSONResponse(
+            content=result,
+            status_code=200 if bool(result.get("ok")) else 404,
+        )
+
+    @app.get("/v1/obsidian/status")
+    async def obsidian_status():
+        return JSONResponse(content=app.state.obsidian_sync.status())
+
+    @app.post("/v1/obsidian/config")
+    async def obsidian_config(request: StarletteRequest):
+        payload = await request.json()
+        config = app.state.obsidian_sync.set_config(payload)
+        return JSONResponse(
+            content={
+                "ok": True,
+                "config": config,
+                "status": app.state.obsidian_sync.status(),
+            }
+        )
+
+    @app.post("/v1/obsidian/save")
+    async def obsidian_save(request: StarletteRequest):
+        payload = await request.json()
+        result = app.state.obsidian_sync.save_note(
+            note_type=str(payload.get("note_type") or payload.get("type") or "session"),
+            title=str(payload.get("title") or "Vortex note"),
+            content=str(payload.get("content") or ""),
+            metadata=dict(payload.get("metadata") or {})
+            if isinstance(payload.get("metadata"), dict)
+            else {},
+            tags=[str(item) for item in (payload.get("tags") or []) if str(item).strip()],
+        )
+        return JSONResponse(
+            content=result,
+            status_code=200 if bool(result.get("ok")) else 400,
+        )
+
     @app.post("/v1/ingest")
     async def ingest_once():
         allowlist = resolve_web_allowlist(settings)
@@ -3631,6 +3916,15 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             payload,
             messages,
         )
+        multimodal_context = ""
+        multimodal_info: dict[str, Any] = {"enabled": False, "refs": []}
+        try:
+            fusion = getattr(app.state, "multimodal_fusion", None)
+            if fusion is not None:
+                multimodal_info = fusion.build_context(messages=messages, payload=payload)
+                multimodal_context = str(multimodal_info.get("text") or "").strip()
+        except Exception as exc:
+            LOG.warning("multimodal_fusion_error: %s", exc)
         temporal_system_context = _build_temporal_system_context(payload)
         direct_temporal_reply = _direct_temporal_response(payload, _extract_query(messages, None))
         if direct_temporal_reply:
@@ -3664,6 +3958,8 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         )
         if live_web_refs:
             rag_info["refs"] = live_web_refs
+        if isinstance(multimodal_info.get("refs"), list) and multimodal_info.get("refs"):
+            rag_info["refs"] = list(rag_info.get("refs") or []) + list(multimodal_info.get("refs") or [])
         backend_cfg = settings.get("core", {}).get("backend", "vortex")
         instructions = getattr(app.state, "instructions", None)
         default_system_base = (
@@ -3675,6 +3971,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             default_system_base,
             temporal_context=temporal_system_context,
             web_context=live_web_context,
+            multimodal_context=multimodal_context,
         )
         routing_prompt = build_chat_prompt(
             messages, backend_cfg, tokenizer=None, default_system=default_system
@@ -4933,6 +5230,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         except Exception:
             pass
         operational = _build_operational_status(app.state, settings, base_dir)
+        multimodal = _multimodal_status_payload()
         return JSONResponse(
             content={
                 **operational,
@@ -4949,6 +5247,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 "episodes": episode_count,
                 "knowledge_chunks": knowledge_count,
                 "autolearn": autolearn_data,
+                "multimodal": multimodal,
             }
         )
 

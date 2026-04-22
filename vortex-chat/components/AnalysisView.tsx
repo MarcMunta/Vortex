@@ -236,6 +236,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({
     : null) || displayRuns[0] || null;
   const latestRun = activeRun;
   const tabDirection = TAB_INDEX[activeTab] > TAB_INDEX[previousTab] ? 1 : -1;
+  const multimodal = controlStatus?.multimodal || null;
   const modelReady = Boolean(
     controlStatus?.model?.cached
     || operationalStatus?.model_ready
@@ -438,6 +439,36 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({
                   <div className="flex items-start justify-between gap-4 rounded-[1.2rem] border border-border/40 bg-muted/15 px-4 py-3"><span className="font-semibold text-foreground">readyz</span><span className="text-right text-muted-foreground">{operationalStatus?.ok ? 'ok' : operationalStatus?.chat_ready ? (language === 'es' ? 'chat degradado' : 'degraded chat') : operationalStatus?.chat_block_reason || operationalStatus?.degraded_reason || 'pending'}</span></div>
                   <div className="flex items-start justify-between gap-4 rounded-[1.2rem] border border-border/40 bg-muted/15 px-4 py-3"><span className="font-semibold text-foreground">instructions.digest</span><span className="break-words text-right text-muted-foreground">{operationalStatus?.instructions?.digest || 'n/a'}</span></div>
                   <div className="flex items-start justify-between gap-4 rounded-[1.2rem] border border-border/40 bg-muted/15 px-4 py-3"><span className="font-semibold text-foreground">{language === 'es' ? 'Fuentes de instrucciones' : 'Instruction sources'}</span><span className="text-right text-muted-foreground">{(operationalStatus?.instructions?.sources || controlStatus?.instructions?.sources || []).length || 0}</span></div>
+                </div>
+              </Panel>
+
+              <Panel title={language === 'es' ? 'Estado multimodal' : 'Multimodal status'} eyebrow={language === 'es' ? 'Voice camera gesture obsidian' : 'Voice camera gesture obsidian'}>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-[1.1rem] border border-border/40 bg-muted/15 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-primary">Voice</p>
+                    <p className="mt-3 text-sm font-black tracking-tight">{multimodal?.voice?.enabled ? (language === 'es' ? 'Push to talk' : 'Push to talk') : (language === 'es' ? 'Fallback' : 'Fallback')}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{multimodal?.voice?.asr_backend || 'faster_whisper'} / {multimodal?.voice?.tts_backend || 'browser'}</p>
+                  </div>
+                  <div className="rounded-[1.1rem] border border-border/40 bg-muted/15 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-primary">Camera</p>
+                    <p className="mt-3 text-sm font-black tracking-tight">{multimodal?.camera?.ready ? (language === 'es' ? 'Lista' : 'Ready') : (language === 'es' ? 'Pausada' : 'Paused')}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{String(multimodal?.camera?.tracker_mode || 'unknown')}</p>
+                  </div>
+                  <div className="rounded-[1.1rem] border border-border/40 bg-muted/15 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-primary">Gesture</p>
+                    <p className="mt-3 text-sm font-black tracking-tight">{String(multimodal?.gesture?.gesture || 'idle')}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{multimodal?.gesture?.confidence != null ? `confidence=${multimodal.gesture.confidence}` : 'confidence=n/a'}</p>
+                  </div>
+                  <div className="rounded-[1.1rem] border border-border/40 bg-muted/15 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-primary">Obsidian</p>
+                    <p className="mt-3 text-sm font-black tracking-tight">{multimodal?.obsidian?.validated ? (language === 'es' ? 'Validado' : 'Validated') : (language === 'es' ? 'Pendiente' : 'Pending')}</p>
+                    <p className="mt-1 break-words text-xs text-muted-foreground">{multimodal?.obsidian?.vault_path || 'vault_not_set'}</p>
+                  </div>
+                </div>
+                <div className="mt-4 rounded-[1.1rem] border border-border/40 bg-muted/15 p-4 text-sm text-muted-foreground">
+                  <p className="font-semibold text-foreground">{language === 'es' ? 'Focus actual' : 'Current focus'}</p>
+                  <p className="mt-2">{String(multimodal?.spatial?.selected_object_id || 'none')}</p>
+                  <p className="mt-3 text-xs leading-6">{String(multimodal?.fusion?.summary || 'multimodal_summary_unavailable')}</p>
                 </div>
               </Panel>
 

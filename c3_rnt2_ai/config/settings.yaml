@@ -606,6 +606,70 @@ profiles:
       disable_fallbacks: true
       approved_training_sources_only: false
       min_host_ram_free_mb: 4096
+    voice:
+      enabled: true
+      push_to_talk: true
+      vad_enabled: true
+      whisper_model: "small"
+      tts_model: "tts_models/en/ljspeech/tacotron2-DDC"
+      output_dir: "data/multimodal/voice"
+      device: auto
+      compute_type: int8
+    camera:
+      enabled: true
+      device_id: default
+      frame_width: 960
+      frame_height: 540
+      fps: 24
+    gesture:
+      enabled: true
+      mediapipe_enabled: true
+      pinch_threshold: 0.065
+      open_palm_threshold: 0.58
+      fist_threshold: 0.22
+      swipe_velocity_threshold: 0.12
+      dwell_ms: 500
+      debounce_ms: 140
+      smoothing: 0.4
+      model_asset_path: "../vortex-chat/public/models/hand_landmarker.task"
+    spatial_ui:
+      enabled: true
+      workspace_name: "Spatial Workspace"
+      perspective_enabled: true
+      default_perspective: 1100
+      stage_width: 1440
+      stage_height: 900
+    obsidian:
+      enabled: true
+      vault_path: "data/obsidian_vault"
+      folder_map:
+        architecture: "Projects/Vortex/Architecture"
+        session: "Projects/Vortex/Sessions"
+        decision: "Projects/Vortex/Decisions"
+        prompt: "Projects/Vortex/Prompts"
+        bug: "Projects/Vortex/Bugs"
+        experiment: "Projects/Vortex/Experiments"
+    multimodal_memory:
+      enabled: true
+      state_path: "data/multimodal/spatial_session.json"
+      max_notes: 4
+      max_chars: 1200
+    multimodal_context:
+      enabled: true
+      max_chars: 1800
+      include_memory: true
+      include_spatial_selection: true
+      include_voice: true
+      include_gesture: true
+    presentation:
+      default_panel_type: presentation
+      page_step: 1
+      swipe_enabled: true
+    workspace_panels:
+      max_active_panels: 12
+      default_width: 360
+      default_height: 220
+      default_kinds: ["note", "presentation", "browser", "image", "obsidian", "sketch"]
 
   rtx4080_16gb_programming_runtime_docker:
     # Default Docker runtime: stable programming stack backed by the compose SGLang service.

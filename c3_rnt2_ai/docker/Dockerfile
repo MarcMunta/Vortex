@@ -8,12 +8,12 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /workspace
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl docker.io docker-compose \
+    && apt-get install -y --no-install-recommends git curl docker.io docker-compose ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . /workspace
 
 RUN pip install --upgrade pip \
-    && pip install -e .[api,hf,train]
+    && pip install -e .[api,hf,train,multimodal]
 
 CMD ["python", "-m", "c3rnt2", "doctor", "--profile", "rtx4080_16gb_programming_local", "--mock"]

@@ -83,6 +83,53 @@ cd c3_rnt2_ai
                                    +--> /metrics + /doctor
 ```
 
+## Spatial Multimodal
+
+Vortex ahora extiende la shell actual con una capa multimodal local 2.5D:
+- vista `Spatial` dentro de `vortex-chat/`, sin reemplazar chat/control/training
+- webcam + tracking de manos/gestos en browser con MediaPipe
+- voz local con `faster-whisper` + `Coqui TTS` en backend
+- estado spatial compartido en backend
+- memoria curada en Obsidian por filesystem local
+- fusiÃ³n multimodal para dar contexto al runtime principal sin meter LLM en el loop por frame
+
+Flujos soportados:
+- seleccionar regiÃ³n, abrir panel/presentaciÃ³n ahÃ­
+- mover, escalar, rotar, inclinar paneles pseudo-3D
+- swipe para navegar slides
+- comando de voz para abrir presentaciÃ³n, hablar sobre foco actual o guardar nota en Obsidian
+
+Rutas nuevas:
+- `GET|POST /v1/spatial/session`
+- `POST /v1/spatial/events`
+- `POST /v1/spatial/panels/open`
+- `POST /v1/spatial/panels/update`
+- `POST /v1/spatial/panels/navigate`
+- `GET /v1/voice/status`
+- `POST /v1/voice/transcribe`
+- `POST /v1/voice/speak`
+- `GET /v1/obsidian/status`
+- `POST /v1/obsidian/config`
+- `POST /v1/obsidian/save`
+- `GET /control/multimodal/status`
+- `GET /control/multimodal/stream`
+
+ConfiguraciÃ³n:
+- bloques nuevos en `c3_rnt2_ai/config/settings.yaml`: `voice`, `camera`, `gesture`, `spatial_ui`, `obsidian`, `multimodal_memory`, `multimodal_context`, `presentation`, `workspace_panels`
+
+Memoria Obsidian:
+- `Projects/Vortex/Architecture`
+- `Projects/Vortex/Sessions`
+- `Projects/Vortex/Decisions`
+- `Projects/Vortex/Prompts`
+- `Projects/Vortex/Bugs`
+- `Projects/Vortex/Experiments`
+
+Notas de migraciÃ³n:
+- no cambia el flujo principal `run_docker.ps1`
+- no sustituye self-edit seguro ni control plane
+- el frontend sigue siendo shell principal; `Spatial` es una vista mÃ¡s
+
 ## “Safe Self-Edit Model” (OBLIGATORIO)
 
 Regla: **prohibido modificar el repo “en caliente” sin aprobación humana**.

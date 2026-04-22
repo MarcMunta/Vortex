@@ -45,6 +45,11 @@ rag = [
   "faiss-cpu>=1.7; platform_system != 'Windows'",
 ]
 llama_cpp = ["llama-cpp-python>=0.2.0"]
+multimodal = [
+  "faster-whisper>=1.1",
+  "TTS>=0.22",
+  "soundfile>=0.12",
+]
 
 [project.scripts]
 vortex = "c3rnt2.__main__:main"

@@ -2,7 +2,7 @@ param(
   [switch]$Build,
   [switch]$NoBrowser,
   [switch]$Logs,
-  [string]$ApiProfile = "rtx4080_16gb_gemma4_e4b_hf_docker"
+  [string]$ApiProfile = "rtx4080_16gb_programming_runtime_docker"
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,6 +39,11 @@ if (-not $dockerCmd) {
 }
 
 $env:VORTEX_API_PROFILE = $ApiProfile
+
+$spatialModelPath = Join-Path $root "vortex-chat\public\models\hand_landmarker.task"
+if (-not (Test-Path -LiteralPath $spatialModelPath)) {
+  Write-Step "Spatial assets missing. Run .\\scripts\\setup_spatial_assets.ps1 for full local hand tracking."
+}
 
 $cleanupArgs = @("compose", "-f", $composeFile, "--profile", "manual", "--profile", "qwen-sglang", "stop", "sglang-runtime", "vortex-api-sglang", "model-init", "eval")
 Write-Step "Stopping legacy SGLang/Qwen services if they are still running..."

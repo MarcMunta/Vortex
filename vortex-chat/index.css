@@ -210,6 +210,43 @@
       0 10px 35px -16px hsl(var(--primary) / 0.95),
       inset 0 1px 0 hsl(0 0% 100% / 0.24);
   }
+
+  .spatial-stage {
+    box-shadow:
+      0 40px 90px -50px hsl(var(--ambient-core) / 0.45),
+      inset 0 1px 0 hsl(0 0% 100% / 0.08);
+    backdrop-filter: blur(12px);
+  }
+
+  .spatial-grid {
+    background-image:
+      linear-gradient(hsl(var(--primary) / 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--primary) / 0.08) 1px, transparent 1px);
+    background-size: 36px 36px;
+    mask-image: radial-gradient(circle at center, black 55%, transparent 100%);
+  }
+
+  .spatial-panel {
+    border: 1px solid hsl(var(--border) / 0.72);
+    border-radius: 1.4rem;
+    background:
+      linear-gradient(180deg, hsl(0 0% 100% / 0.08), transparent 24%),
+      hsl(var(--surface-elevated) / 0.88);
+    box-shadow:
+      0 26px 80px -48px hsl(var(--ambient-core) / 0.55),
+      0 20px 44px -36px hsl(0 0% 0% / 0.8),
+      inset 0 1px 0 hsl(0 0% 100% / 0.08);
+    overflow: hidden;
+    backdrop-filter: blur(18px);
+    will-change: transform;
+  }
+
+  .spatial-panel.is-focused {
+    box-shadow:
+      0 0 0 1px hsl(var(--primary) / 0.42),
+      0 0 0 6px hsl(var(--primary) / 0.09),
+      0 30px 90px -42px hsl(var(--primary) / 0.75);
+  }
 }
 
 @layer utilities {

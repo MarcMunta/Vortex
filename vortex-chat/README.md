@@ -48,3 +48,32 @@ npm run dev
 El frontend queda servido en `http://127.0.0.1:4173` y hace reverse proxy a:
 - backend API (`/v1`, `/doctor`, `/metrics`, `/readyz`, `/healthz`)
 - control plane (`/control/*`)
+
+## Spatial Workspace
+
+La shell ahora incluye vista `Spatial` integrada en la navegaciÃ³n.
+
+Componentes nuevos:
+- `components/spatial/SpatialWorkspaceView.tsx`
+- `components/spatial/CameraGestureLayer.tsx`
+- `components/spatial/TransformCanvas.tsx`
+- `components/spatial/SpatialPanel.tsx`
+- `components/spatial/PresentationPanel.tsx`
+- `components/spatial/GestureDebugOverlay.tsx`
+- `components/spatial/SpatialToolbar.tsx`
+- `components/spatial/VoiceControlDock.tsx`
+
+Capacidades:
+- webcam local + hand tracking en browser
+- simulaciÃ³n fallback de gestos con ratÃ³n/teclado
+- paneles pseudo-3D con move / scale / rotate / tilt
+- dock de voz push-to-talk
+- guardado de sesiones/notas a Obsidian
+
+Smoke UI:
+```powershell
+npm run build
+npm run test:spatial-smoke
+```
+
+El smoke abre la UI en `http://127.0.0.1:4173`, entra en `Spatial` y verifica el heading principal.

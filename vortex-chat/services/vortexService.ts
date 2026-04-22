@@ -1,4 +1,18 @@
-import { AppMode, BrowserAction, ChatSession, GroundingSupport, Message, OperationalStatus, Role, Source, WorkspacePermissions } from "../types";
+import {
+  AppMode,
+  BrowserAction,
+  ChatSession,
+  GroundingSupport,
+  Message,
+  ObsidianStatus,
+  OperationalStatus,
+  Role,
+  Source,
+  SpatialSessionState,
+  VoiceStatus,
+  VoiceTranscriptionResult,
+  WorkspacePermissions,
+} from "../types";
 
 type StreamChunk = {
   text: string;
@@ -9,6 +23,18 @@ type StreamChunk = {
   browserActions?: BrowserAction[];
   requestId?: string;
   done: boolean;
+};
+
+const resolveApiBaseUrl = (): string => {
+  const raw = (import.meta.env.VITE_API_BASE_URL || "").trim();
+  if (raw) return raw.replace(/\/+$/, "");
+  const port = (
+    import.meta.env.VITE_BACKEND_PORT
+    || import.meta.env.VITE_API_PORT
+    || "8000"
+  ).trim() || "8000";
+  const host = typeof window !== "undefined" ? (window.location.hostname || "127.0.0.1") : "127.0.0.1";
+  return `http://${host}:${port}`;
 };
 
 const repairMojibakeText = (value: string): string => {
@@ -351,10 +377,15 @@ const parseSseLines = (rawEvent: string): string[] => {
 
 export class VortexService {
   private model: string = "auto";
+  private readonly baseUrl = resolveApiBaseUrl();
+
+  private url(path: string): string {
+    return `${this.baseUrl}${path}`;
+  }
 
   async fetchOperationalStatus(): Promise<OperationalStatus | null> {
     try {
-      const resp = await fetch("/v1/status");
+      const resp = await fetch(this.url("/v1/status"));
       const data = await resp.json();
       if (!data || typeof data !== "object") return null;
       return data as OperationalStatus;
@@ -405,7 +436,7 @@ export class VortexService {
           : undefined,
       };
 
-      const resp = await fetch("/v1/chat/completions", {
+      const resp = await fetch(this.url("/v1/chat/completions"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -537,7 +568,7 @@ export class VortexService {
   }
 
   async ingestOnce(): Promise<{ ok: boolean; newDocs?: number; error?: string }> {
-    const resp = await fetch("/v1/ingest", {
+    const resp = await fetch(this.url("/v1/ingest"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -580,7 +611,7 @@ export class VortexService {
       rating: "up",
       ideal_response: idealResponse,
     };
-    const resp = await fetch("/v1/feedback", {
+    const resp = await fetch(this.url("/v1/feedback"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -618,7 +649,7 @@ export class VortexService {
       summary,
       author: "frontend",
     };
-    const resp = await fetch("/v1/self-edits/proposals/from-diff", {
+    const resp = await fetch(this.url("/v1/self-edits/proposals/from-diff"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -642,7 +673,7 @@ export class VortexService {
     language: "es" | "en" = "es"
   ): Promise<{ ok: boolean; title?: string }> {
     try {
-      const resp = await fetch("/v1/chat/title", {
+      const resp = await fetch(this.url("/v1/chat/title"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, language }),
@@ -657,9 +688,204 @@ export class VortexService {
     }
   }
 
+  async getSpatialSession(): Promise<{ ok: boolean; session?: SpatialSessionState; error?: string }> {
+    try {
+      const resp = await fetch(this.url("/v1/spatial/session"));
+      const text = await resp.text().catch(() => "");
+      const parsed = JSON.parse(text);
+      if (resp.ok && parsed?.ok && parsed?.session) {
+        return { ok: true, session: parsed.session as SpatialSessionState };
+      }
+      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async updateSpatialSession(payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; error?: string }> {
+    try {
+      const resp = await fetch(this.url("/v1/spatial/session"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const text = await resp.text().catch(() => "");
+      const parsed = JSON.parse(text);
+      if (resp.ok && parsed?.ok && parsed?.session) {
+        return { ok: true, session: parsed.session as SpatialSessionState };
+      }
+      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async publishSpatialEvent(payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; error?: string }> {
+    try {
+      const resp = await fetch(this.url("/v1/spatial/events"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const text = await resp.text().catch(() => "");
+      const parsed = JSON.parse(text);
+      if (resp.ok && parsed?.ok && parsed?.session) {
+        return { ok: true, session: parsed.session as SpatialSessionState };
+      }
+      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async openSpatialPanel(payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: string }> {
+    try {
+      const resp = await fetch(this.url("/v1/spatial/panels/open"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const text = await resp.text().catch(() => "");
+      const parsed = JSON.parse(text);
+      if (resp.ok && parsed?.ok) {
+        return { ok: true, session: parsed.session as SpatialSessionState, panel: parsed.panel as Record<string, unknown> };
+      }
+      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async updateSpatialPanel(panelId: string, payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: string }> {
+    try {
+      const resp = await fetch(this.url("/v1/spatial/panels/update"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ panel_id: panelId, ...payload }),
+      });
+      const text = await resp.text().catch(() => "");
+      const parsed = JSON.parse(text);
+      if (resp.ok && parsed?.ok) {
+        return { ok: true, session: parsed.session as SpatialSessionState, panel: parsed.panel as Record<string, unknown> };
+      }
+      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async navigateSpatialPanel(panelId: string, delta: number): Promise<{ ok: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: string }> {
+    try {
+      const resp = await fetch(this.url("/v1/spatial/panels/navigate"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ panel_id: panelId, delta }),
+      });
+      const text = await resp.text().catch(() => "");
+      const parsed = JSON.parse(text);
+      if (resp.ok && parsed?.ok) {
+        return { ok: true, session: parsed.session as SpatialSessionState, panel: parsed.panel as Record<string, unknown> };
+      }
+      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async fetchVoiceStatus(): Promise<VoiceStatus | null> {
+    try {
+      const resp = await fetch(this.url("/v1/voice/status"));
+      const text = await resp.text().catch(() => "");
+      const parsed = JSON.parse(text);
+      if (resp.ok && parsed?.ok) {
+        return parsed as VoiceStatus;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async transcribeVoice(input: Blob | string, options?: { language?: "es" | "en" }): Promise<VoiceTranscriptionResult> {
+    try {
+      const init: RequestInit = {
+        method: "POST",
+      };
+      if (typeof input === "string") {
+        init.headers = { "Content-Type": "application/json" };
+        init.body = JSON.stringify({ text: input, language: options?.language });
+      } else {
+        init.headers = {
+          "Content-Type": input.type || "audio/webm",
+          "X-Vortex-Voice-Language": options?.language || "",
+        };
+        init.body = input;
+      }
+      const resp = await fetch(this.url("/v1/voice/transcribe"), init);
+      const text = await resp.text().catch(() => "");
+      const parsed = JSON.parse(text);
+      if (resp.ok && parsed?.ok) {
+        return parsed as VoiceTranscriptionResult;
+      }
+      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async speakText(text: string, language: "es" | "en" = "es"): Promise<{ ok: boolean; audio_url?: string; fallback_browser_tts?: boolean; text?: string; error?: string }> {
+    try {
+      const resp = await fetch(this.url("/v1/voice/speak"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, language }),
+      });
+      const raw = await resp.text().catch(() => "");
+      const parsed = JSON.parse(raw);
+      if (resp.ok && parsed?.ok) {
+        return parsed as { ok: boolean; audio_url?: string; fallback_browser_tts?: boolean; text?: string };
+      }
+      return { ok: false, error: parsed?.error || raw || `HTTP ${resp.status}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async fetchObsidianStatus(): Promise<ObsidianStatus | null> {
+    try {
+      const resp = await fetch(this.url("/v1/obsidian/status"));
+      const text = await resp.text().catch(() => "");
+      const parsed = JSON.parse(text);
+      if (resp.ok && parsed?.ok) {
+        return parsed as ObsidianStatus;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async configureObsidian(payload: { enabled?: boolean; vault_path?: string }) {
+    const resp = await fetch(this.url("/v1/obsidian/config"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return resp.json();
+  }
+
+  async saveObsidianNote(payload: { note_type?: string; title: string; content: string; tags?: string[]; metadata?: Record<string, unknown> }) {
+    const resp = await fetch(this.url("/v1/obsidian/save"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return resp.json();
+  }
+
   async fetchChatSessions(accountId: string): Promise<{ ok: boolean; sessions?: ChatSession[]; error?: string }> {
     try {
-      const resp = await fetch(`/v1/chat/sessions?account_id=${encodeURIComponent(accountId)}`);
+      const resp = await fetch(this.url(`/v1/chat/sessions?account_id=${encodeURIComponent(accountId)}`));
       const text = await resp.text().catch(() => "");
       const parsed = JSON.parse(text);
       if (resp.ok && parsed?.ok && Array.isArray(parsed?.sessions)) {
@@ -673,7 +899,7 @@ export class VortexService {
 
   async syncChatSessions(accountId: string, sessions: ChatSession[]): Promise<{ ok: boolean; error?: string }> {
     try {
-      const resp = await fetch("/v1/chat/sessions/sync", {
+      const resp = await fetch(this.url("/v1/chat/sessions/sync"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

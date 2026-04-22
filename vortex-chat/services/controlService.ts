@@ -2,6 +2,8 @@ import {
   AutonomyStreamPayload,
   AutonomyStatus,
   ControlStatus,
+  MultimodalStatus,
+  MultimodalStreamPayload,
   TrainingRunSummary,
   TrainingStreamPayload,
 } from "../types";
@@ -9,9 +11,8 @@ import {
 const resolveBaseUrl = (): string => {
   const raw = (import.meta.env.VITE_CONTROL_BASE_URL || "").trim();
   if (raw) return raw.replace(/\/+$/, "");
-  const port = (import.meta.env.VITE_CONTROL_PORT || "").trim();
-  if (!port) return "";
-  const host = window.location.hostname || "127.0.0.1";
+  const port = (import.meta.env.VITE_CONTROL_PORT || "8765").trim() || "8765";
+  const host = typeof window !== "undefined" ? (window.location.hostname || "127.0.0.1") : "127.0.0.1";
   return `http://${host}:${port}`;
 };
 
@@ -72,6 +73,34 @@ class ControlService {
       body: JSON.stringify({ domains }),
     });
     return Array.isArray(payload.domains) ? payload.domains : [];
+  }
+
+  async getMultimodalStatus(): Promise<MultimodalStatus | null> {
+    try {
+      const payload = await this.json<{ ok: boolean; status?: MultimodalStatus }>("/control/multimodal/status", { method: "GET" });
+      return payload.status || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async getVoiceStatus() {
+    return this.json("/control/voice/status", { method: "GET" });
+  }
+
+  async restartVoice() {
+    return this.json("/control/voice/restart", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async getObsidianStatus() {
+    return this.json("/control/obsidian/status", { method: "GET" });
+  }
+
+  async configureObsidian(payload: { enabled?: boolean; vault_path?: string }) {
+    return this.json("/control/obsidian/config", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
   }
 
   async startTraining(
@@ -186,6 +215,25 @@ class ControlService {
         onMessage(payload);
       } catch (error) {
         onError?.(error instanceof Error ? error : new Error("autonomy_stream_parse_failed"));
+      }
+    };
+    source.onerror = (event) => {
+      onError?.(event);
+    };
+    return () => source.close();
+  }
+
+  subscribeMultimodalStream(
+    onMessage: (payload: MultimodalStreamPayload) => void,
+    onError?: (error: Event | Error) => void,
+  ): () => void {
+    const source = new EventSource(`${this.baseUrl}/control/multimodal/stream`);
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as MultimodalStreamPayload;
+        onMessage(payload);
+      } catch (error) {
+        onError?.(error instanceof Error ? error : new Error("multimodal_stream_parse_failed"));
       }
     };
     source.onerror = (event) => {

@@ -221,6 +221,95 @@ def normalize_settings(settings: dict) -> dict:
     local_lab.setdefault("lab_confirmation_token", "LAB_CONFIRMED")
     normalized["local_lab"] = local_lab
 
+    voice = normalized.get("voice", {}) or {}
+    voice.setdefault("enabled", True)
+    voice.setdefault("push_to_talk", True)
+    voice.setdefault("vad_enabled", True)
+    voice.setdefault("whisper_model", "small")
+    voice.setdefault("tts_model", "tts_models/en/ljspeech/tacotron2-DDC")
+    voice.setdefault("output_dir", "data/multimodal/voice")
+    voice.setdefault("device", "auto")
+    voice.setdefault("compute_type", "int8")
+    normalized["voice"] = voice
+
+    camera = normalized.get("camera", {}) or {}
+    camera.setdefault("enabled", True)
+    camera.setdefault("device_id", "default")
+    camera.setdefault("frame_width", 960)
+    camera.setdefault("frame_height", 540)
+    camera.setdefault("fps", 24)
+    normalized["camera"] = camera
+
+    gesture = normalized.get("gesture", {}) or {}
+    gesture.setdefault("enabled", True)
+    gesture.setdefault("mediapipe_enabled", True)
+    gesture.setdefault("pinch_threshold", 0.065)
+    gesture.setdefault("open_palm_threshold", 0.58)
+    gesture.setdefault("fist_threshold", 0.22)
+    gesture.setdefault("swipe_velocity_threshold", 0.12)
+    gesture.setdefault("dwell_ms", 500)
+    gesture.setdefault("debounce_ms", 140)
+    gesture.setdefault("smoothing", 0.4)
+    gesture.setdefault("model_asset_path", "vortex-chat/public/models/hand_landmarker.task")
+    normalized["gesture"] = gesture
+
+    spatial_ui = normalized.get("spatial_ui", {}) or {}
+    spatial_ui.setdefault("enabled", True)
+    spatial_ui.setdefault("workspace_name", "Spatial Workspace")
+    spatial_ui.setdefault("perspective_enabled", True)
+    spatial_ui.setdefault("default_perspective", 1100)
+    spatial_ui.setdefault("stage_width", 1440)
+    spatial_ui.setdefault("stage_height", 900)
+    normalized["spatial_ui"] = spatial_ui
+
+    obsidian = normalized.get("obsidian", {}) or {}
+    obsidian.setdefault("enabled", True)
+    obsidian.setdefault("vault_path", "data/obsidian_vault")
+    obsidian.setdefault(
+        "folder_map",
+        {
+            "architecture": "Projects/Vortex/Architecture",
+            "session": "Projects/Vortex/Sessions",
+            "decision": "Projects/Vortex/Decisions",
+            "prompt": "Projects/Vortex/Prompts",
+            "bug": "Projects/Vortex/Bugs",
+            "experiment": "Projects/Vortex/Experiments",
+        },
+    )
+    normalized["obsidian"] = obsidian
+
+    multimodal_memory = normalized.get("multimodal_memory", {}) or {}
+    multimodal_memory.setdefault("enabled", True)
+    multimodal_memory.setdefault("state_path", "data/multimodal/spatial_session.json")
+    multimodal_memory.setdefault("max_notes", 4)
+    multimodal_memory.setdefault("max_chars", 1200)
+    normalized["multimodal_memory"] = multimodal_memory
+
+    multimodal_context = normalized.get("multimodal_context", {}) or {}
+    multimodal_context.setdefault("enabled", True)
+    multimodal_context.setdefault("max_chars", 1800)
+    multimodal_context.setdefault("include_memory", True)
+    multimodal_context.setdefault("include_spatial_selection", True)
+    multimodal_context.setdefault("include_voice", True)
+    multimodal_context.setdefault("include_gesture", True)
+    normalized["multimodal_context"] = multimodal_context
+
+    presentation = normalized.get("presentation", {}) or {}
+    presentation.setdefault("default_panel_type", "presentation")
+    presentation.setdefault("page_step", 1)
+    presentation.setdefault("swipe_enabled", True)
+    normalized["presentation"] = presentation
+
+    workspace_panels = normalized.get("workspace_panels", {}) or {}
+    workspace_panels.setdefault("max_active_panels", 12)
+    workspace_panels.setdefault("default_width", 360)
+    workspace_panels.setdefault("default_height", 220)
+    workspace_panels.setdefault(
+        "default_kinds",
+        ["note", "presentation", "browser", "image", "obsidian", "sketch"],
+    )
+    normalized["workspace_panels"] = workspace_panels
+
     adapters = normalized.get("adapters", {}) or {}
     adapters.setdefault("enabled", False)
     adapters.setdefault("allow_empty", False)
@@ -771,6 +860,15 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
     hf_train_cfg = settings.get("hf_train", {}) or {}
     adapters_cfg = settings.get("adapters", {}) or {}
     server_cfg = settings.get("server", {}) or {}
+    voice_cfg = settings.get("voice", {}) or {}
+    camera_cfg = settings.get("camera", {}) or {}
+    gesture_cfg = settings.get("gesture", {}) or {}
+    spatial_ui_cfg = settings.get("spatial_ui", {}) or {}
+    obsidian_cfg = settings.get("obsidian", {}) or {}
+    multimodal_memory_cfg = settings.get("multimodal_memory", {}) or {}
+    multimodal_context_cfg = settings.get("multimodal_context", {}) or {}
+    presentation_cfg = settings.get("presentation", {}) or {}
+    workspace_panels_cfg = settings.get("workspace_panels", {}) or {}
 
     if not tok.get("vortex_tok_path"):
         missing.append("tokenizer.vortex_tok_path")
@@ -976,6 +1074,46 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
     ):
         errors.append("server.train_host_ram_threshold_mb must be >= 0")
 
+    if voice_cfg:
+        if not str(voice_cfg.get("whisper_model") or "").strip():
+            errors.append("voice.whisper_model must not be empty")
+        if not str(voice_cfg.get("tts_model") or "").strip():
+            errors.append("voice.tts_model must not be empty")
+    for key in ("frame_width", "frame_height", "fps"):
+        raw_value = camera_cfg.get(key)
+        if raw_value is not None and int(raw_value) <= 0:
+            errors.append(f"camera.{key} must be > 0")
+    for key in ("pinch_threshold", "open_palm_threshold", "fist_threshold", "swipe_velocity_threshold", "smoothing"):
+        raw_value = gesture_cfg.get(key)
+        if raw_value is not None and float(raw_value) < 0:
+            errors.append(f"gesture.{key} must be >= 0")
+    for key in ("dwell_ms", "debounce_ms"):
+        raw_value = gesture_cfg.get(key)
+        if raw_value is not None and int(raw_value) < 0:
+            errors.append(f"gesture.{key} must be >= 0")
+    for key in ("default_perspective", "stage_width", "stage_height"):
+        raw_value = spatial_ui_cfg.get(key)
+        if raw_value is not None and float(raw_value) <= 0:
+            errors.append(f"spatial_ui.{key} must be > 0")
+    if obsidian_cfg and not isinstance(obsidian_cfg.get("folder_map", {}), dict):
+        errors.append("obsidian.folder_map must be a mapping")
+    if multimodal_memory_cfg.get("max_notes") is not None and int(multimodal_memory_cfg.get("max_notes", 1)) <= 0:
+        errors.append("multimodal_memory.max_notes must be > 0")
+    if multimodal_memory_cfg.get("max_chars") is not None and int(multimodal_memory_cfg.get("max_chars", 1)) <= 0:
+        errors.append("multimodal_memory.max_chars must be > 0")
+    if multimodal_context_cfg.get("max_chars") is not None and int(multimodal_context_cfg.get("max_chars", 1)) <= 0:
+        errors.append("multimodal_context.max_chars must be > 0")
+    if presentation_cfg.get("page_step") is not None and int(presentation_cfg.get("page_step", 1)) <= 0:
+        errors.append("presentation.page_step must be > 0")
+    if workspace_panels_cfg.get("max_active_panels") is not None and int(workspace_panels_cfg.get("max_active_panels", 1)) <= 0:
+        errors.append("workspace_panels.max_active_panels must be > 0")
+    for key in ("default_width", "default_height"):
+        raw_value = workspace_panels_cfg.get(key)
+        if raw_value is not None and float(raw_value) <= 0:
+            errors.append(f"workspace_panels.{key} must be > 0")
+    if not isinstance(workspace_panels_cfg.get("default_kinds", []), list):
+        errors.append("workspace_panels.default_kinds must be a list")
+
     if bool(local_sources_cfg.get("enabled", False)):
         for key in ("repo_paths", "corpus_paths", "lesson_paths"):
             raw_paths = local_sources_cfg.get(key, [])
@@ -1067,6 +1205,12 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
         _check_writable_path(local_lab.get("workspaces_path"), "local_lab.workspaces_path")
     if local_lab.get("sandbox_root"):
         _check_data_path(local_lab.get("sandbox_root"), "local_lab.sandbox_root")
+    if voice_cfg.get("output_dir"):
+        _check_writable_path(voice_cfg.get("output_dir"), "voice.output_dir")
+    if multimodal_memory_cfg.get("state_path"):
+        _check_data_path(multimodal_memory_cfg.get("state_path"), "multimodal_memory.state_path")
+    if obsidian_cfg.get("vault_path"):
+        _check_writable_path(obsidian_cfg.get("vault_path"), "obsidian.vault_path")
     instructions_cfg = settings.get("instructions", {}) or {}
     def _check_existing_text_path(path_value: str | Path | None, label: str) -> None:
         if not path_value:

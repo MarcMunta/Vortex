@@ -138,6 +138,57 @@ klimeai skills validate --all
 klimeai doctor --deep --mock
 ```
 
+## Multimodal Spatial Extension
+
+MÃ³dulos nuevos:
+- `src/c3rnt2/multimodal/voice_service.py`
+- `src/c3rnt2/multimodal/voice_models.py`
+- `src/c3rnt2/multimodal/spatial_state.py`
+- `src/c3rnt2/multimodal/panel_registry.py`
+- `src/c3rnt2/multimodal/obsidian_sync.py`
+- `src/c3rnt2/multimodal/memory_context.py`
+- `src/c3rnt2/multimodal/session_fusion.py`
+
+Responsabilidades:
+- STT/TTS local, push-to-talk primero
+- estado multimodal persistido en `data/multimodal/spatial_session.json`
+- notas curadas a Obsidian local
+- contexto fusionado de chat + foco spatial + gesto + voz + memoria curada
+
+InstalaciÃ³n backend con multimodal:
+```bash
+pip install -e .[api,multimodal]
+```
+
+Endpoints nuevos:
+```text
+GET  /v1/voice/status
+POST /v1/voice/restart
+POST /v1/voice/transcribe
+POST /v1/voice/speak
+GET  /v1/spatial/session
+POST /v1/spatial/session
+POST /v1/spatial/events
+POST /v1/spatial/panels/open
+POST /v1/spatial/panels/update
+POST /v1/spatial/panels/navigate
+GET  /v1/obsidian/status
+POST /v1/obsidian/config
+POST /v1/obsidian/save
+GET  /control/voice/status
+POST /control/voice/restart
+GET  /control/obsidian/status
+POST /control/obsidian/config
+GET  /control/multimodal/status
+GET  /control/multimodal/stream
+```
+
+Reglas operativas:
+- tracking de manos no depende del backend por frame
+- VLM/LLM solo en eventos semÃ¡nticos
+- Obsidian no es DB caliente; solo memoria curada
+- self-edit seguro sigue igual: proposal/apply/rollback
+
 ## Agent Skills (Skill Store)
 
 El backend soporta skills **prompt-only** (YAML + Markdown) que se inyectan como mensaje `system` en `POST /v1/chat/completions` cuando están habilitadas.

@@ -4,12 +4,13 @@ export enum Role {
   AI = 'ai'
 }
 
-export type ViewType = 'chat' | 'analysis' | 'training' | 'edits' | 'terminal';
+export type ViewType = 'chat' | 'spatial' | 'analysis' | 'training' | 'edits' | 'terminal';
 export type AppMode = 'ask' | 'agent';
 export type FontSize = 'small' | 'medium' | 'large';
 export type Language = 'es' | 'en';
 export type PermissionLevel = 'none' | 'full';
 export type PermissionActionMode = 'safe' | 'full';
+export type SpatialPanelKind = 'note' | 'presentation' | 'browser' | 'image' | 'obsidian' | 'sketch' | 'pdf';
 
 export interface WorkspacePermissions {
   level: PermissionLevel;
@@ -21,6 +22,128 @@ export interface WorkspacePermissions {
 export interface BrowserAction {
   target: string;
   opened?: boolean;
+}
+
+export interface SpatialTransform {
+  x: number;
+  y: number;
+  z: number;
+  scale: number;
+  rotation: number;
+  skew_x: number;
+  skew_y: number;
+  tilt_x: number;
+  tilt_y: number;
+  perspective: number;
+  width: number;
+  height: number;
+}
+
+export interface SpatialRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface SpatialPanelModel {
+  id: string;
+  type: SpatialPanelKind;
+  title: string;
+  content: string;
+  source?: Record<string, unknown>;
+  transform: SpatialTransform;
+  page_index: number;
+  page_count: number;
+  selected?: boolean;
+  locked?: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface SpatialSessionState {
+  session_id: string;
+  selected_object_id: string | null;
+  selected_region: SpatialRegion | null;
+  active_panel_ids: string[];
+  active_presentation_id: string | null;
+  active_page_index: number;
+  interaction_mode: string;
+  last_voice_command?: string | null;
+  last_gesture_event?: Record<string, unknown> | null;
+  camera_state?: Record<string, unknown> | null;
+  gesture_state?: Record<string, unknown> | null;
+  focused_item?: Record<string, unknown> | null;
+  recent_multimodal_summary?: string | null;
+  panels: SpatialPanelModel[];
+  updated_at: number;
+  created_at: number;
+}
+
+export interface VoiceIntent {
+  kind: string;
+  panel_id?: string | null;
+  query?: string;
+  target?: string;
+  panel_type?: string;
+  delta?: number;
+  transform?: Record<string, number>;
+}
+
+export interface VoiceStatus {
+  ok: boolean;
+  enabled: boolean;
+  push_to_talk?: boolean;
+  vad_enabled?: boolean;
+  whisper_model?: string;
+  tts_model?: string;
+  asr_backend?: string;
+  tts_backend?: string;
+  asr_available?: boolean;
+  tts_available?: boolean;
+  output_dir?: string;
+  error?: string;
+}
+
+export interface VoiceTranscriptionResult {
+  ok: boolean;
+  transcript?: string;
+  detected_language?: string | null;
+  intent?: VoiceIntent | null;
+  action_result?: Record<string, unknown> | null;
+  stored_path?: string | null;
+  error?: string;
+}
+
+export interface ObsidianStatus {
+  ok: boolean;
+  enabled: boolean;
+  vault_path?: string | null;
+  resolved_vault_path?: string | null;
+  available?: boolean;
+  validated?: boolean;
+  folders?: Record<string, string>;
+  last_saved_note?: string | null;
+  error?: string;
+}
+
+export interface MultimodalStatus {
+  ok: boolean;
+  voice?: VoiceStatus;
+  spatial?: SpatialSessionState | null;
+  camera?: Record<string, unknown> | null;
+  gesture?: Record<string, unknown> | null;
+  obsidian?: ObsidianStatus;
+  fusion?: {
+    enabled?: boolean;
+    summary?: string | null;
+    refs?: Array<Record<string, unknown>>;
+  };
+}
+
+export interface MultimodalStreamPayload {
+  ts: number;
+  status: MultimodalStatus;
 }
 
 export interface LocalAccount {
@@ -466,6 +589,7 @@ export interface ControlStatus {
     digest?: string | null;
     sources?: string[];
   };
+  multimodal?: MultimodalStatus;
   autonomy?: AutonomyStatus;
   active_run_id?: string | null;
   runs?: TrainingRunSummary[];

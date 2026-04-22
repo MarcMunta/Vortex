@@ -6,6 +6,7 @@ import {
   CircleUserRound,
   FileCode2,
   FlaskConical,
+  Layers3,
   MessageSquare,
   Moon,
   PanelLeftClose,
@@ -76,12 +77,13 @@ const Sidebar: React.FC<SidebarProps> = ({
   const navigation = useMemo(
     () => [
       { id: 'chat' as ViewType, label: t.nav_chat, icon: MessageSquare },
+      { id: 'spatial' as ViewType, label: t.nav_spatial, icon: Layers3 },
       { id: 'analysis' as ViewType, label: t.nav_analysis, icon: BarChart3 },
       { id: 'training' as ViewType, label: t.nav_training, icon: FlaskConical },
       { id: 'edits' as ViewType, label: t.nav_edits, icon: FileCode2, badge: selfEditsPendingCount },
       { id: 'terminal' as ViewType, label: t.nav_terminal, icon: TerminalSquare },
     ],
-    [selfEditsPendingCount, t.nav_analysis, t.nav_chat, t.nav_edits, t.nav_terminal, t.nav_training],
+    [selfEditsPendingCount, t.nav_analysis, t.nav_chat, t.nav_edits, t.nav_spatial, t.nav_terminal, t.nav_training],
   );
 
   const orderedSessions = useMemo(

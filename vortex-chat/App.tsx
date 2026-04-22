@@ -1,6 +1,6 @@
 
 import React, { Suspense, lazy, useState, useEffect, useRef, useCallback } from 'react';
-import { PanelLeft, Globe, Zap, MessageSquare, BarChart3, Terminal as TerminalIcon, FileCode, FlaskConical } from 'lucide-react';
+import { PanelLeft, Globe, Zap, MessageSquare, BarChart3, Terminal as TerminalIcon, FileCode, FlaskConical, Layers3 } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import ChatInput from './components/ChatInput';
 import type { SettingsTab } from './components/SettingsModal';
@@ -18,6 +18,7 @@ const SettingsModal = lazy(() => import('./components/SettingsModal'));
 const HelpModal = lazy(() => import('./components/HelpModal'));
 const ReasoningDrawer = lazy(() => import('./components/ReasoningDrawer'));
 const AnalysisView = lazy(() => import('./components/AnalysisView'));
+const SpatialWorkspaceView = lazy(() => import('./components/spatial/SpatialWorkspaceView'));
 const TrainingView = lazy(() => import('./components/TrainingView'));
 const TerminalView = lazy(() => import('./components/TerminalView'));
 const SelfEditsView = lazy(() => import('./components/SelfEditsView'));
@@ -38,7 +39,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   permissions: DEFAULT_PERMISSIONS,
 };
 
-const VIEW_INDEX: Record<ViewType, number> = { 'chat': 0, 'analysis': 1, 'training': 2, 'edits': 3, 'terminal': 4 };
+const VIEW_INDEX: Record<ViewType, number> = { 'chat': 0, 'spatial': 1, 'analysis': 2, 'training': 3, 'edits': 4, 'terminal': 5 };
 
 const repairMojibakeText = (value: string | null | undefined): string => {
   if (!value || !/[ÃÂ]/.test(value)) return value ?? '';
@@ -992,7 +993,14 @@ const VORTEX_CONFIG = {
     addLog('SYSTEM', settings.language === 'es' ? 'Carga de demostración completada.' : 'Demo load complete.');
   }, [currentSessionId, addLog, settings.language, t]);
 
-  const handleSendMessageLocalFirst = async (content: string, useInternet: boolean = false, selectedMode: AppMode = 'ask', useThinking: boolean = true, autoTrain: boolean = true) => {
+  const handleSendMessageLocalFirst = async (
+    content: string,
+    useInternet: boolean = false,
+    selectedMode: AppMode = 'ask',
+    useThinking: boolean = true,
+    autoTrain: boolean = true,
+    options?: { preserveView?: boolean },
+  ) => {
     if (sendDisabledReason) {
       addLog('SYSTEM', sendDisabledReason);
       return;
@@ -1008,7 +1016,7 @@ const VORTEX_CONFIG = {
     if (!targetSessionId) return;
 
     setMode(selectedMode);
-    if (activeView !== 'chat') handleSelectView('chat');
+    if (!options?.preserveView && activeView !== 'chat') handleSelectView('chat');
     setHeaderVisible(true);
     setFooterVisible(true);
     resetInactivityTimer();
@@ -1169,7 +1177,7 @@ const VORTEX_CONFIG = {
               </div>
               <div className="flex items-center gap-3">
                 <motion.button whileHover={{ scale: 1.06, backgroundColor: 'hsla(var(--muted) / 0.8)' }} whileTap={{ scale: 0.94 }} onClick={() => setSettings({ ...settings, language: settings.language === 'es' ? 'en' : 'es' })} className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full border border-border/60 bg-muted/20 transition-all shadow-sm"><img src={settings.language === 'es' ? 'https://flagcdn.com/w80/es.png' : 'https://flagcdn.com/w80/us.png'} alt={settings.language} className="h-6 w-6 rounded-full object-cover select-none" /></motion.button>
-                <div className="flex items-center gap-1 rounded-[1rem] border border-border/60 bg-muted/20 p-1 relative">{(['chat', 'analysis', 'training', 'edits', 'terminal'] as ViewType[]).map(v => (<button key={v} onClick={() => handleSelectView(v)} className={`relative rounded-[0.85rem] p-2.5 transition-all z-10 ${activeView === v ? 'text-primary-foreground' : 'text-muted-foreground dark:text-zinc-400 hover:text-foreground'}`}>{v === 'chat' ? <MessageSquare size={16} /> : v === 'analysis' ? <BarChart3 size={16} /> : v === 'training' ? <FlaskConical size={16} /> : v === 'edits' ? <FileCode size={16} /> : <TerminalIcon size={16} />}{activeView === v && <motion.div layoutId="header-nav-indicator" className="absolute inset-0 bg-primary rounded-[0.85rem] -z-10" transition={springConfig} />}</button>))}</div>
+                <div className="flex items-center gap-1 rounded-[1rem] border border-border/60 bg-muted/20 p-1 relative">{(['chat', 'spatial', 'analysis', 'training', 'edits', 'terminal'] as ViewType[]).map(v => (<button key={v} onClick={() => handleSelectView(v)} className={`relative rounded-[0.85rem] p-2.5 transition-all z-10 ${activeView === v ? 'text-primary-foreground' : 'text-muted-foreground dark:text-zinc-400 hover:text-foreground'}`}>{v === 'chat' ? <MessageSquare size={16} /> : v === 'spatial' ? <Layers3 size={16} /> : v === 'analysis' ? <BarChart3 size={16} /> : v === 'training' ? <FlaskConical size={16} /> : v === 'edits' ? <FileCode size={16} /> : <TerminalIcon size={16} />}{activeView === v && <motion.div layoutId="header-nav-indicator" className="absolute inset-0 bg-primary rounded-[0.85rem] -z-10" transition={springConfig} />}</button>))}</div>
                 <TopBarStackStatus
                   status={operationalStatus}
                   controlStatus={controlStatus}
@@ -1311,6 +1319,7 @@ const VORTEX_CONFIG = {
                   )}
                 </motion.div>
               )}
+              {activeView === 'spatial' && <motion.div key="spatial" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><Suspense fallback={lazyPanelFallback}><SpatialWorkspaceView language={settings.language} controlStatus={controlStatus} onAddLog={addLog} onSendPrompt={handleSendMessageLocalFirst} /></Suspense></motion.div>}
               {activeView === 'analysis' && <motion.div key="analysis" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><Suspense fallback={lazyPanelFallback}><AnalysisView sessions={sessions} onNavigateToChat={handleNavigateToChat} onAddLog={addLog} language={settings.language} controlStatus={controlStatus} operationalStatus={operationalStatus} onBootstrap={() => controlService.bootstrap(false)} onModelInit={() => controlService.initModel()} onRestartRuntime={() => controlService.restartRuntime()} onReloadInstructions={() => controlService.reloadInstructions()} onStartTraining={(trainingMode) => controlService.startTraining(trainingMode)} onSaveAllowlist={(domains) => controlService.saveAllowlist(domains)} focusTab={analysisFocusTab} /></Suspense></motion.div>}
               {activeView === 'training' && <motion.div key="training" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><Suspense fallback={lazyPanelFallback}><TrainingView sessions={sessions} language={settings.language} controlStatus={controlStatus} onAddLog={addLog} onStartTraining={(trainingMode) => controlService.startTraining(trainingMode)} onStartAutonomy={() => controlService.startAutonomy()} onStopAutonomy={() => controlService.stopAutonomy()} onConfigureAutonomy={(config) => controlService.configureAutonomy(config)} /></Suspense></motion.div>}
               {activeView === 'edits' && <motion.div key="edits" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><Suspense fallback={lazyPanelFallback}><SelfEditsView language={settings.language} onAddLog={addLog} onPendingCountChange={setSelfEditsPendingCount} /></Suspense></motion.div>}
