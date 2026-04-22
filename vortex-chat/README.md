@@ -37,3 +37,14 @@ npm run dev
 
 - `VORTEX_BACKEND_PORT` (o `BACKEND_PORT`): puerto del backend (default `8000`).
 - `VORTEX_API_TOKEN` (o `KLIMEAI_API_TOKEN`): token Bearer si el backend lo requiere para `/v1/*` (se inyecta desde el proxy; no se expone al navegador).
+- `VITE_CONTROL_BASE_URL`: opcional, solo si quieres forzar una URL externa para `/control/*`. Por defecto la UI usa mismo origen y, en dev, el proxy de Vite.
+
+## Docker
+
+```powershell
+..\run_docker.ps1
+```
+
+El frontend queda servido en `http://127.0.0.1:4173` y hace reverse proxy a:
+- backend API (`/v1`, `/doctor`, `/metrics`, `/readyz`, `/healthz`)
+- control plane (`/control/*`)

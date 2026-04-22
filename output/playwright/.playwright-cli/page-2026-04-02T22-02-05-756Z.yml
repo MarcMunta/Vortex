@@ -1,0 +1,126 @@
+- generic [ref=e3]:
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - button "Vortex Local core Vortex Frontend principal" [ref=e8] [cursor=pointer]:
+          - img "Vortex" [ref=e11]
+          - generic [ref=e12]:
+            - paragraph [ref=e13]: Local core
+            - paragraph [ref=e14]: Vortex
+            - paragraph [ref=e15]: Frontend principal
+        - button "Cerrar lateral" [ref=e16] [cursor=pointer]:
+          - img [ref=e17]
+      - button "Nueva sesión Abrir chat limpio" [ref=e20] [cursor=pointer]:
+        - generic [ref=e21]:
+          - paragraph [ref=e22]: Nueva sesión
+          - paragraph [ref=e23]: Abrir chat limpio
+        - img [ref=e25]
+    - generic [ref=e27]:
+      - button "Chat" [ref=e28] [cursor=pointer]:
+        - img [ref=e31]
+        - generic [ref=e33]: Chat
+      - button "Control" [ref=e34] [cursor=pointer]:
+        - img [ref=e36]
+        - generic [ref=e38]: Control
+      - button "Entrenamiento" [ref=e39] [cursor=pointer]:
+        - img [ref=e41]
+        - generic [ref=e43]: Entrenamiento
+      - button "Cambios" [ref=e44] [cursor=pointer]:
+        - img [ref=e46]
+        - generic [ref=e51]: Cambios
+      - button "Registros" [ref=e52] [cursor=pointer]:
+        - img [ref=e54]
+        - generic [ref=e57]: Registros
+    - generic [ref=e58]:
+      - generic [ref=e60]:
+        - paragraph [ref=e61]: Sesiones
+        - paragraph [ref=e62]: 1 activas
+      - generic [ref=e217]:
+        - button "Prueba de chat degradado 2 mensajes · 00:01" [ref=e233] [cursor=pointer]:
+          - generic [ref=e220]:
+            - paragraph [ref=e221]: Prueba de chat degradado
+            - paragraph [ref=e222]: 2 mensajes · 00:01
+        - button "Eliminar sesión" [ref=e223] [cursor=pointer]:
+          - img [ref=e224]
+    - generic [ref=e63]:
+      - generic [ref=e64]:
+        - button "Modo oscuro" [ref=e65] [cursor=pointer]:
+          - img [ref=e66]
+          - generic [ref=e68]: Modo oscuro
+        - button "Configuracion" [ref=e69] [cursor=pointer]:
+          - img [ref=e70]
+      - button "VO Vortex Local local@vortex.dev" [ref=e74] [cursor=pointer]:
+        - generic [ref=e75]: VO
+        - generic [ref=e76]:
+          - paragraph [ref=e77]: Vortex Local
+          - paragraph [ref=e78]: local@vortex.dev
+        - img [ref=e80]
+  - main [ref=e84]:
+    - generic [ref=e85]:
+      - generic [ref=e87]:
+        - img "Vortex" [ref=e91]
+        - generic [ref=e92]:
+          - generic [ref=e93]:
+            - heading "Vortex" [level=1] [ref=e94]
+            - generic [ref=e95]: HF
+          - generic [ref=e96]: NUCLEO_SISTEMA
+      - generic [ref=e97]:
+        - button "es" [ref=e98] [cursor=pointer]:
+          - img "es" [ref=e99]
+        - generic [ref=e100]:
+          - button [ref=e101] [cursor=pointer]:
+            - img [ref=e102]
+          - button [ref=e105] [cursor=pointer]:
+            - img [ref=e106]
+          - button [ref=e108] [cursor=pointer]:
+            - img [ref=e109]
+          - button [ref=e111] [cursor=pointer]:
+            - img [ref=e112]
+          - button [ref=e117] [cursor=pointer]:
+            - img [ref=e118]
+        - button "Chat degradado HF - http://127.0.0.1:30000" [ref=e227] [cursor=pointer]:
+          - img [ref=e228]
+          - generic [ref=e125]:
+            - paragraph [ref=e126]: Chat degradado
+            - paragraph [ref=e127]: HF - http://127.0.0.1:30000
+          - img [ref=e128]
+        - button "ALT+K" [ref=e130] [cursor=pointer]:
+          - img [ref=e131]
+          - generic [ref=e133]: ALT+K
+    - generic [ref=e236]:
+      - generic [ref=e240]:
+        - paragraph [ref=e243]: Prueba de chat degradado
+        - generic [ref=e245]: 00:01
+      - generic [ref=e248]:
+        - img [ref=e250]
+        - generic [ref=e254]:
+          - generic [ref=e255]:
+            - button "Copiar" [ref=e256] [cursor=pointer]:
+              - img [ref=e257]
+              - text: Copiar
+            - button "Razonando..." [ref=e260] [cursor=pointer]:
+              - img [ref=e262]
+              - generic [ref=e271]: Razonando...
+              - img [ref=e272]
+          - generic [ref=e274]: 00:01
+    - generic [ref=e188]:
+      - generic [ref=e280]: Procesando
+      - generic [ref=e189]:
+        - button "Modo Thinking activo" [ref=e191] [cursor=pointer]:
+          - img [ref=e192]
+        - textbox "Escribe una consulta..." [ref=e195]
+        - generic [ref=e196]:
+          - generic [ref=e197]:
+            - button "CONSULTA" [ref=e199] [cursor=pointer]
+            - button "AGENTE" [ref=e200] [cursor=pointer]
+          - button "Activar Internet" [ref=e201] [cursor=pointer]:
+            - img [ref=e202]
+          - button "Encolar para aprendizaje inactivo" [ref=e205] [cursor=pointer]:
+            - img [ref=e206]
+          - button "Detener" [active] [ref=e281] [cursor=pointer]:
+            - img [ref=e282]
+      - generic [ref=e211]:
+        - generic [ref=e212]:
+          - generic [ref=e213]: Consulta guiada
+          - generic [ref=e214]: Thinking
+        - paragraph [ref=e215]: Enter para enviar. Shift+Enter para nueva línea.

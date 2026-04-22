@@ -17,7 +17,7 @@ interface VirtualizedMessageListProps {
 }
 
 const BUFFER_COUNT = 5; 
-const ESTIMATED_HEIGHT = 160;
+const ESTIMATED_HEIGHT = 124;
 
 const VirtualizedMessageList: React.FC<VirtualizedMessageListProps> = ({
   messages,

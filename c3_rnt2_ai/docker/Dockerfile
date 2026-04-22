@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /workspace
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl \
+    && apt-get install -y --no-install-recommends git curl docker.io docker-compose \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . /workspace

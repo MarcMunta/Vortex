@@ -14,11 +14,13 @@ class FileLock:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self._fd: Optional[int] = None
+        self._held: bool = False
 
     def acquire(self, blocking: bool = False, timeout_s: float | None = None, poll_interval_s: float = 0.1) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         flags = os.O_RDWR | os.O_CREAT
         self._fd = os.open(self.path, flags)
+        self._held = False
         try:
             deadline = None
             if blocking:
@@ -41,6 +43,7 @@ class FileLock:
                         import fcntl
 
                         fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self._held = True
                     return
                 except OSError as exc:
                     if not blocking:
@@ -60,20 +63,22 @@ class FileLock:
         if self._fd is None:
             return
         try:
-            if os.name == "nt":
-                import msvcrt
+            if self._held:
+                if os.name == "nt":
+                    import msvcrt
 
-                msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
+                    msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
 
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
+                    fcntl.flock(self._fd, fcntl.LOCK_UN)
         finally:
             try:
                 os.close(self._fd)
             except Exception:
                 pass
             self._fd = None
+            self._held = False
 
     def __enter__(self) -> "FileLock":
         self.acquire(blocking=False)
@@ -86,14 +91,20 @@ class FileLock:
 
 def acquire_exclusive_lock(base_dir: Path, role: str) -> FileLock:
     role = role.lower()
-    roles = {"serve", "train", "self_patch"}
+    roles = {"serve", "serve_fallback", "train", "self_patch"}
     if role not in roles:
-        raise ValueError("role must be 'serve', 'train', or 'self_patch'")
+        raise ValueError("role must be 'serve', 'serve_fallback', 'train', or 'self_patch'")
+    conflicts = {
+        "serve": {"serve_fallback", "train", "self_patch"},
+        "serve_fallback": {"serve", "self_patch"},
+        "train": {"serve", "self_patch"},
+        "self_patch": {"serve", "serve_fallback", "train"},
+    }
     lock_dir = base_dir / "data" / "locks"
     own_path = lock_dir / f"{role}.lock"
     own_lock = FileLock(own_path)
     own_lock.acquire(blocking=False)
-    for other_role in roles - {role}:
+    for other_role in conflicts.get(role, set()):
         other_path = lock_dir / f"{other_role}.lock"
         other_lock = FileLock(other_path)
         try:
@@ -107,9 +118,9 @@ def acquire_exclusive_lock(base_dir: Path, role: str) -> FileLock:
 
 def is_lock_held(base_dir: Path, role: str) -> bool:
     role = role.lower()
-    roles = {"serve", "train", "self_patch"}
+    roles = {"serve", "serve_fallback", "train", "self_patch"}
     if role not in roles:
-        raise ValueError("role must be 'serve', 'train', or 'self_patch'")
+        raise ValueError("role must be 'serve', 'serve_fallback', 'train', or 'self_patch'")
     lock_dir = base_dir / "data" / "locks"
     path = lock_dir / f"{role}.lock"
     lock = FileLock(path)

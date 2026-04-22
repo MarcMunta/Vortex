@@ -1,0 +1,143 @@
+- generic [ref=e3]:
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - button "Vortex Local core Vortex Frontend principal" [ref=e8] [cursor=pointer]:
+          - img "Vortex" [ref=e11]
+          - generic [ref=e12]:
+            - paragraph [ref=e13]: Local core
+            - paragraph [ref=e14]: Vortex
+            - paragraph [ref=e15]: Frontend principal
+        - button "Cerrar lateral" [ref=e16] [cursor=pointer]:
+          - img [ref=e17]
+      - button "Nueva sesión Abrir chat limpio" [ref=e20] [cursor=pointer]:
+        - generic [ref=e21]:
+          - paragraph [ref=e22]: Nueva sesión
+          - paragraph [ref=e23]: Abrir chat limpio
+        - img [ref=e25]
+    - generic [ref=e27]:
+      - button "Chat" [ref=e28] [cursor=pointer]:
+        - img [ref=e31]
+        - generic [ref=e33]: Chat
+      - button "Control" [ref=e34] [cursor=pointer]:
+        - img [ref=e36]
+        - generic [ref=e38]: Control
+      - button "Entrenamiento" [ref=e39] [cursor=pointer]:
+        - img [ref=e41]
+        - generic [ref=e43]: Entrenamiento
+      - button "Cambios" [ref=e44] [cursor=pointer]:
+        - img [ref=e46]
+        - generic [ref=e51]: Cambios
+      - button "Registros" [ref=e52] [cursor=pointer]:
+        - img [ref=e54]
+        - generic [ref=e57]: Registros
+    - generic [ref=e60]:
+      - paragraph [ref=e61]: Sesiones
+      - paragraph [ref=e62]: 0 activas
+    - generic [ref=e63]:
+      - generic [ref=e64]:
+        - button "Modo oscuro" [ref=e65] [cursor=pointer]:
+          - img [ref=e66]
+          - generic [ref=e68]: Modo oscuro
+        - button "Configuracion" [ref=e69] [cursor=pointer]:
+          - img [ref=e70]
+      - button "VO Vortex Local local@vortex.dev" [ref=e74] [cursor=pointer]:
+        - generic [ref=e75]: VO
+        - generic [ref=e76]:
+          - paragraph [ref=e77]: Vortex Local
+          - paragraph [ref=e78]: local@vortex.dev
+        - img [ref=e80]
+  - main [ref=e84]:
+    - generic [ref=e85]:
+      - generic [ref=e87]:
+        - img "Vortex" [ref=e91]
+        - generic [ref=e92]:
+          - generic [ref=e93]:
+            - heading "Vortex" [level=1] [ref=e94]
+            - generic [ref=e95]: LOCAL
+          - generic [ref=e96]: NUCLEO_SISTEMA
+      - generic [ref=e97]:
+        - button "es" [ref=e98] [cursor=pointer]:
+          - img "es" [ref=e99]
+        - generic [ref=e100]:
+          - button [ref=e101] [cursor=pointer]:
+            - img [ref=e102]
+          - button [ref=e105] [cursor=pointer]:
+            - img [ref=e106]
+          - button [ref=e108] [cursor=pointer]:
+            - img [ref=e109]
+          - button [ref=e111] [cursor=pointer]:
+            - img [ref=e112]
+          - button [ref=e117] [cursor=pointer]:
+            - img [ref=e118]
+        - button "Revisar stack SGLANG - Stack local pendiente." [ref=e121] [cursor=pointer]:
+          - img [ref=e123]
+          - generic [ref=e125]:
+            - paragraph [ref=e126]: Revisar stack
+            - paragraph [ref=e127]: SGLANG - Stack local pendiente.
+          - img [ref=e128]
+        - button "ALT+K" [ref=e130] [cursor=pointer]:
+          - img [ref=e131]
+          - generic [ref=e133]: ALT+K
+    - generic [ref=e136]:
+      - generic [ref=e137]:
+        - generic [ref=e138]:
+          - img "Vortex" [ref=e141]
+          - generic [ref=e142]: Vortex local core
+          - generic [ref=e144]: LOCAL
+        - generic [ref=e145]:
+          - heading "Una sola consola para chatear, controlar y mejorar Vortex." [level=2] [ref=e146]
+          - paragraph [ref=e147]: "La interfaz principal se comporta como una app de trabajo real: limpia, local y centrada en conversación, control del runtime y entrenamiento visible."
+        - generic [ref=e148]:
+          - generic [ref=e149]:
+            - paragraph [ref=e150]: Modo
+            - paragraph [ref=e151]: Consulta y agente
+          - generic [ref=e152]:
+            - paragraph [ref=e153]: Internet
+            - paragraph [ref=e154]: Solo al activarlo
+          - generic [ref=e155]:
+            - paragraph [ref=e156]: Entreno
+            - paragraph [ref=e157]: Visible y manual
+        - generic [ref=e158]:
+          - button "Cargar ejemplo" [ref=e159] [cursor=pointer]
+          - button "Abrir control" [ref=e160] [cursor=pointer]
+          - button "Entrenamiento" [ref=e161] [cursor=pointer]
+        - paragraph [ref=e162]: Stack local no listo.
+      - generic [ref=e165]:
+        - generic [ref=e166]:
+          - generic [ref=e167]: Estado base
+          - generic [ref=e168]: Pendiente
+        - generic [ref=e169]:
+          - img "Vortex mark" [ref=e173]
+          - generic [ref=e174]:
+            - paragraph [ref=e175]: Revisa el estado antes de empezar.
+            - paragraph [ref=e176]: Stack local no listo.
+        - generic [ref=e177]:
+          - generic [ref=e178]:
+            - paragraph [ref=e179]: Runtime
+            - paragraph [ref=e180]: LOCAL
+            - paragraph [ref=e181]: 127.0.0.1
+          - generic [ref=e182]:
+            - paragraph [ref=e183]: Modelo activo
+            - paragraph [ref=e184]: Modelo base pendiente
+            - paragraph [ref=e185]: Política web editable
+    - generic [ref=e188]:
+      - generic [ref=e189]:
+        - button "Modo Thinking activo" [ref=e191] [cursor=pointer]:
+          - img [ref=e192]
+        - textbox "Escribe una consulta..." [ref=e195]
+        - generic [ref=e196]:
+          - generic [ref=e197]:
+            - button "CONSULTA" [ref=e199] [cursor=pointer]
+            - button "AGENTE" [ref=e200] [cursor=pointer]
+          - button "Activar Internet" [disabled] [ref=e201]:
+            - img [ref=e202]
+          - button "Encolar para aprendizaje inactivo" [disabled] [ref=e205]:
+            - img [ref=e206]
+          - button "Enviar mensaje" [disabled] [ref=e208]:
+            - img [ref=e209]
+      - generic [ref=e211]:
+        - generic [ref=e212]:
+          - generic [ref=e213]: Consulta guiada
+          - generic [ref=e214]: Thinking
+        - paragraph [ref=e215]: Stack local no listo.

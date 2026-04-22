@@ -246,6 +246,212 @@ profiles:
       # kv_quant=2bit is experimental; requires kv_quant_2bit_experimental + i_know_what_im_doing.
       i_know_what_im_doing: false
 
+  gemma3_12b_hf_base:
+    # Gemma 3 12B IT (gated on Hugging Face). Kept as a smaller fallback profile.
+    base_profile: qwen8b_base
+    core:
+      backend: hf
+      hf_model: "google/gemma-3-12b-it"
+      hf_model_loader: image_text_to_text
+      hf_processor_padding_side: left
+      hf_device_map: auto
+      hf_max_memory:
+        0: "14GiB"
+        cpu: "48GiB"
+      hf_offload_folder: "data/hf_offload"
+      hf_use_safetensors: true
+      hf_load_in_4bit: true
+      hf_device: cuda
+      hf_attn_implementation: sdpa
+      hf_system_prompt: "You are Vortex, a helpful coding assistant."
+      hf_use_latest_adapter: false
+      hf_adapter_path: null
+      hf_merge_adapter: false
+      dtype: bf16
+      backend_fallback: null
+      allow_implicit_hf_fallback: false
+      vram_threshold_mb: 1600
+      vram_floor_tokens: 32
+      vram_ceil_tokens: 512
+      vram_safety_margin_mb: 768
+    decode:
+      max_new_tokens: 256
+
+  rtx4080_16gb_gemma3_12b_hf:
+    # Smaller Gemma profile preserved for manual selection.
+    base_profile: gemma3_12b_hf_base
+    core:
+      hf_load_in_4bit: true
+      hf_device: cuda
+      hf_attn_implementation: sdpa
+      dtype: bf16
+      backend_fallback: null
+    decode:
+      max_new_tokens: 256
+
+  gemma4_26b_a4b_hf_base:
+    # Gemma 4 26B-A4B is the strongest Gemma 4 profile that still makes sense as a
+    # primary Windows/HF local model on a RTX 4080 16GB. It keeps Gemma 4 quality
+    # while favoring latency and fit over the heavier 31B Dense profile.
+    base_profile: qwen8b_base
+    core:
+      backend: hf
+      hf_model: "google/gemma-4-26B-A4B-it"
+      hf_model_loader: image_text_to_text
+      hf_processor_padding_side: left
+      hf_enable_thinking: false
+      hf_device_map: auto
+      hf_max_memory:
+        0: "14GiB"
+        cpu: "48GiB"
+      hf_offload_folder: "data/hf_offload"
+      hf_use_safetensors: true
+      hf_load_in_4bit: false
+      hf_device: cuda
+      hf_attn_implementation: sdpa
+      hf_system_prompt: "You are Vortex, a helpful coding assistant."
+      hf_use_latest_adapter: false
+      hf_adapter_path: null
+      hf_merge_adapter: false
+      dtype: bf16
+      backend_fallback: null
+      allow_implicit_hf_fallback: false
+      vram_threshold_mb: 2200
+      vram_floor_tokens: 24
+      vram_ceil_tokens: 384
+      vram_safety_margin_mb: 1024
+    decode:
+      max_new_tokens: 192
+
+  gemma4_e4b_hf_base:
+    # Gemma 4 E4B is the strongest practical Gemma 4 profile that starts
+    # reliably on a RTX 4080 16 GB without leaning on fragile 4-bit kernels.
+    base_profile: gemma4_26b_a4b_hf_base
+    core:
+      hf_model: "google/gemma-4-E4B-it"
+      hf_load_in_4bit: false
+      hf_device: cuda
+      hf_attn_implementation: sdpa
+      dtype: bf16
+      backend_fallback: null
+    decode:
+      max_new_tokens: 192
+
+  rtx4080_16gb_gemma4_26b_a4b_hf:
+    # Primary local LLM profile for this machine: Gemma 4 beats Gemma 3, and the
+    # 26B-A4B variant is the best practical Gemma 4 target for a 4080 16GB.
+    base_profile: gemma4_26b_a4b_hf_base
+    core:
+      hf_load_in_4bit: false
+      hf_device: cuda
+      hf_attn_implementation: sdpa
+      dtype: bf16
+      backend_fallback: null
+    server:
+      lazy_model_load: true
+    decode:
+      max_new_tokens: 192
+
+  rtx4080_16gb_gemma4_26b_a4b_hf_docker:
+    # Docker runs on Linux and can use bitsandbytes 4-bit quantization, which is
+    # the practical way to keep Gemma 4 26B-A4B responsive on a 16 GB RTX 4080.
+    base_profile: gemma4_26b_a4b_hf_base
+    core:
+      hf_load_in_4bit: true
+      hf_device: cuda
+      hf_attn_implementation: sdpa
+      dtype: bf16
+      backend_fallback: null
+    decode:
+      max_new_tokens: 192
+
+  rtx4080_16gb_gemma4_e4b_hf_docker:
+    # Default Docker profile: Gemma 4 quality with predictable startup on this PC.
+    base_profile: gemma4_e4b_hf_base
+    core:
+      hf_load_in_4bit: false
+      hf_device: cuda
+      hf_attn_implementation: sdpa
+      dtype: bf16
+      hf_use_latest_adapter: true
+      hf_merge_adapter: false
+      backend_fallback: null
+    server:
+      auto_reload_adapter: true
+      reload_interval_s: 15
+      allow_parallel_runtime_training: false
+      lazy_model_load: true
+    tools:
+      web:
+        enabled: true
+        allow_domains: []
+    security:
+      web:
+        strict: true
+        allowlist_domains: []
+    continuous:
+      ingest_web: false
+      ingest_urls: []
+      web_discovery:
+        enabled: false
+        seed_queries: []
+        max_urls_per_tick: 0
+        max_queue: 0
+    autolearn:
+      enabled: false
+      web_ingest: false
+      url_discovery: false
+      allow_domains: []
+    hf_train:
+      registry_dir: "data/registry/hf_train/gemma4_e4b"
+    decode:
+      max_new_tokens: 192
+
+  gemma4_31b_hf_base:
+    # Gemma 4 31B Dense remains the absolute quality ceiling in the Gemma family,
+    # but it is heavier and better kept as an opt-in profile on this hardware.
+    base_profile: qwen8b_base
+    core:
+      backend: hf
+      hf_model: "google/gemma-4-31B-it"
+      hf_model_loader: image_text_to_text
+      hf_processor_padding_side: left
+      hf_enable_thinking: false
+      hf_device_map: auto
+      hf_max_memory:
+        0: "14GiB"
+        cpu: "48GiB"
+      hf_offload_folder: "data/hf_offload"
+      hf_use_safetensors: true
+      hf_load_in_4bit: false
+      hf_device: cuda
+      hf_attn_implementation: sdpa
+      hf_system_prompt: "You are Vortex, a helpful coding assistant."
+      hf_use_latest_adapter: false
+      hf_adapter_path: null
+      hf_merge_adapter: false
+      dtype: bf16
+      backend_fallback: null
+      allow_implicit_hf_fallback: false
+      vram_threshold_mb: 2200
+      vram_floor_tokens: 24
+      vram_ceil_tokens: 384
+      vram_safety_margin_mb: 1024
+    decode:
+      max_new_tokens: 192
+
+  rtx4080_16gb_gemma4_31b_hf:
+    # Opt-in maximum-quality Gemma 4 profile.
+    base_profile: gemma4_31b_hf_base
+    core:
+      hf_load_in_4bit: false
+      hf_device: cuda
+      hf_attn_implementation: sdpa
+      dtype: bf16
+      backend_fallback: null
+    decode:
+      max_new_tokens: 192
+
   rtx4080_16gb:
     # RTX 4080 16GB + Ryzen 7800X3D (HF Qwen-8B)
     base_profile: qwen8b_base
@@ -400,6 +606,18 @@ profiles:
       disable_fallbacks: true
       approved_training_sources_only: false
       min_host_ram_free_mb: 4096
+
+  rtx4080_16gb_programming_runtime_docker:
+    # Default Docker runtime: stable programming stack backed by the compose SGLang service.
+    base_profile: rtx4080_16gb_programming_local
+    core:
+      external_base_url: "http://sglang-runtime:30000"
+    agent:
+      max_iters: 2
+    rag:
+      enabled: true
+      top_k: 6
+      max_chars: 2200
 
   ethical_security_lab_4080_offensive_lab:
     # Offensive simulation profile for isolated, user-owned security labs only.
@@ -603,6 +821,13 @@ profiles:
     core:
       backend: hf
       hf_model: "Qwen/Qwen2.5-7B-Instruct"
+      hf_use_latest_adapter: false
+      hf_adapter_path: null
+      hf_merge_adapter: false
+    rag:
+      enabled: false
+      top_k: 0
+      max_chars: 0
     tools:
       web:
         enabled: false
@@ -644,21 +869,21 @@ profiles:
       min_tokens_per_sec: 0
 
   rtx4080_16gb_programming_train_docker:
-    # Canonical training profile: Docker-first manual QLoRA over the local 14B family.
-    base_profile: rtx4080_16gb_programming_local
+    # Continuous training profile aligned with the live Gemma 4 E4B Docker runtime.
+    base_profile: rtx4080_16gb_gemma4_e4b_hf_docker
     core:
-      backend: external
-      external_engine: sglang
-      external_base_url: "http://127.0.0.1:30000"
-      external_model: "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
-      hf_model: "Qwen/Qwen2.5-Coder-14B-Instruct"
+      backend: hf
+      hf_model: "google/gemma-4-E4B-it"
+      hf_device: cuda
+      hf_load_in_4bit: true
+      hf_attn_implementation: sdpa
+      dtype: bf16
       backend_fallback: null
-      hf_fallback: null
-      allow_implicit_hf_fallback: false
     server:
-      train_strategy: subprocess_unload
+      train_strategy: inprocess
       auto_reload_adapter: false
       train_host_ram_threshold_mb: 8192
+      allow_parallel_runtime_training: false
     docker:
       enabled: true
       compose_path: "docker-compose.yml"
@@ -755,26 +980,38 @@ profiles:
       allow_domains: []
     hf_train:
       enabled: true
-      model_name: "Qwen/Qwen2.5-Coder-14B-Instruct"
-      registry_dir: "data/registry/hf_train/programming"
-      dataset_path: "data/registry/hf_train/programming_sft_samples.jsonl"
-      state_path: "data/registry/hf_train/programming_state.json"
+      model_name: "google/gemma-4-E4B-it"
+      registry_dir: "data/registry/hf_train/gemma4_e4b"
+      dataset_path: "data/registry/hf_train/gemma4_e4b_sft_samples.jsonl"
+      state_path: "data/registry/hf_train/gemma4_e4b_state.json"
       extra_training_paths:
         - "data/registry/hf_train/sft_samples.jsonl"
         - "data/registry/hf_train/programming_eval.jsonl"
+        - "config/datasets/flutter_dart_seed.jsonl"
+        - "config/datasets/flutter_dart_eval.jsonl"
+      source_kind_weights:
+        flutter_dart_seed: 2.5
+        flutter_dart_eval: 2.0
+        episode: 1.5
+        web: 0.8
+        memory: 1.0
+        logs: 0.5
       load_in_4bit: true
-      max_seq_len: 1024
+      max_seq_len: 768
       micro_batch_size: 1
-      grad_accum_steps: 16
-      max_steps: 25
+      grad_accum_steps: 8
+      max_steps: 12
       gradient_checkpointing: true
       lora_rank: 8
-      manual_promotion_only: true
+      target_module_scopes:
+        - "language_model.layers."
+        - "model.layers."
+      manual_promotion_only: false
     profile_contract:
       offline_required: true
       require_web_disabled: true
-      require_external_engine: sglang
-      require_local_base_url: true
+      require_external_engine:
+      require_local_base_url: false
       require_ollama: false
       require_docker: true
       disable_fallbacks: true

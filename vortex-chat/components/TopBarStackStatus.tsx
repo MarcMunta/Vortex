@@ -52,22 +52,57 @@ const TopBarStackStatus: React.FC<TopBarStackStatusProps> = ({
   }, []);
 
   const bootstrapRunning = Boolean(controlStatus?.bootstrap?.running);
+  const autonomy = controlStatus?.autonomy;
+  const maintenanceMode = Boolean(autonomy?.maintenance_mode);
+  const runtimeDrained = Boolean(autonomy?.runtime_drained_for_training);
+  const stackReady = Boolean(status?.ok);
+  const chatReady = Boolean(status?.chat_ready ?? status?.ok);
+  const chatMode = status?.chat_mode || (chatReady ? 'primary' : 'unavailable');
+  const runtimeMode = controlStatus?.runtime?.runtime_mode
+    || controlStatus?.runtime?.status?.runtime_mode
+    || status?.runtime_mode
+    || 'primary';
+  const fallbackActive = Boolean(
+    controlStatus?.runtime?.fallback_active
+    || controlStatus?.runtime?.status?.fallback_active
+    || status?.fallback_active,
+  );
+  const fallbackBackend = controlStatus?.runtime?.fallback_backend
+    || controlStatus?.runtime?.status?.fallback_backend
+    || status?.fallback_backend
+    || null;
+  const activeRun = (controlStatus?.runs || []).find((run) => run.run_id === controlStatus?.active_run_id) || controlStatus?.runs?.[0] || null;
   const runtimeReady = Boolean(controlStatus?.runtime?.runtime_ready || status?.engine_ready);
   const modelReady = Boolean(
     controlStatus?.model?.cached
     || status?.model_ready
     || controlStatus?.runtime?.runtime_ready
   );
-  const ready = Boolean(status?.ok && runtimeReady && modelReady);
+  const ready = Boolean(stackReady && runtimeReady && modelReady);
   const runtimeUrl = status?.engine_base_url || 'http://127.0.0.1:30000';
   const engineLabel = (status?.engine_kind || 'sglang').toUpperCase();
   const modelLabel = status?.active_model || controlStatus?.model?.model_id || 'Qwen/Qwen2.5-Coder-14B-Instruct-AWQ';
-  const reason = status?.degraded_reason
+  const reason = status?.chat_block_reason
+    || status?.degraded_reason
     || controlStatus?.bootstrap?.message
     || controlStatus?.docker?.reason
     || (language === 'es' ? 'Stack local pendiente.' : 'Local stack pending.');
 
   const summary = useMemo(() => {
+    if (chatMode === 'fallback_degraded' || fallbackActive) {
+      return {
+        label: language === 'es' ? 'Chat degradado' : 'Degraded chat',
+        tone: 'progress',
+        icon: <RefreshCw size={15} />,
+      };
+    }
+    if (maintenanceMode) {
+      return {
+        label: language === 'es' ? 'Entrenando' : 'Training',
+        tone: 'progress',
+        icon: <FlaskConical size={15} />,
+      };
+    }
     if (ready) {
       return {
         label: language === 'es' ? 'Local listo' : 'Local ready',
@@ -87,7 +122,7 @@ const TopBarStackStatus: React.FC<TopBarStackStatusProps> = ({
       tone: 'warning',
       icon: <TriangleAlert size={15} />,
     };
-  }, [bootstrapRunning, language, ready]);
+  }, [bootstrapRunning, chatMode, fallbackActive, language, maintenanceMode, ready]);
 
   const toneClasses =
     summary.tone === 'ready'
@@ -95,17 +130,26 @@ const TopBarStackStatus: React.FC<TopBarStackStatusProps> = ({
       : summary.tone === 'progress'
         ? 'border-primary/20 bg-primary/[0.08] text-primary'
         : 'border-amber-500/20 bg-amber-500/[0.10] text-amber-500';
-  const autonomy = controlStatus?.autonomy;
   const autonomyEnabled = Boolean(autonomy?.enabled);
   const autonomyState = autonomy?.state || (language === 'es' ? 'waiting' : 'waiting');
+  const queuePreview = (autonomy?.training_queue || []).slice(0, 2).join(' · ');
+  const trainingOutcome = autonomy?.last_training_outcome;
+  const nextCycleLabel = autonomy?.next_cycle_at
+    ? new Date(autonomy.next_cycle_at * 1000).toLocaleTimeString(language === 'es' ? 'es-ES' : 'en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : (language === 'es' ? 'sin ciclo' : 'no cycle');
 
   const items = [
     {
       key: 'runtime',
       icon: <Cpu size={14} />,
       label: language === 'es' ? 'Runtime' : 'Runtime',
-      value: runtimeReady ? (language === 'es' ? 'Activo' : 'Live') : (language === 'es' ? 'Pendiente' : 'Pending'),
-      caption: engineLabel,
+      value: fallbackActive
+        ? (language === 'es' ? 'Fallback activo' : 'Fallback active')
+        : chatReady ? (language === 'es' ? 'Activo' : 'Live') : (language === 'es' ? 'Pendiente' : 'Pending'),
+      caption: fallbackActive && fallbackBackend ? `${engineLabel} -> ${String(fallbackBackend).toUpperCase()}` : engineLabel,
     },
     {
       key: 'model',
@@ -127,10 +171,17 @@ const TopBarStackStatus: React.FC<TopBarStackStatusProps> = ({
       key: 'training',
       icon: <FlaskConical size={14} />,
       label: language === 'es' ? 'Entreno' : 'Training',
-      value: status?.training_ready ? (language === 'es' ? 'Listo' : 'Ready') : (language === 'es' ? 'Pendiente' : 'Pending'),
-      caption: bootstrapRunning
-        ? String(controlStatus?.bootstrap?.stage || 'bootstrap')
-        : (language === 'es' ? 'Control manual' : 'Manual control'),
+      value: maintenanceMode
+        ? (language === 'es' ? 'En curso' : 'In progress')
+        : status?.training_ready
+          ? (language === 'es' ? 'Listo' : 'Ready')
+          : (language === 'es' ? 'Pendiente' : 'Pending'),
+      caption: queuePreview
+        || activeRun?.queue_reason
+        || trainingOutcome?.stage
+        || (bootstrapRunning
+          ? String(controlStatus?.bootstrap?.stage || 'bootstrap')
+          : (language === 'es' ? 'Control manual' : 'Manual control')),
     },
     {
       key: 'autonomy',
@@ -139,7 +190,7 @@ const TopBarStackStatus: React.FC<TopBarStackStatusProps> = ({
       value: autonomyEnabled
         ? (language === 'es' ? 'Activa' : 'Active')
         : (language === 'es' ? 'Pausada' : 'Paused'),
-      caption: autonomyState,
+      caption: `${autonomyState}${autonomyEnabled ? ` · ${language === 'es' ? 'sig.' : 'next'} ${nextCycleLabel}` : ''}`,
     },
   ];
 
@@ -182,7 +233,9 @@ const TopBarStackStatus: React.FC<TopBarStackStatusProps> = ({
             {summary.label}
           </p>
           <p className="mt-1 max-w-[200px] truncate text-xs text-foreground/70 dark:text-white/70">
-            {engineLabel} - {runtimeReady ? runtimeUrl : reason}
+            {fallbackActive
+              ? `${engineLabel} -> ${String(fallbackBackend || 'hf').toUpperCase()}`
+              : `${engineLabel} - ${runtimeReady ? runtimeUrl : reason}`}
           </p>
         </div>
         <ChevronDown
@@ -204,7 +257,11 @@ const TopBarStackStatus: React.FC<TopBarStackStatusProps> = ({
                   : (language === 'es' ? 'Revisar arranque local.' : 'Check local startup.')}
               </h3>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                {ready
+                {maintenanceMode
+                  ? (runtimeDrained
+                    ? (language === 'es' ? 'El runtime se ha drenado para entrenar. El chat volverá cuando el ciclo termine.' : 'The runtime has been drained for training. Chat will return when the cycle ends.')
+                    : (language === 'es' ? 'Hay un ciclo de aprendizaje o entrenamiento activo ahora mismo.' : 'A learning or training cycle is active right now.'))
+                  : ready
                   ? (language === 'es' ? 'Vortex esta listo para responder.' : 'Vortex is ready to answer.')
                   : reason}
               </p>
@@ -245,6 +302,7 @@ const TopBarStackStatus: React.FC<TopBarStackStatusProps> = ({
             <ActionButton
               label={language === 'es' ? 'Panel train' : 'Train panel'}
               onClick={onOpenTraining || onStartTraining}
+              primary={fallbackActive || maintenanceMode || runtimeMode !== 'primary'}
             />
             <ActionButton
               label={language === 'es' ? 'Reanudar IA' : 'Resume AI'}

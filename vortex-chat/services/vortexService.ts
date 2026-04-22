@@ -1,4 +1,4 @@
-import { AppMode, GroundingSupport, Message, OperationalStatus, Role, Source } from "../types";
+import { AppMode, BrowserAction, ChatSession, GroundingSupport, Message, OperationalStatus, Role, Source, WorkspacePermissions } from "../types";
 
 type StreamChunk = {
   text: string;
@@ -6,6 +6,7 @@ type StreamChunk = {
   sources: Source[];
   groundingSupports: GroundingSupport[];
   fileChanges?: { path: string; diff: string }[];
+  browserActions?: BrowserAction[];
   requestId?: string;
   done: boolean;
 };
@@ -76,8 +77,69 @@ const extractFileChanges = (content: string): { path: string; diff: string }[] =
   return changes;
 };
 
-const buildMessages = (history: Message[], prompt: string, mode: AppMode, useThinking: boolean, language: "es" | "en" = "es") => {
+const toBrowserActions = (raw: unknown): BrowserAction[] => {
+  if (!Array.isArray(raw)) return [];
+  const actions: BrowserAction[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const target = String((item as { target?: unknown }).target || "").trim();
+    if (!target) continue;
+    actions.push({
+      target,
+      opened: Boolean((item as { opened?: unknown }).opened),
+    });
+  }
+  return actions;
+};
+
+const MAX_PROMPT_HISTORY_MESSAGES = 24;
+const MAX_PROMPT_HISTORY_CHARS = 24000;
+
+const selectHistoryWindow = (history: Message[]): Message[] => {
+  const selected: Message[] = [];
+  let usedChars = 0;
+  for (let index = history.length - 1; index >= 0; index--) {
+    const message = history[index];
+    const contentLength = (message.content?.length || 0) + (message.thought?.length || 0);
+    if (selected.length >= MAX_PROMPT_HISTORY_MESSAGES) break;
+    if (selected.length > 0 && usedChars + contentLength > MAX_PROMPT_HISTORY_CHARS) break;
+    selected.unshift(message);
+    usedChars += contentLength;
+  }
+  return selected;
+};
+
+const buildPermissionsInstruction = (
+  permissions: WorkspacePermissions | undefined,
+  language: "es" | "en"
+) => {
+  const level = permissions?.level || "none";
+  const workspaceRoot = String(permissions?.workspaceRoot || "").trim();
+  const projectPath = String(permissions?.projectPath || "").trim();
+  const actionMode = permissions?.actionMode || "safe";
+
+  if (level !== "full") {
+    return language === "es"
+      ? "Permisos activos: nada. Limítate a análisis, explicación y pasos. No afirmes cambios, ejecuciones ni accesos reales."
+      : "Active permissions: none. Limit yourself to analysis, explanation, and steps. Do not claim real changes, executions, or access.";
+  }
+
+  const scopeLabel = projectPath || workspaceRoot || (language === "es" ? "scope no definido" : "scope not set");
+  return language === "es"
+    ? `Permisos activos: todo dentro del scope autorizado. Scope: ${scopeLabel}. ${actionMode === "full" ? "Puedes actuar como operador técnico completo dentro de esa carpeta/proyecto: editar archivos, lanzar comandos del proyecto, abrirlo en navegador y hacer los cambios necesarios para la tarea. No asumas acceso fuera de ese scope." : "Mantén el trabajo en modo seguro: puedes analizar el proyecto y preparar cambios, pero no afirmes ejecuciones ni modificaciones reales."}`
+    : `Active permissions: full inside the authorized scope. Scope: ${scopeLabel}. ${actionMode === "full" ? "You may act as a full technical operator inside that folder/project: edit files, run project commands, open it in the browser, and make the changes needed for the task. Do not assume access outside that scope." : "Keep work in safe mode: you may analyze the project and prepare changes, but do not claim real executions or modifications."}`;
+};
+
+const buildPromptEnvelope = (
+  history: Message[],
+  prompt: string,
+  mode: AppMode,
+  useThinking: boolean,
+  language: "es" | "en" = "es",
+  permissions?: WorkspacePermissions
+) => {
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
+  const selectedHistory = selectHistoryWindow(history);
   const lang = language === "es" ? "Responde en espanol." : "Reply in English.";
   const tempo = useThinking
     ? (
@@ -101,13 +163,17 @@ const buildMessages = (history: Message[], prompt: string, mode: AppMode, useThi
           ? "Actua como asistente tecnico local. Da respuestas claras, grounded y sin relleno."
           : "Act as a local technical assistant. Give clear, grounded answers without filler."
       );
+  const codeFormat = language === "es"
+    ? "Si incluyes codigo multilinea, devuelvelo SIEMPRE dentro de bloques Markdown con triple backtick y lenguaje, por ejemplo ```dart``` o ```ts```. No dejes codigo suelto fuera del bloque."
+    : "If you include multiline code, ALWAYS return it inside Markdown triple-backtick code blocks with a language, for example ```dart``` or ```ts```. Do not leave raw code outside the block.";
+  const permissionsInstruction = buildPermissionsInstruction(permissions, language);
 
   messages.push({
     role: "system",
-    content: `Eres Vortex. ${lang} ${tempo} ${behavior}`,
+    content: `Eres Vortex. ${lang} ${tempo} ${behavior} ${codeFormat} ${permissionsInstruction}`,
   });
 
-  for (const msg of history) {
+  for (const msg of selectedHistory) {
     const content = (msg.content ?? "").trim();
     if (!content) continue;
     if (msg.role === Role.USER) messages.push({ role: "user", content });
@@ -115,7 +181,10 @@ const buildMessages = (history: Message[], prompt: string, mode: AppMode, useThi
   }
 
   messages.push({ role: "user", content: prompt });
-  return messages;
+  return {
+    messages,
+    contextMessageIds: selectedHistory.map((msg) => msg.id),
+  };
 };
 
 const summarizeReasoning = (raw: string): string => {
@@ -286,7 +355,6 @@ export class VortexService {
   async fetchOperationalStatus(): Promise<OperationalStatus | null> {
     try {
       const resp = await fetch("/v1/status");
-      if (!resp.ok) return null;
       const data = await resp.json();
       if (!data || typeof data !== "object") return null;
       return data as OperationalStatus;
@@ -302,19 +370,39 @@ export class VortexService {
     useThinking: boolean = true,
     mode: AppMode = "ask",
     language: "es" | "en" = "es",
-    webAllowlist: string[] = []
+    webAllowlist: string[] = [],
+    memoryContext?: { accountId?: string | null; sessionId?: string | null },
+    permissions?: WorkspacePermissions
   ): AsyncGenerator<StreamChunk> {
     const abortController = new AbortController();
 
     try {
+      const promptEnvelope = buildPromptEnvelope(history, prompt, mode, useThinking, language, permissions);
+      const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+      const clientNowIso = new Date().toISOString();
       const payload = {
         model: this.model,
         stream: true,
+        agent_mode: mode === "agent",
         include_sources: true,
+        include_perf: mode === "agent",
         web_ingest: useInternet,
         web_allowlist: webAllowlist,
         temperature: useThinking ? 0.7 : 0.2,
-        messages: buildMessages(history, prompt, mode, useThinking, language),
+        messages: promptEnvelope.messages,
+        client_timezone: clientTimezone,
+        client_now_iso: clientNowIso,
+        account_id: memoryContext?.accountId || undefined,
+        session_id: memoryContext?.sessionId || undefined,
+        context_message_ids: promptEnvelope.contextMessageIds,
+        permissions: permissions
+          ? {
+              level: permissions.level,
+              workspace_root: permissions.workspaceRoot,
+              project_path: permissions.projectPath,
+              action_mode: permissions.actionMode,
+            }
+          : undefined,
       };
 
       const resp = await fetch("/v1/chat/completions", {
@@ -348,6 +436,7 @@ export class VortexService {
       let thought = "";
       let requestId: string | undefined;
       let sources: Source[] = [];
+      let browserActions: BrowserAction[] = [];
 
       while (true) {
         const { value, done } = await reader.read();
@@ -374,6 +463,7 @@ export class VortexService {
                 sources,
                 groundingSupports: [],
                 fileChanges: extractFileChanges(fullText),
+                browserActions,
                 requestId,
                 done: true,
               };
@@ -393,6 +483,9 @@ export class VortexService {
 
             if (parsed?.sources) {
               sources = toSources(parsed.sources);
+            }
+            if (parsed?.perf?.browser_actions) {
+              browserActions = toBrowserActions(parsed.perf.browser_actions);
             }
 
             const delta = parsed?.choices?.[0]?.delta?.content;
@@ -414,6 +507,7 @@ export class VortexService {
                 sources,
                 groundingSupports: [],
                 fileChanges: extractFileChanges(fullText),
+                browserActions,
                 requestId,
                 done: false,
               };
@@ -433,6 +527,7 @@ export class VortexService {
         sources,
         groundingSupports: [],
         fileChanges: extractFileChanges(fullText),
+        browserActions,
         requestId,
         done: true,
       };
@@ -464,7 +559,22 @@ export class VortexService {
   async submitFeedback(
     requestId: string,
     idealResponse: string
-  ): Promise<{ ok: boolean; trainingEvent?: boolean; error?: string }> {
+  ): Promise<{
+    ok: boolean;
+    trainingEvent?: boolean;
+    learningQueueItem?: {
+      id?: string;
+      status?: string;
+      source_kind?: string;
+      score?: number;
+      queued_at?: number;
+    } | null;
+    learningQueueDepth?: number;
+    quickTrainScheduled?: boolean;
+    scheduledRunId?: string | null;
+    queueReason?: string | null;
+    error?: string;
+  }> {
     const payload = {
       request_id: requestId,
       rating: "up",
@@ -481,7 +591,15 @@ export class VortexService {
     try {
       const parsed = JSON.parse(text);
       if (resp.ok && parsed?.ok) {
-        return { ok: true, trainingEvent: Boolean(parsed?.training_event) };
+        return {
+          ok: true,
+          trainingEvent: Boolean(parsed?.training_event),
+          learningQueueItem: parsed?.learning_queue_item || null,
+          learningQueueDepth: Number.isFinite(parsed?.learning_queue_depth) ? Number(parsed.learning_queue_depth) : undefined,
+          quickTrainScheduled: Boolean(parsed?.quick_train_scheduled),
+          scheduledRunId: parsed?.scheduled_run_id || null,
+          queueReason: parsed?.queue_reason || null,
+        };
       }
       return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
     } catch {
@@ -536,6 +654,42 @@ export class VortexService {
       return { ok: false };
     } catch {
       return { ok: false };
+    }
+  }
+
+  async fetchChatSessions(accountId: string): Promise<{ ok: boolean; sessions?: ChatSession[]; error?: string }> {
+    try {
+      const resp = await fetch(`/v1/chat/sessions?account_id=${encodeURIComponent(accountId)}`);
+      const text = await resp.text().catch(() => "");
+      const parsed = JSON.parse(text);
+      if (resp.ok && parsed?.ok && Array.isArray(parsed?.sessions)) {
+        return { ok: true, sessions: parsed.sessions as ChatSession[] };
+      }
+      return { ok: false, error: parsed?.error?.message || parsed?.detail || text || `HTTP ${resp.status}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async syncChatSessions(accountId: string, sessions: ChatSession[]): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const resp = await fetch("/v1/chat/sessions/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account_id: accountId,
+          replace: true,
+          sessions,
+        }),
+      });
+      const text = await resp.text().catch(() => "");
+      const parsed = JSON.parse(text);
+      if (resp.ok && parsed?.ok) {
+        return { ok: true };
+      }
+      return { ok: false, error: parsed?.error?.message || parsed?.detail || text || `HTTP ${resp.status}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
   }
 }

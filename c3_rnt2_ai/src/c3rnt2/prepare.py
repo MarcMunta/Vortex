@@ -44,7 +44,20 @@ def _is_local_base_url(raw: object | None) -> bool:
     except Exception:
         return False
     host = (parsed.hostname or "").strip().lower()
-    return host in {"127.0.0.1", "localhost", "::1"}
+    if host in {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+        "host.docker.internal",
+        "gateway.docker.internal",
+    }:
+        return True
+    if _truthy(os.getenv("C3RNT2_ASSUME_DOCKER_READY")):
+        if host.endswith(".docker.internal"):
+            return True
+        if host and "." not in host:
+            return True
+    return False
 
 
 def _http_json(url: str, *, timeout_s: float = 2.0) -> dict[str, Any]:

@@ -13,11 +13,12 @@ from urllib.parse import urlparse
 import yaml  # type: ignore[import-untyped]
 
 DEFAULT_SETTINGS_PATH = Path(__file__).resolve().parents[2] / "config" / "settings.yaml"
+DEFAULT_PROFILE = "rtx4080_16gb_gemma4_26b_a4b_hf"
 
 
 def resolve_profile(profile: str | None = None) -> str:
     env_profile = os.getenv("C3RNT2_PROFILE")
-    return profile or env_profile or "dev_small"
+    return profile or env_profile or DEFAULT_PROFILE
 
 
 def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -505,7 +506,25 @@ def _is_local_base_url(raw: object | None) -> bool:
     except Exception:
         return False
     host = (parsed.hostname or "").strip().lower()
-    return host in {"127.0.0.1", "localhost", "::1"}
+    if host in {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+        "host.docker.internal",
+        "gateway.docker.internal",
+    }:
+        return True
+    if str(os.getenv("C3RNT2_ASSUME_DOCKER_READY") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        if host.endswith(".docker.internal"):
+            return True
+        if host and "." not in host:
+            return True
+    return False
 
 
 def _get_nested(d: dict, keys: list[str], default: object = None) -> object:

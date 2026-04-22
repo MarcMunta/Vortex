@@ -9,7 +9,8 @@ import {
 const resolveBaseUrl = (): string => {
   const raw = (import.meta.env.VITE_CONTROL_BASE_URL || "").trim();
   if (raw) return raw.replace(/\/+$/, "");
-  const port = (import.meta.env.VITE_CONTROL_PORT || "8765").trim();
+  const port = (import.meta.env.VITE_CONTROL_PORT || "").trim();
+  if (!port) return "";
   const host = window.location.hostname || "127.0.0.1";
   return `http://${host}:${port}`;
 };
@@ -38,10 +39,13 @@ class ControlService {
     }
   }
 
-  async bootstrap(force: boolean = false): Promise<{ ok: boolean; started?: boolean; reason?: string }> {
+  async bootstrap(
+    force: boolean = false,
+    mode: "ensure" | "rebuild" = (force ? "rebuild" : "ensure"),
+  ): Promise<{ ok: boolean; started?: boolean; reason?: string; mode?: string; stage?: string; log_path?: string }> {
     return this.json("/control/bootstrap", {
       method: "POST",
-      body: JSON.stringify({ force }),
+      body: JSON.stringify({ force, mode }),
     });
   }
 
@@ -70,10 +74,23 @@ class ControlService {
     return Array.isArray(payload.domains) ? payload.domains : [];
   }
 
-  async startTraining(mode: "quick" | "full"): Promise<{ ok: boolean; run_id?: string; status?: string }> {
+  async startTraining(
+    mode: "quick" | "full",
+    source?: string,
+  ): Promise<{ ok: boolean; run_id?: string; status?: string; queue_reason?: string | null; reused?: boolean; error?: string }> {
     return this.json("/control/training/start", {
       method: "POST",
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify({ mode, source }),
+    });
+  }
+
+  async resetTrainingState(payload?: { clear_runs?: boolean; clear_learning_queue?: boolean }) {
+    return this.json<{ ok: boolean; removed_runs?: number; runs?: TrainingRunSummary[]; autonomy?: AutonomyStatus }>("/control/training/reset", {
+      method: "POST",
+      body: JSON.stringify({
+        clear_runs: payload?.clear_runs ?? true,
+        clear_learning_queue: payload?.clear_learning_queue ?? true,
+      }),
     });
   }
 
@@ -89,6 +106,16 @@ class ControlService {
     } catch {
       return null;
     }
+  }
+
+  async getTrainingRunEvents(runId: string) {
+    const payload = await this.json<{ ok: boolean; events?: TrainingRunSummary["events"] }>(`/control/training/runs/${encodeURIComponent(runId)}/events`, { method: "GET" });
+    return Array.isArray(payload.events) ? payload.events : [];
+  }
+
+  async getTrainingRunLogs(runId: string) {
+    const payload = await this.json<{ ok: boolean; logs?: Record<string, string[]> }>(`/control/training/runs/${encodeURIComponent(runId)}/logs`, { method: "GET" });
+    return payload.logs || {};
   }
 
   subscribeTrainingStream(
@@ -138,6 +165,9 @@ class ControlService {
     reflection_enabled?: boolean;
     training_enabled?: boolean;
     autoedit_enabled?: boolean;
+    multi_agent_dialogue_enabled?: boolean;
+    descriptive_reports_enabled?: boolean;
+    live_autoedit_enabled?: boolean;
   }): Promise<{ ok: boolean; autonomy?: AutonomyStatus }> {
     return this.json("/control/autonomy/config", {
       method: "POST",

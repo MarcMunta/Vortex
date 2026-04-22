@@ -45,8 +45,13 @@ $frontendPort = $env:VORTEX_FRONTEND_PORT
 if (-not $frontendPort) { $frontendPort = $env:FRONTEND_PORT }
 if (-not $frontendPort) { $frontendPort = "5173" }
 
+$controlPort = $env:VORTEX_CONTROL_PORT
+if (-not $controlPort) { $controlPort = $env:CONTROL_PORT }
+if (-not $controlPort) { $controlPort = "8765" }
+
 $portMap = @{
   "backend" = [int]$backendPort
+  "control" = [int]$controlPort
   "frontend" = [int]$frontendPort
 }
 

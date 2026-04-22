@@ -162,11 +162,14 @@ def _run_train_subprocess(
     *,
     timeout_s: float | None = None,
     env: dict[str, str] | None = None,
+    allow_parallel_runtime: bool = False,
 ) -> dict:
     profile = settings.get("_profile") or resolve_profile(None)
     cmd = [sys.executable, "-m", "c3rnt2", "train-once", "--profile", str(profile)]
     if reuse_dataset:
         cmd.append("--reuse-dataset")
+    if allow_parallel_runtime:
+        cmd.append("--allow-parallel-runtime")
     child_env = dict(os.environ)
     if env:
         child_env.update(env)
@@ -188,7 +191,14 @@ def _run_train_subprocess(
     return payload
 
 
-def _run_train_subprocess_wsl(settings: dict, reuse_dataset: bool, *, timeout_s: float | None = None, env: dict[str, str] | None = None) -> dict:
+def _run_train_subprocess_wsl(
+    settings: dict,
+    reuse_dataset: bool,
+    *,
+    timeout_s: float | None = None,
+    env: dict[str, str] | None = None,
+    allow_parallel_runtime: bool = False,
+) -> dict:
     from .utils.wsl import build_bash_lc_script, build_wsl_bash_command, is_wsl_available, parse_last_json_object
 
     profile = str(settings.get("_profile") or resolve_profile(None))
@@ -205,6 +215,8 @@ def _run_train_subprocess_wsl(settings: dict, reuse_dataset: bool, *, timeout_s:
     inner_cmd = [wsl_python, "-m", "c3rnt2", "train-once", "--profile", str(profile)]
     if reuse_dataset:
         inner_cmd.append("--reuse-dataset")
+    if allow_parallel_runtime:
+        inner_cmd.append("--allow-parallel-runtime")
     child_env = dict(env or {})
     child_env[_INTERNAL_TRAIN_SUBPROCESS_ENV] = "1"
     script = build_bash_lc_script(inner_cmd, workdir=wsl_workdir_str, env=child_env)
@@ -777,10 +789,16 @@ def cmd_chat(args: argparse.Namespace) -> None:
 def cmd_serve(args: argparse.Namespace) -> None:
     settings = _load_and_validate(args.profile, override=lambda s: _apply_cli_overrides(s, args))
     base_dir = Path(".")
+    lock_role = str(os.getenv("C3RNT2_SERVE_LOCK_ROLE", "serve") or "serve").strip().lower()
+    if lock_role not in {"serve", "serve_fallback"}:
+        lock_role = "serve"
     try:
-        lock = acquire_exclusive_lock(base_dir, "serve")
+        lock = acquire_exclusive_lock(base_dir, lock_role)
     except LockUnavailable:
-        print({"ok": False, "error": "serve lock unavailable (train/self_patch running?)"})
+        conflict_hint = "serve/train/self_patch"
+        if lock_role == "serve_fallback":
+            conflict_hint = "serve/self_patch"
+        print({"ok": False, "error": f"{lock_role} lock unavailable ({conflict_hint} running?)"})
         return
     try:
         run_server(settings, base_dir=base_dir, host=args.host, port=args.port)
@@ -835,23 +853,39 @@ def cmd_train_once(args: argparse.Namespace) -> None:
     child_env = dict(os.environ)
     if max_steps_val is not None:
         child_env["C3RNT2_TRAIN_MAX_STEPS"] = str(int(max_steps_val))
-    try:
-        lock = acquire_exclusive_lock(base_dir, "train")
-    except LockUnavailable:
-        print({"ok": False, "error": "train lock unavailable (serve/self_patch running?)"})
-        return
+    allow_parallel_runtime = bool(getattr(args, "allow_parallel_runtime", False))
+    lock: Any = None
+    if allow_parallel_runtime:
+        lock_path = base_dir / "data" / "locks" / "train.lock"
+        if is_lock_held(base_dir, "self_patch"):
+            print(json.dumps({"ok": False, "error": "self_patch lock unavailable during parallel runtime training"}, ensure_ascii=True))
+            return
+        try:
+            lock = FileLock(lock_path)
+            lock.acquire()
+        except Exception:
+            print(json.dumps({"ok": False, "error": "train lock unavailable (train already running?)"}, ensure_ascii=True))
+            return
+    else:
+        try:
+            lock = acquire_exclusive_lock(base_dir, "train")
+        except LockUnavailable:
+            print(json.dumps({"ok": False, "error": "train lock unavailable (serve/self_patch running?)"}, ensure_ascii=True))
+            return
     try:
         if not internal_subprocess and strategy == "wsl_subprocess_unload":
             payload = _run_train_subprocess_wsl(
                 settings,
                 reuse_dataset=bool(args.reuse_dataset),
                 env=child_env,
+                allow_parallel_runtime=allow_parallel_runtime,
             )
         elif not internal_subprocess and strategy.startswith("subprocess"):
             payload = _run_train_subprocess(
                 settings,
                 reuse_dataset=bool(args.reuse_dataset),
                 env=child_env,
+                allow_parallel_runtime=allow_parallel_runtime,
             )
         else:
             result = train_once_backend(
@@ -868,7 +902,8 @@ def cmd_train_once(args: argparse.Namespace) -> None:
         if not bool(payload.get("ok", False)):
             sys.exit(1)
     finally:
-        lock.release()
+        if lock is not None:
+            lock.release()
 
 
 def cmd_self_train(args: argparse.Namespace) -> None:
@@ -1996,6 +2031,7 @@ def main() -> None:
     train = sub.add_parser("train-once")
     train.add_argument("--profile", default=None)
     train.add_argument("--reuse-dataset", action="store_true")
+    train.add_argument("--allow-parallel-runtime", action="store_true")
     train.set_defaults(func=cmd_train_once)
 
     self_train = sub.add_parser("self-train")

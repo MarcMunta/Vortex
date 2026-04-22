@@ -33,6 +33,24 @@ python -m c3rnt2 doctor --deep --mock --profile rtx4080_16gb_programming_local
 python -m c3rnt2 bench --profile rtx4080_16gb_programming_local --max-new-tokens 64 --json-out data/bench/programming_local.json
 ```
 
+Stack local completo con frontend + control:
+
+```powershell
+..\run_docker.ps1
+```
+
+TambiÃ©n puedes arrancarlo directamente con Docker:
+
+```bash
+docker compose up -d vortex-api
+```
+
+Ese comando ahora levanta ademÃ¡s:
+- `vortex-control` en `http://127.0.0.1:8765`
+- `vortex-frontend` en `http://127.0.0.1:4173`
+
+La UI usa proxy interno al backend y al control plane, asÃ­ que el estado del backend sigue visible dentro del frontend aunque todo corra en contenedores.
+
 Training manual separado:
 
 ```bash

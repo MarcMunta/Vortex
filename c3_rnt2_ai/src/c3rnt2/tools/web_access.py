@@ -192,7 +192,7 @@ def web_fetch(
     *,
     strict: bool = True,
     max_redirects: int = 5,
-    user_agent: str = "Vortex-WebFetch/1.0",
+    user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0 Safari/537.36",
 ) -> WebFetchResult:
     cache_dir = Path(cache_dir)
     base_dir = Path(".")
@@ -281,7 +281,7 @@ def web_fetch(
             last_modified=payload.get("last_modified"),
             content_hash=payload.get("content_hash"),
         )
-    if status != 200:
+    if status < 200 or status >= 300:
         _log_event(base_dir, {"url": url, "ok": False, "status": status})
         return WebFetchResult(ok=False, url=url, status=status, text="", from_cache=False, error=f"http {status}")
 

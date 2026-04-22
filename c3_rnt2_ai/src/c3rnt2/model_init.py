@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-DEFAULT_MODEL_ID = "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
+DEFAULT_MODEL_ID = "google/gemma-4-E4B-it"
 
 
 def resolve_cache_dir(raw: str | None = None) -> Path:

@@ -13,3 +13,6 @@ class Sample:
     quality: float | None = None
     ts: float | None = None
     source_ref: str | None = None
+    bucket: str | None = None
+    difficulty: float | None = None
+    metadata: dict[str, Any] | None = None

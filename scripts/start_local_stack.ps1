@@ -1,6 +1,6 @@
 param(
     [string]$LabProfile = "local_learning_lab_4080",
-    [string]$ApiProfile = "rtx4080_16gb_programming_local",
+    [string]$ApiProfile = "rtx4080_16gb_programming_runtime_docker",
     [string]$TrainingProfile = "rtx4080_16gb_programming_train_docker",
     [int]$FrontendPort = 4173,
     [int]$ApiPort = 8000,
@@ -29,15 +29,55 @@ function Test-CommandAvailable([string]$Name) {
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Test-PythonExecutable([string]$Path) {
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+    try {
+        & $Path -c "import sys" *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+function Ensure-Venv([string]$VenvDir) {
+    $pythonPath = Join-Path $VenvDir "Scripts\python.exe"
+    if (Test-PythonExecutable $pythonPath) {
+        return (Resolve-Path $pythonPath).Path
+    }
+    if (Test-Path -LiteralPath $VenvDir) {
+        Write-Warn "Rebuilding invalid venv at $VenvDir"
+        python -m venv --clear $VenvDir
+    } else {
+        Write-Step "Creating venv at $VenvDir"
+        python -m venv $VenvDir
+    }
+    if (-not (Test-PythonExecutable $pythonPath)) {
+        Fail "Python venv bootstrap failed: $pythonPath"
+    }
+    return (Resolve-Path $pythonPath).Path
+}
+
 function Resolve-PythonExecutable([string]$RepoRoot, [string]$BackendRoot) {
-    $candidates = @(
-        (Join-Path $RepoRoot ".venv\Scripts\python.exe"),
-        (Join-Path $BackendRoot ".venv\Scripts\python.exe")
+    $venvDirs = @(
+        (Join-Path $RepoRoot ".venv"),
+        (Join-Path $BackendRoot ".venv")
     )
-    foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+    foreach ($venvDir in $venvDirs) {
+        $candidate = Join-Path $venvDir "Scripts\python.exe"
+        if (Test-PythonExecutable $candidate) {
             return (Resolve-Path $candidate).Path
         }
+    }
+    foreach ($venvDir in $venvDirs) {
+        if ($venvDir -and (Test-Path -LiteralPath $venvDir)) {
+            return Ensure-Venv -VenvDir $venvDir
+        }
+    }
+    $preferredVenvDir = $venvDirs | Select-Object -First 1
+    if ($preferredVenvDir) {
+        return Ensure-Venv -VenvDir $preferredVenvDir
     }
     $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
     if ($pythonCmd -and $pythonCmd.Source) {
@@ -73,14 +113,14 @@ function Get-ListeningPid([int]$Port) {
     return $null
 }
 
-function Stop-ProcessTree([int]$Pid, [string]$Reason = "restarting") {
-    if (-not $Pid) { return }
+function Stop-ProcessTree([int]$ProcessId, [string]$Reason = "restarting") {
+    if (-not $ProcessId) { return }
     try {
-        Write-Warn "Stopping process $Pid ($Reason)."
-        Stop-Process -Id $Pid -Force -ErrorAction SilentlyContinue
+        Write-Warn "Stopping process $ProcessId ($Reason)."
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
         Start-Sleep -Milliseconds 800
     } catch {
-        Write-Warn "Failed to stop process $Pid cleanly."
+        Write-Warn "Failed to stop process $ProcessId cleanly."
     }
 }
 
@@ -210,7 +250,7 @@ if (-not $DryRun) {
         $cmd = "cd /d `"$backendRoot`" && set PYTHONPATH=`"$pyPath`" && `"$python`" -m c3rnt2.control_server --base-dir `"$backendRoot`" --compose-file `"$composeFile`" --port $ControlPort --api-port $ApiPort --frontend-port $FrontendPort --api-profile `"$ApiProfile`" --training-profile `"$TrainingProfile`" > `"$controlLog`" 2>&1"
         Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", $cmd) -WindowStyle Hidden | Out-Null
     }
-    if (-not (Wait-HttpOk -Uri $healthUrl -TimeoutSec 45)) {
+    if (-not (Wait-HttpOk -Uri $healthUrl -TimeoutSec 180)) {
         $logTail = @()
         if (Test-Path -LiteralPath $controlLog) {
             $logTail = Get-Content -LiteralPath $controlLog -Tail 40
@@ -223,7 +263,7 @@ if (-not $DryRun) {
     }
     Write-Step "Control service is healthy."
     try {
-        $bootstrapResp = Invoke-JsonPost -Uri $bootstrapUrl -Body @{ force = $false }
+        $bootstrapResp = Invoke-JsonPost -Uri $bootstrapUrl -Body @{ force = $false; mode = "ensure" }
         Write-Step ("Bootstrap request: " + ($bootstrapResp | ConvertTo-Json -Compress))
     } catch {
         Write-Warn "Failed to trigger bootstrap through control service."
@@ -246,7 +286,7 @@ $readyUrl = "http://127.0.0.1:$ApiPort/readyz"
 if (-not $DryRun) {
     Write-Step "Polling control status..."
     $statusPayload = $null
-    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    $deadline = [DateTime]::UtcNow.AddSeconds(180)
     while ([DateTime]::UtcNow -lt $deadline) {
         try {
             $statusPayload = Invoke-RestMethod -Method Get -Uri $statusUrl -TimeoutSec 3

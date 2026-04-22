@@ -3,14 +3,18 @@ import {
   AtSign,
   Check,
   CircleUserRound,
+  FolderOpen,
   Globe,
   GripVertical,
+  Lock,
   Mail,
   Moon,
   Palette,
   Plus,
+  ShieldCheck,
   SlidersHorizontal,
   Sun,
+  TerminalSquare,
   Type,
   UserRound,
   X,
@@ -31,7 +35,7 @@ interface SettingsModalProps {
   onCreateAccount: (draft: { name: string; email: string; handle?: string }) => void;
 }
 
-export type SettingsTab = 'general' | 'appearance' | 'profiles';
+export type SettingsTab = 'general' | 'appearance' | 'permissions' | 'profiles';
 
 const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
@@ -67,6 +71,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       icon: <Palette size={16} />,
     },
     {
+      id: 'permissions' as const,
+      label: settings.language === 'es' ? 'Permisos' : 'Permissions',
+      icon: <ShieldCheck size={16} />,
+    },
+    {
       id: 'profiles' as const,
       label: settings.language === 'es' ? 'Perfiles' : 'Profiles',
       icon: <UserRound size={16} />,
@@ -87,6 +96,36 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleLanguageChange = (lang: Language) => {
     onUpdateSettings({ ...settings, language: lang });
+  };
+
+  const handlePermissionLevelChange = (level: 'none' | 'full') => {
+    onUpdateSettings({
+      ...settings,
+      permissions: {
+        ...settings.permissions,
+        level,
+      },
+    });
+  };
+
+  const handlePermissionActionModeChange = (actionMode: 'safe' | 'full') => {
+    onUpdateSettings({
+      ...settings,
+      permissions: {
+        ...settings.permissions,
+        actionMode,
+      },
+    });
+  };
+
+  const handlePermissionFieldChange = (field: 'workspaceRoot' | 'projectPath', value: string) => {
+    onUpdateSettings({
+      ...settings,
+      permissions: {
+        ...settings.permissions,
+        [field]: value,
+      },
+    });
   };
 
   const handleCreateAccount = () => {
@@ -354,6 +393,144 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         {['#00AEFF', '#0077FF', '#07111F', '#F7FBFF', '#171717'].map((color) => (
                           <span key={color} className="h-10 w-10 rounded-xl border border-white/15 shadow-sm" style={{ backgroundColor: color }} />
                         ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'permissions' && (
+                <div className="max-w-[660px] space-y-6">
+                  <div>
+                    <h3 className="text-lg font-bold tracking-tight text-foreground">
+                      {settings.language === 'es' ? 'Permisos' : 'Permissions'}
+                    </h3>
+                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                      {settings.language === 'es'
+                        ? 'Define si Vortex solo explica o si puede operar como un agente tecnico completo dentro de una carpeta o proyecto concreto.'
+                        : 'Define whether Vortex only explains or can operate as a full technical agent inside a specific folder or project.'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="mb-3 text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                      {settings.language === 'es' ? 'Nivel de permisos' : 'Permission level'}
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <OptionCard
+                        active={settings.permissions.level === 'none'}
+                        title={settings.language === 'es' ? 'Permisos a nada' : 'No permissions'}
+                        description={settings.language === 'es'
+                          ? 'Solo chat, analisis y pasos. No debe afirmar cambios, ejecuciones ni accesos reales.'
+                          : 'Chat, analysis, and steps only. It must not claim real changes, executions, or access.'}
+                        icon={<Lock size={18} />}
+                        onClick={() => handlePermissionLevelChange('none')}
+                      />
+                      <OptionCard
+                        active={settings.permissions.level === 'full'}
+                        title={settings.language === 'es' ? 'Permisos a todo' : 'Full permissions'}
+                        description={settings.language === 'es'
+                          ? 'Modo tipo Codex/ChatGPT dentro del scope indicado: carpeta, proyecto y trabajo tecnico real.'
+                          : 'Codex/ChatGPT-style mode inside the selected scope: folder, project, and real technical work.'}
+                        icon={<ShieldCheck size={18} />}
+                        onClick={() => handlePermissionLevelChange('full')}
+                      />
+                    </div>
+                  </div>
+
+                  <div className={`rounded-[1.3rem] border border-border/60 bg-muted/10 p-5 ${settings.permissions.level === 'full' ? '' : 'opacity-75'}`}>
+                    <p className="mb-3 text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                      {settings.language === 'es' ? 'Scope de trabajo' : 'Work scope'}
+                    </p>
+                    <div className="grid gap-3">
+                      <label className="block">
+                        <span className="mb-2 flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+                          <FolderOpen size={12} /> {settings.language === 'es' ? 'Carpeta raiz autorizada' : 'Authorized root folder'}
+                        </span>
+                        <input
+                          value={settings.permissions.workspaceRoot}
+                          onChange={(event) => handlePermissionFieldChange('workspaceRoot', event.target.value)}
+                          placeholder={settings.language === 'es' ? 'D:\\GitHub\\MiProyecto' : 'D:\\GitHub\\MyProject'}
+                          className="w-full rounded-xl border border-border/70 bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary/40 focus:ring-4 focus:ring-primary/10"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-2 flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+                          <FolderOpen size={12} /> {settings.language === 'es' ? 'Proyecto activo o subruta' : 'Active project or subpath'}
+                        </span>
+                        <input
+                          value={settings.permissions.projectPath}
+                          onChange={(event) => handlePermissionFieldChange('projectPath', event.target.value)}
+                          placeholder={settings.language === 'es' ? 'apps\\frontend o ruta del repo' : 'apps\\frontend or repo path'}
+                          className="w-full rounded-xl border border-border/70 bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary/40 focus:ring-4 focus:ring-primary/10"
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="mb-3 text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                      {settings.language === 'es' ? 'Acciones permitidas' : 'Allowed actions'}
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <OptionCard
+                        active={settings.permissions.actionMode === 'safe'}
+                        title={settings.language === 'es' ? 'Modo seguro' : 'Safe mode'}
+                        description={settings.language === 'es'
+                          ? 'Puede revisar el proyecto y proponer pasos, pero sin afirmar ejecuciones o cambios reales.'
+                          : 'It may inspect the project and propose steps, but without claiming real executions or changes.'}
+                        icon={<Lock size={18} />}
+                        onClick={() => handlePermissionActionModeChange('safe')}
+                      />
+                      <OptionCard
+                        active={settings.permissions.actionMode === 'full'}
+                        title={settings.language === 'es' ? 'Acciones completas' : 'Full actions'}
+                        description={settings.language === 'es'
+                          ? 'Puede editar archivos, lanzar CMD/terminal del proyecto, abrir el navegador y hacer los cambios necesarios dentro del scope.'
+                          : 'It may edit files, run project terminal commands, open the browser, and make needed changes inside the scope.'}
+                        icon={<TerminalSquare size={18} />}
+                        onClick={() => handlePermissionActionModeChange('full')}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-primary/20 bg-[linear-gradient(135deg,rgba(0,174,255,0.16),rgba(0,119,255,0.08))] p-5">
+                    <p className="text-[11px] font-black uppercase tracking-[0.14em] text-primary">
+                      {settings.language === 'es' ? 'Resumen activo' : 'Active summary'}
+                    </p>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-xl border border-white/10 bg-background/70 px-4 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                          {settings.language === 'es' ? 'Nivel' : 'Level'}
+                        </p>
+                        <p className="mt-2 text-sm font-bold text-foreground">
+                          {settings.permissions.level === 'full'
+                            ? (settings.language === 'es' ? 'Permisos a todo' : 'Full permissions')
+                            : (settings.language === 'es' ? 'Permisos a nada' : 'No permissions')}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-white/10 bg-background/70 px-4 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                          {settings.language === 'es' ? 'Acciones' : 'Actions'}
+                        </p>
+                        <p className="mt-2 text-sm font-bold text-foreground">
+                          {settings.permissions.actionMode === 'full'
+                            ? (settings.language === 'es' ? 'Completo dentro del proyecto' : 'Full inside project')
+                            : (settings.language === 'es' ? 'Seguro / solo analisis' : 'Safe / analysis only')}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-white/10 bg-background/70 px-4 py-3 sm:col-span-2">
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                          {settings.language === 'es' ? 'Carpeta y proyecto' : 'Folder and project'}
+                        </p>
+                        <p className="mt-2 text-sm font-bold text-foreground break-words">
+                          {settings.permissions.projectPath || settings.permissions.workspaceRoot || (settings.language === 'es' ? 'Sin scope definido todavia.' : 'No scope defined yet.')}
+                        </p>
+                        <p className="mt-2 text-xs leading-6 text-muted-foreground">
+                          {settings.language === 'es'
+                            ? 'Este ajuste no significa “controlar todo el ordenador”. Solo define si Vortex puede trabajar a fondo dentro del scope que tu le marques.'
+                            : 'This does not mean “control the whole computer”. It only defines whether Vortex may work deeply inside the scope you assign.'}
+                        </p>
                       </div>
                     </div>
                   </div>

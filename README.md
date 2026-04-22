@@ -40,6 +40,29 @@ Comandos útiles:
 Abrir UI:
 - `http://localhost:5173` (por defecto con `run.bat`; abre automÃ¡ticamente en Chrome si estÃ¡ instalado)
 
+### Docker local
+Arranque unificado en Docker:
+
+```powershell
+.\run_docker.ps1
+```
+
+Ese wrapper ejecuta `docker compose -f .\c3_rnt2_ai\docker-compose.yml up -d vortex-api`, y al levantar `vortex-api` arrastra tambiÃ©n:
+- `sglang-runtime`
+- `vortex-control`
+- `vortex-frontend`
+
+URLs:
+- `http://127.0.0.1:4173` frontend
+- `http://127.0.0.1:8765/control/status` control/status
+- `http://127.0.0.1:8000/readyz` backend
+
+Parar stack Docker:
+
+```powershell
+.\stop_docker.ps1
+```
+
 ### Doctor / Bench (opcional)
 Perfil recomendado (4080 safe): `C3RNT2_PROFILE=rtx4080_16gb_safe`.
 

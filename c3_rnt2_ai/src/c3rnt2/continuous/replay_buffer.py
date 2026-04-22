@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import random
 import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from .types import Sample
 
@@ -23,6 +25,25 @@ class ReplayItem:
     quality_score: float
     novelty_score: float
     success_count: int
+    bucket: str | None = None
+    difficulty_score: float | None = None
+    metadata: dict[str, Any] | None = None
+
+
+DEFAULT_BUCKET_BY_SOURCE: dict[str, str] = {
+    "feedback": "chat_feedback",
+    "chat_feedback": "chat_feedback",
+    "chat_feedback_soft": "chat_feedback_soft",
+    "episode": "episode",
+    "repo": "repo",
+    "docs": "docs",
+    "lesson": "docs",
+    "memory": "docs",
+    "self_edit": "self_edit",
+    "patch": "self_edit",
+    "reflection": "autonomy_reflection",
+    "autonomy_reflection": "autonomy_reflection",
+}
 
 
 class ReplayBuffer:
@@ -51,13 +72,23 @@ class ReplayBuffer:
                     last_used_ts REAL,
                     use_count INTEGER DEFAULT 0,
                     success_count INTEGER DEFAULT 0,
-                    created_ts REAL
+                    created_ts REAL,
+                    bucket TEXT DEFAULT 'chat_feedback',
+                    difficulty_score REAL DEFAULT 0.5,
+                    metadata_json TEXT DEFAULT '{}',
+                    outcome_score REAL DEFAULT 0.0,
+                    regression_count INTEGER DEFAULT 0,
+                    rollback_count INTEGER DEFAULT 0,
+                    last_outcome TEXT DEFAULT 'unknown',
+                    last_train_ts REAL DEFAULT 0.0
                 )
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_replay_quality ON replay(quality_score)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_replay_novelty ON replay(novelty_score)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_replay_created ON replay(created_ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_replay_bucket ON replay(bucket)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_replay_outcome ON replay(outcome_score)")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS processed_events (
                     event_id TEXT PRIMARY KEY,
@@ -73,17 +104,69 @@ class ReplayBuffer:
                 )
                 """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_sample ON pending_events(sample_hash)")
+            self._migrate_schema(conn)
             conn.commit()
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(replay)").fetchall()
+            if len(row) > 1
+        }
+        migrations = {
+            "bucket": "ALTER TABLE replay ADD COLUMN bucket TEXT DEFAULT 'chat_feedback'",
+            "difficulty_score": "ALTER TABLE replay ADD COLUMN difficulty_score REAL DEFAULT 0.5",
+            "metadata_json": "ALTER TABLE replay ADD COLUMN metadata_json TEXT DEFAULT '{}'",
+            "outcome_score": "ALTER TABLE replay ADD COLUMN outcome_score REAL DEFAULT 0.0",
+            "regression_count": "ALTER TABLE replay ADD COLUMN regression_count INTEGER DEFAULT 0",
+            "rollback_count": "ALTER TABLE replay ADD COLUMN rollback_count INTEGER DEFAULT 0",
+            "last_outcome": "ALTER TABLE replay ADD COLUMN last_outcome TEXT DEFAULT 'unknown'",
+            "last_train_ts": "ALTER TABLE replay ADD COLUMN last_train_ts REAL DEFAULT 0.0",
+        }
+        for column, ddl in migrations.items():
+            if column not in columns:
+                conn.execute(ddl)
+
+    def _infer_bucket(self, item: ReplayItem) -> str:
+        bucket = str(item.bucket or item.sample.bucket or "").strip().lower()
+        if bucket:
+            return bucket
+        source_kind = str(item.source_kind or item.sample.source_kind or "unknown").strip().lower()
+        return DEFAULT_BUCKET_BY_SOURCE.get(source_kind, source_kind or "chat_feedback")
+
+    def _infer_difficulty(self, item: ReplayItem) -> float:
+        if item.difficulty_score is not None:
+            return max(0.0, min(1.0, float(item.difficulty_score)))
+        if item.sample.difficulty is not None:
+            return max(0.0, min(1.0, float(item.sample.difficulty)))
+        prompt_len = len((item.sample.prompt or "").split())
+        response_len = len((item.sample.response or "").split())
+        source_kind = str(item.source_kind or item.sample.source_kind or "unknown").lower()
+        base = 0.35
+        if source_kind in {"episode", "repo", "self_edit", "autonomy_reflection"}:
+            base += 0.15
+        complexity = min(0.4, ((prompt_len * 0.015) + (response_len * 0.005)))
+        return max(0.05, min(0.95, base + complexity))
+
+    def _metadata_json(self, item: ReplayItem) -> str:
+        payload = item.metadata or item.sample.metadata or {}
+        try:
+            return json.dumps(payload, ensure_ascii=True, sort_keys=True)
+        except Exception:
+            return "{}"
 
     def add(self, item: ReplayItem, max_items: Optional[int] = None) -> bool:
         digest = _hash_sample(item.sample.prompt, item.sample.response)
         now = time.time()
+        bucket = self._infer_bucket(item)
+        difficulty = self._infer_difficulty(item)
+        metadata_json = self._metadata_json(item)
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.execute(
                 """
                 INSERT OR IGNORE INTO replay
-                (hash, prompt, response, source_kind, quality_score, novelty_score, last_used_ts, use_count, success_count, created_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (hash, prompt, response, source_kind, quality_score, novelty_score, last_used_ts, use_count, success_count, created_ts, bucket, difficulty_score, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     digest,
@@ -96,6 +179,9 @@ class ReplayBuffer:
                     0,
                     int(item.success_count),
                     now,
+                    bucket,
+                    float(difficulty),
+                    metadata_json,
                 ),
             )
             inserted = cur.rowcount > 0
@@ -185,6 +271,73 @@ class ReplayBuffer:
             )
             conn.commit()
 
+    def update_outcome(
+        self,
+        digest: str,
+        *,
+        improved_eval: bool = False,
+        improved_bench: bool = False,
+        regression: bool = False,
+        rollback: bool = False,
+        outcome_label: str | None = None,
+    ) -> None:
+        delta = 0.0
+        if improved_eval:
+            delta += 0.6
+        if improved_bench:
+            delta += 0.8
+        if regression:
+            delta -= 0.8
+        if rollback:
+            delta -= 1.0
+        label = outcome_label or (
+            "rollback"
+            if rollback
+            else "regression"
+            if regression
+            else "improved"
+            if (improved_eval or improved_bench)
+            else "observed"
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE replay
+                SET
+                    outcome_score = outcome_score + ?,
+                    regression_count = regression_count + ?,
+                    rollback_count = rollback_count + ?,
+                    last_outcome = ?,
+                    last_train_ts = ?
+                WHERE hash = ?
+                """,
+                (
+                    float(delta),
+                    int(1 if regression else 0),
+                    int(1 if rollback else 0),
+                    str(label),
+                    time.time(),
+                    digest,
+                ),
+            )
+            conn.commit()
+
+    def _composite_score_sql(self) -> str:
+        age_days = "((strftime('%s','now') - created_ts) / 86400.0)"
+        recency_bonus = f"MAX(0.0, 1.8 - ({age_days} * {self.age_weight}))"
+        use_penalty = "((use_count + 1.0) * 0.42)"
+        return (
+            "(quality_score * 4.8)"
+            " + (novelty_score * 3.1)"
+            " + (success_count * 1.75)"
+            " + (outcome_score * 2.4)"
+            " + (difficulty_score * 0.9)"
+            f" + ({recency_bonus})"
+            " - (regression_count * 2.6)"
+            " - (rollback_count * 3.0)"
+            f" - ({use_penalty} * 1.2)"
+        )
+
     def _enforce_max_items(self, max_items: int) -> None:
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.execute("SELECT COUNT(*) FROM replay")
@@ -193,16 +346,16 @@ class ReplayBuffer:
                 return
             overflow = count - max_items
             conn.execute(
-                """
+                f"""
                 DELETE FROM replay
                 WHERE hash IN (
                     SELECT hash FROM replay
-                    ORDER BY (quality_score + novelty_score + success_count - (? * ((strftime('%s','now') - created_ts) / 86400.0))) ASC,
+                    ORDER BY ({self._composite_score_sql()}) ASC,
                              created_ts ASC
                     LIMIT ?
                 )
                 """,
-                (self.age_weight, overflow),
+                (overflow,),
             )
             conn.commit()
 
@@ -305,25 +458,67 @@ class ReplayBuffer:
         if top_n == 0 and rand_n == 0:
             top_n = min(1, batch_size)
         samples: List[Sample] = []
+        score_sql = self._composite_score_sql()
         with sqlite3.connect(self.db_path) as conn:
             if top_n > 0:
-                cur = conn.execute(
-                    """
-                    SELECT hash, prompt, response, source_kind FROM replay
-                    ORDER BY (quality_score + novelty_score + success_count) DESC
-                    LIMIT ?
-                    """,
-                    (top_n,),
-                )
-                top_rows = cur.fetchall()
-                for _hash, prompt, response, source_kind in top_rows:
-                    samples.append(
-                        Sample(
-                            prompt=prompt,
-                            response=response,
-                            source_kind=str(source_kind or "unknown"),
+                elite_n = max(1, int(math.ceil(top_n * 0.35)))
+                recent_n = max(1, int(math.ceil(top_n * 0.25)))
+                underused_n = max(1, int(math.ceil(top_n * 0.20)))
+                negatives_n = max(0, top_n - elite_n - recent_n - underused_n)
+
+                queries: list[tuple[str, tuple[Any, ...]]] = [
+                    (
+                        f"""
+                        SELECT prompt, response, source_kind
+                        FROM replay
+                        ORDER BY ({score_sql}) DESC, created_ts DESC
+                        LIMIT ?
+                        """,
+                        (elite_n,),
+                    ),
+                    (
+                        f"""
+                        SELECT prompt, response, source_kind
+                        FROM replay
+                        WHERE created_ts >= ?
+                        ORDER BY ({score_sql}) DESC, created_ts DESC
+                        LIMIT ?
+                        """,
+                        (time.time() - 86400.0 * 7.0, recent_n),
+                    ),
+                    (
+                        f"""
+                        SELECT prompt, response, source_kind
+                        FROM replay
+                        WHERE use_count <= 1 AND (quality_score + novelty_score + difficulty_score) >= 1.1
+                        ORDER BY ({score_sql}) DESC, created_ts DESC
+                        LIMIT ?
+                        """,
+                        (underused_n,),
+                    ),
+                ]
+                if negatives_n > 0:
+                    queries.append(
+                        (
+                            """
+                            SELECT prompt, response, source_kind
+                            FROM replay
+                            WHERE regression_count > 0 OR rollback_count > 0 OR outcome_score < 0
+                            ORDER BY created_ts DESC, outcome_score ASC
+                            LIMIT ?
+                            """,
+                            (negatives_n,),
                         )
                     )
+                for sql, params in queries:
+                    for prompt, response, source_kind in conn.execute(sql, params).fetchall():
+                        samples.append(
+                            Sample(
+                                prompt=prompt,
+                                response=response,
+                                source_kind=str(source_kind or "unknown"),
+                            )
+                        )
             if rand_n > 0:
                 samples.extend(
                     self._sample_random_rows(

@@ -23,11 +23,15 @@ dependencies = [
 api = ["fastapi>=0.110", "uvicorn>=0.23", "httpx>=0.27"]
 triton = ["triton>=2.1"]
 hf = [
-  # Newer transformers builds gate torch.load behind torch>=2.6 due to CVE-2025-32434;
-  # keep compatibility with torch 2.5 stacks (RTX 4080) while supporting Qwen2.5.
-  "transformers>=4.40,<4.57",
+  # Gemma 4 processor support landed in the 5.x line; keep a narrow pin so the
+  # Docker image remains reproducible on the local RTX 4080 stack.
+  "transformers>=5.5,<5.6",
   "accelerate>=0.27",
   "safetensors>=0.4",
+  "pillow>=10",
+  "torchvision",
+  # Required by the newer Gemma 4 / bitsandbytes 4-bit execution path.
+  "kernels>=0.11.1",
   # Required for PEFT adapters/expert bank inference.
   "peft>=0.10",
   # bitsandbytes is Linux-focused; HF can run without it on Windows.

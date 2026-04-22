@@ -200,7 +200,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({
             message.role === Role.USER
               ? (language === 'es' ? 'Prompt' : 'Prompt')
               : message.trainingEvent
-                ? (language === 'es' ? 'Respuesta promovida' : 'Promoted answer')
+                ? (language === 'es' ? 'Respuesta en cola' : 'Queued answer')
                 : (language === 'es' ? 'Respuesta' : 'Response'),
           detail: message.content.slice(0, 140).trim() || (language === 'es' ? 'Sin contenido.' : 'No content.'),
           timestamp: message.timestamp,
@@ -260,7 +260,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({
     {
       title: language === 'es' ? 'Aprendizaje' : 'Learning',
       value: `${metrics.trainingEvents}`,
-      caption: language === 'es' ? 'respuestas marcadas para mejora' : 'answers marked for improvement',
+      caption: language === 'es' ? 'respuestas en cola para aprendizaje' : 'answers queued for learning',
       icon: <FlaskConical size={18} />,
       accent: 'text-primary',
     },
@@ -435,7 +435,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({
             <div className="space-y-6">
               <Panel title={language === 'es' ? 'Contrato operativo' : 'Operational contract'} eyebrow={language === 'es' ? 'Lo que consume el frontend' : 'What the frontend reads'}>
                 <div className="space-y-3 text-sm">
-                  <div className="flex items-start justify-between gap-4 rounded-[1.2rem] border border-border/40 bg-muted/15 px-4 py-3"><span className="font-semibold text-foreground">readyz</span><span className="text-right text-muted-foreground">{operationalStatus?.ok ? 'ok' : operationalStatus?.degraded_reason || 'pending'}</span></div>
+                  <div className="flex items-start justify-between gap-4 rounded-[1.2rem] border border-border/40 bg-muted/15 px-4 py-3"><span className="font-semibold text-foreground">readyz</span><span className="text-right text-muted-foreground">{operationalStatus?.ok ? 'ok' : operationalStatus?.chat_ready ? (language === 'es' ? 'chat degradado' : 'degraded chat') : operationalStatus?.chat_block_reason || operationalStatus?.degraded_reason || 'pending'}</span></div>
                   <div className="flex items-start justify-between gap-4 rounded-[1.2rem] border border-border/40 bg-muted/15 px-4 py-3"><span className="font-semibold text-foreground">instructions.digest</span><span className="break-words text-right text-muted-foreground">{operationalStatus?.instructions?.digest || 'n/a'}</span></div>
                   <div className="flex items-start justify-between gap-4 rounded-[1.2rem] border border-border/40 bg-muted/15 px-4 py-3"><span className="font-semibold text-foreground">{language === 'es' ? 'Fuentes de instrucciones' : 'Instruction sources'}</span><span className="text-right text-muted-foreground">{(operationalStatus?.instructions?.sources || controlStatus?.instructions?.sources || []).length || 0}</span></div>
                 </div>
@@ -531,7 +531,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({
 
               <div className="mt-6 grid gap-3 sm:grid-cols-3">
                 <div className="rounded-[1.2rem] border border-border/40 bg-muted/15 px-4 py-3"><p className="text-[10px] font-black uppercase tracking-[0.22em] text-primary">{language === 'es' ? 'Runs detectados' : 'Detected runs'}</p><p className="mt-3 text-2xl font-black tracking-tight">{displayRuns.length}</p></div>
-                <div className="rounded-[1.2rem] border border-border/40 bg-muted/15 px-4 py-3"><p className="text-[10px] font-black uppercase tracking-[0.22em] text-primary">{language === 'es' ? 'Respuestas promovidas' : 'Promoted answers'}</p><p className="mt-3 text-2xl font-black tracking-tight">{metrics.trainingEvents}</p></div>
+                <div className="rounded-[1.2rem] border border-border/40 bg-muted/15 px-4 py-3"><p className="text-[10px] font-black uppercase tracking-[0.22em] text-primary">{language === 'es' ? 'Respuestas en cola' : 'Queued answers'}</p><p className="mt-3 text-2xl font-black tracking-tight">{metrics.trainingEvents}</p></div>
                 <div className="rounded-[1.2rem] border border-border/40 bg-muted/15 px-4 py-3"><p className="text-[10px] font-black uppercase tracking-[0.22em] text-primary">{language === 'es' ? 'Cambios sugeridos' : 'Suggested changes'}</p><p className="mt-3 text-2xl font-black tracking-tight">{metrics.fileChanges.length}</p></div>
               </div>
             </Panel>

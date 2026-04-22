@@ -1,0 +1,75 @@
+[     166ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:4173/node_modules/.vite/deps/react-dom_client.js?v=f99b4831:20102
+[   41059ms] [ERROR] In HTML, %s cannot be a descendant of <%s>.
+This will cause a hydration error.%s <div> p 
+
+  ...
+    <PresenceChild isPresent={true} initial={undefined} custom={undefined} presenceAffectsLayout={true} mode="popLayout" ...>
+      <PopChild pop={true} isPresent={true} anchorX="left" anchorY="top" root={undefined}>
+        <PopChildMeasure isPresent={true} childRef={{...}} sizeRef={{...}} pop={true}>
+          <div ref={function} className="w-full">
+            <MessageBubble message={{id:"177516...", ...}} fontSize="medium" codeTheme="dark" ...>
+              <motion.div initial={{opacity:0,y:15}} animate={{opacity:1,y:0}} className="group flex...">
+                <div className="group flex..." style={{opacity:1, ...}} ref={function}>
+                  <div className="flex max-w...">
+                    <div>
+                    <div className="flex flex-...">
+                      <div className="bg-transpa...">
+                        <div className="markdown-c...">
+                          <Markdown remarkPlugins={[...]} components={{p:function p, ...}}>
+                            <p node={{type:"element", ...}}>
+>                             <p className="m-0 leading-[1.55] text-foreground/90">
+                                ...
+                                  <div className="mt-[14px] ...">
+                                    <div className="flex items...">
+                                      <div className="flex items...">
+>                                       <div
+>                                         className="w-7 h-7 rounded-lg flex items-center justify-center border bg-pri..."
+>                                       >
+                                        ...
+                                      ...
+                                    ...
+                                ...
+                          ...
+                      ...
+ @ http://127.0.0.1:4173/node_modules/.vite/deps/react-dom_client.js?v=f99b4831:2155
+[   41060ms] [ERROR] <%s> cannot contain a nested %s.
+See this log for the ancestor stack trace. p <div> @ http://127.0.0.1:4173/node_modules/.vite/deps/react-dom_client.js?v=f99b4831:2162
+[   41060ms] [ERROR] In HTML, %s cannot be a descendant of <%s>.
+This will cause a hydration error.%s <pre> p 
+
+  ...
+    <PresenceChild isPresent={true} initial={undefined} custom={undefined} presenceAffectsLayout={true} mode="popLayout" ...>
+      <PopChild pop={true} isPresent={true} anchorX="left" anchorY="top" root={undefined}>
+        <PopChildMeasure isPresent={true} childRef={{...}} sizeRef={{...}} pop={true}>
+          <div ref={function} className="w-full">
+            <MessageBubble message={{id:"177516...", ...}} fontSize="medium" codeTheme="dark" ...>
+              <motion.div initial={{opacity:0,y:15}} animate={{opacity:1,y:0}} className="group flex...">
+                <div className="group flex..." style={{opacity:1, ...}} ref={function}>
+                  <div className="flex max-w...">
+                    <div>
+                    <div className="flex flex-...">
+                      <div className="bg-transpa...">
+                        <div className="markdown-c...">
+                          <Markdown remarkPlugins={[...]} components={{p:function p, ...}}>
+                            <p node={{type:"element", ...}}>
+>                             <p className="m-0 leading-[1.55] text-foreground/90">
+                                <code node={{type:"element", ...}}>
+                                  <div className="mt-[14px] ...">
+                                    <div>
+>                                   <pre
+>                                     className="custom-scrollbar overflow-x-auto p-5 text-[13px] font-mono leading-re..."
+>                                   >
+                                ...
+                          ...
+                      ...
+ @ http://127.0.0.1:4173/node_modules/.vite/deps/react-dom_client.js?v=f99b4831:2155
+[   41060ms] [ERROR] <%s> cannot contain a nested %s.
+See this log for the ancestor stack trace. p <pre> @ http://127.0.0.1:4173/node_modules/.vite/deps/react-dom_client.js?v=f99b4831:2162
+[  455299ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:4173/v1/status:0
+[  456309ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:4173/v1/self-edits/proposals?status=pending:0
+[  460307ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:4173/v1/status:0
+[  460308ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:4173/v1/status:0
+[  464310ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:4173/v1/self-edits/proposals?status=pending:0
+[  465302ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:4173/v1/status:0
+[  470309ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:4173/v1/status:0
+[  472299ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:4173/v1/self-edits/proposals?status=pending:0

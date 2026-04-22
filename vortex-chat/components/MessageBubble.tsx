@@ -22,6 +22,61 @@ interface MessageBubbleProps {
   language: Language;
 }
 
+const detectSnippetLanguage = (text: string): string => {
+  const sample = text.trim();
+  if (/package:flutter|runApp\(|MaterialApp\(|Scaffold\(|Widget\s+\w+|StatelessWidget|StatefulWidget|@override|void main\(\)/i.test(sample)) return 'dart';
+  if (/^import\s+React|from ['"]react['"]|useState\(|interface\s+\w+Props|export default/m.test(sample)) return 'tsx';
+  if (/^\s*(const|let|var)\s+\w+\s*=|console\.log\(|function\s+\w+\(/m.test(sample)) return 'ts';
+  if (/^\s*(def |from |import )/m.test(sample) || /print\(/.test(sample)) return 'python';
+  if (/^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE TABLE|ALTER TABLE)\b/im.test(sample)) return 'sql';
+  if (/^\s*(npm|pnpm|yarn|flutter|dart|git|powershell|Get-|Set-|cd\s|mkdir\s|rm\s)/m.test(sample)) return 'bash';
+  if (/^\s*\{[\s\S]*\}\s*$/.test(sample)) return 'json';
+  return 'text';
+};
+
+const isCodeLikeLine = (line: string): boolean => {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (/^(import |export |from |const |let |var |function |class |interface |type |enum |return |if\s*\(|else\b|for\s*\(|while\s*\(|switch\s*\(|case\b|try\b|catch\b|finally\b|async\b|await\b|final |void main\(|Widget\b|StatelessWidget|StatefulWidget|build\s*\(|runApp\(|MaterialApp\(|Scaffold\(|@override\b|SELECT\b|INSERT\b|UPDATE\b|DELETE\b|CREATE TABLE\b|ALTER TABLE\b|npm\b|pnpm\b|yarn\b|flutter\b|dart\b|git\b|powershell\b|Get-|Set-)/.test(trimmed)) return true;
+  if ((/[{}()[\];]/.test(trimmed) || /=>/.test(trimmed)) && trimmed.length >= 4) return true;
+  if (/^<[/A-Za-z][^>]*>/.test(trimmed)) return true;
+  return false;
+};
+
+const autoFencePlainCode = (content: string): string => {
+  if (!content || /```/.test(content)) return content;
+  const normalized = content.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  if (lines.length < 3) return content;
+
+  const findCodeStart = () => {
+    for (let index = 0; index <= lines.length - 3; index++) {
+      const windowLines = lines.slice(index, index + 3);
+      if (windowLines.every((line) => isCodeLikeLine(line))) return index;
+    }
+    return -1;
+  };
+
+  const codeStart = findCodeStart();
+  if (codeStart === -1) {
+    const codeLikeCount = lines.filter((line) => isCodeLikeLine(line)).length;
+    if (codeLikeCount / lines.length < 0.7) return content;
+    const language = detectSnippetLanguage(normalized);
+    return `\`\`\`${language}\n${normalized.trim()}\n\`\`\``;
+  }
+
+  const intro = lines.slice(0, codeStart).join('\n').trim();
+  const code = lines.slice(codeStart).join('\n').trim();
+  const codeLines = code.split('\n').filter((line) => line.trim().length > 0);
+  const codeLikeCount = codeLines.filter((line) => isCodeLikeLine(line)).length;
+  if (codeLines.length < 3 || codeLikeCount / codeLines.length < 0.7) return content;
+
+  const language = detectSnippetLanguage(code);
+  return intro
+    ? `${intro}\n\n\`\`\`${language}\n${code}\n\`\`\``
+    : `\`\`\`${language}\n${code}\n\`\`\``;
+};
+
 const GroundingPill: React.FC<{ source: Source; index: number }> = ({ source }) => {
   const [isHovered, setIsHovered] = useState(false);
   const timeoutRef = useRef<number | null>(null);
@@ -143,7 +198,7 @@ const DiffLine = ({ line, isDarkMode }: { line: any, isDarkMode: boolean }) => (
           : 'bg-transparent border-transparent hover:bg-white/[0.02]'
     }`}
   >
-    {/* Gutter: Número de línea con alineación perfecta */}
+    {/* Gutter: NÃºmero de lÃ­nea con alineaciÃ³n perfecta */}
     <div className={`flex items-center justify-end pr-3 border-r select-none tabular-nums shrink-0 ${
       isDarkMode 
         ? 'text-zinc-600 bg-black/20 border-white/5' 
@@ -154,7 +209,7 @@ const DiffLine = ({ line, isDarkMode }: { line: any, isDarkMode: boolean }) => (
       </span>
     </div>
 
-    {/* Signo: Posicionado simétricamente en su columna */}
+    {/* Signo: Posicionado simÃ©tricamente en su columna */}
     <div className="flex items-center justify-center shrink-0">
       <span className={`font-mono text-[13px] font-black leading-none ${
         line.type === 'added' ? 'text-emerald-500' : line.type === 'removed' ? 'text-red-500' : 'text-zinc-800'
@@ -163,7 +218,7 @@ const DiffLine = ({ line, isDarkMode }: { line: any, isDarkMode: boolean }) => (
       </span>
     </div>
 
-    {/* Código: Alineado exactamente al inicio de su área */}
+    {/* CÃ³digo: Alineado exactamente al inicio de su Ã¡rea */}
     <div className="flex items-center px-2 min-w-0 overflow-hidden">
       <span className={`whitespace-pre font-mono text-[13px] font-medium tracking-tight truncate leading-none ${
         line.type === 'added' ? 'text-emerald-300' : line.type === 'removed' ? 'text-red-300' : isDarkMode ? 'text-zinc-300' : 'text-zinc-700'
@@ -501,6 +556,10 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, fontSize = 'medi
   const isUser = message.role === Role.USER;
   const [collapsedPaths, setCollapsedPaths] = useState<Record<string, boolean>>({});
   const [msgCopied, setMsgCopied] = useState(false);
+  const renderedContent = useMemo(
+    () => (isUser ? message.content : autoFencePlainCode(message.content || '')),
+    [isUser, message.content]
+  );
 
   const togglePath = useCallback((path: string) => setCollapsedPaths(prev => ({ ...prev, [path]: !prev[path] })), []);
   const toggleAll = useCallback((collapsed: boolean) => {
@@ -520,7 +579,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, fontSize = 'medi
   const fontSizeClass = { small: 'text-[11px]', medium: 'text-[14px]', large: 'text-[16px]' }[fontSize];
 
   const markdownComponents = useMemo(() => ({
-    p: ({ children }: any) => <p className="m-0 leading-[1.55] text-foreground/90">{children}</p>,
+    p: ({ children }: any) => <p className={`${isUser ? 'm-0 inline leading-[1.35] text-foreground/95' : 'm-0 leading-[1.55] text-foreground/90'}`}>{children}</p>,
     ul: ({ children }: any) => <ul className="space-y-2.5 mb-4 list-none">{children}</ul>,
     ol: ({ children }: any) => <ol className="space-y-2.5 mb-4 list-none counter-reset-pulse">{children}</ol>,
     li: ({ children, ordered, index }: any) => (
@@ -534,35 +593,60 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, fontSize = 'medi
       const path = className?.includes('file:') ? className.split('file:')[1] : null;
       return <CodeBlock key={path || 'code'} className={className} isCollapsed={path ? (collapsedPaths[path] ?? true) : false} onToggle={togglePath} codeTheme={codeTheme} language={language}>{children}</CodeBlock>;
     }
-  }), [collapsedPaths, togglePath, codeTheme, language]);
+  }), [collapsedPaths, togglePath, codeTheme, isUser, language]);
 
   const isThinking = isStreaming && !message.content && !!message.thought;
-  const hasDiffBlock = useMemo(() => /```(?:diff|patch)\n[\s\S]*?```/i.test(message.content || ''), [message.content]);
+  const processingLabel = language === 'es' ? 'Procesando...' : 'Processing...';
+  const hasDiffBlock = useMemo(() => /```(?:diff|patch)\n[\s\S]*?```/i.test(renderedContent || ''), [renderedContent]);
   const wrapperClass = isUser
-    ? 'max-w-fit md:max-w-[240px]'
-    : 'max-w-[92%] md:max-w-[720px]';
+    ? 'w-full max-w-[92%] sm:max-w-[88%] md:min-w-[75%] md:max-w-[78%] xl:max-w-[75%]'
+    : 'max-w-[96%] md:max-w-[980px] xl:max-w-[1120px]';
   const bubbleClass = isUser
-    ? 'bg-muted/35 border border-border/60 text-foreground rounded-[1.1rem] rounded-tr-[0.55rem] px-3 py-1.5 shadow-sm'
+    ? 'w-full bg-muted/35 border border-border/60 text-foreground rounded-[1.15rem] rounded-tr-[0.55rem] px-4 py-3 shadow-sm'
     : 'bg-transparent text-foreground rounded-[1.1rem] px-0 py-0';
   const timestampClass = isUser ? 'mt-1' : 'mt-1.5';
 
   return (
-      <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} className={`group flex w-full ${isUser ? 'justify-end' : 'justify-start'} mb-5 accelerated`}>
+      <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} className={`group flex w-full ${isUser ? 'justify-end' : 'justify-start'} mb-3.5 accelerated`}>
       <div className={`flex ${wrapperClass} ${isUser ? 'flex-row-reverse' : 'flex-row'} items-start gap-3`}>
         {!isUser && (
-          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border/60 bg-background text-muted-foreground shadow-sm transition-all duration-500 group-hover:scale-105">
+          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border/60 bg-background text-muted-foreground shadow-sm transition-all duration-500 group-hover:scale-105">
             <Bot size={14} />
           </div>
         )}
         <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} min-w-0`}>
-          <div className={`${bubbleClass} ${fontSizeClass} leading-[1.45] w-fit max-w-full relative`}>
+          {!isUser && isThinking && (
+            <div className="mb-2.5 flex items-center gap-3 rounded-full border border-primary/15 bg-primary/8 px-4 py-2 text-primary shadow-[0_10px_30px_-24px_hsla(var(--primary)/0.7)]">
+              <Loader2 size={16} className="animate-spin shrink-0" />
+              <span className="text-[11px] font-black uppercase tracking-[0.18em] opacity-80">
+                {processingLabel}
+              </span>
+            </div>
+          )}
+          <div className={`${bubbleClass} ${fontSizeClass} leading-[1.45] ${isUser ? 'w-full' : 'w-fit'} max-w-full relative`}>
             {!isUser && message.fileChanges && message.fileChanges.length >= 2 && (
               <PatchOverview fileChanges={message.fileChanges} onToggleAll={toggleAll} onToggleSingle={togglePath} onOpenExplorer={() => onOpenModificationExplorer(message.fileChanges!)} collapsedPaths={collapsedPaths} language={language} />
             )}
             <div className="markdown-content relative overflow-visible z-10">
-              {message.content ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{message.content}</ReactMarkdown> : isThinking ? <div className="flex items-center gap-4 py-3 text-primary"><Loader2 size={20} className="animate-spin" /><span className="text-[13px] font-black tracking-[0.2em] opacity-70 uppercase">{language === 'es' ? 'Vortex está procesando...' : 'Vortex is processing...'}</span></div> : null}
+              {renderedContent ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{renderedContent}</ReactMarkdown> : null}
               {isStreaming && message.content && <span className="typing-cursor" />}
             </div>
+            {!isUser && message.trainingEvent && (
+              <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-black uppercase tracking-[0.16em]">
+                <span className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-primary">
+                  {message.learningStatus === 'consumed'
+                    ? (language === 'es' ? 'Usada en training' : 'Used in training')
+                    : message.learningStatus === 'scheduled'
+                      ? (language === 'es' ? 'Run programado' : 'Run scheduled')
+                      : (language === 'es' ? 'En cola de aprendizaje' : 'Queued for learning')}
+                </span>
+                {message.learningRunId && (
+                  <span className="rounded-full border border-border/60 bg-muted/20 px-3 py-1 text-muted-foreground">
+                    {message.learningRunId}
+                  </span>
+                )}
+              </div>
+            )}
             {!isUser && message.sources && message.sources.length > 0 && <div className="mt-4 pt-3 border-t border-border/20 flex flex-wrap gap-2 relative z-[20]">{message.sources.map((src, i) => <GroundingPill key={i} source={src} index={i} />)}</div>}
           </div>
           <div className={`flex gap-3 ${timestampClass} px-1 opacity-0 group-hover:opacity-100 transition-all duration-300 items-center w-full`}>

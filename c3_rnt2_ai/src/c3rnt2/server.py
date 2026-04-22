@@ -10,13 +10,20 @@ import threading
 import time
 import unicodedata
 import uuid
+import hashlib
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterable, TYPE_CHECKING, cast
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore[assignment]
 
 torch: ModuleType | None
 try:
@@ -57,11 +64,17 @@ from .continuous.dataset import ingest_sources, retrieve_context_details
 from .continuous.registry import load_registry
 from .adapters.registry import AdapterRegistry
 from .adapters.router import AdapterRouter
+from .chat_sessions import ChatSessionStore
 from .experts.registry import ExpertRegistry
 from .experts.router import ExpertRouter
 from .episodes import EpisodeIndex
 from .logging import get_logger
-from .config import resolve_web_allowlist
+from .config import load_settings, resolve_web_allowlist
+from .agent.permissions import (
+    build_agent_permission_context,
+    permissions_from_request,
+)
+from .agent.runner import run_agent
 from .lab_guard import evaluate_lab_request
 from .local_lab import (
     check_lesson,
@@ -83,6 +96,10 @@ from .utils.oom import is_oom_error, clear_cuda_cache
 
 
 LOG = get_logger("vortex.api")
+
+DEFAULT_CONTROL_PORT = 8765
+DEFAULT_QUICK_QUEUE_THRESHOLD = 3
+DEFAULT_QUICK_QUEUE_COOLDOWN_S = 900
 
 
 def _openai_error(
@@ -249,6 +266,83 @@ def _models_list_payload(app_state, settings: dict, base_dir: Path) -> dict[str,
         }
         data.append(entry)
     return {"object": "list", "data": data}
+
+
+def _load_initial_models(
+    settings: dict,
+    base_dir: Path,
+    default_backend_label: str,
+    *,
+    router_enabled: bool,
+    router_cfg: dict[str, Any],
+) -> tuple[Any, dict[str, Any]]:
+    model = _load_backend_model(settings, base_dir, default_backend_label)
+    models: dict[str, Any] = {default_backend_label: model}
+    if router_enabled and bool(router_cfg.get("multi_backend", False)):
+        for backend in ("core", "hf"):
+            if backend in models:
+                continue
+            try:
+                models[backend] = _load_backend_model(settings, base_dir, backend)
+            except Exception:
+                continue
+    return model, models
+
+
+def _resolve_boot_fallback_profile(settings: dict) -> str | None:
+    server_cfg = settings.get("server", {}) or {}
+    profile = str(server_cfg.get("model_boot_fallback_profile") or "").strip()
+    return profile or None
+
+
+def _load_initial_models_with_boot_fallback(
+    settings: dict,
+    base_dir: Path,
+    default_backend_label: str,
+    *,
+    router_enabled: bool,
+    router_cfg: dict[str, Any],
+) -> tuple[Any, dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+    try:
+        model, models = _load_initial_models(
+            settings,
+            base_dir,
+            default_backend_label,
+            router_enabled=router_enabled,
+            router_cfg=router_cfg,
+        )
+        return model, models, settings, None
+    except Exception as exc:
+        fallback_profile = _resolve_boot_fallback_profile(settings)
+        current_profile = str(settings.get("_profile") or "").strip()
+        if not fallback_profile or fallback_profile == current_profile:
+            raise
+
+        fallback_settings = load_settings(fallback_profile)
+        fallback_core = fallback_settings.get("core", {}) or {}
+        fallback_router_cfg = (
+            fallback_core.get("router", fallback_settings.get("router", {})) or {}
+        )
+        fallback_backend_label = _normalize_backend_label(
+            fallback_core.get("backend", "vortex")
+        )
+        model, models = _load_initial_models(
+            fallback_settings,
+            base_dir,
+            fallback_backend_label,
+            router_enabled=bool(fallback_router_cfg.get("enabled", False)),
+            router_cfg=fallback_router_cfg,
+        )
+        return (
+            model,
+            models,
+            fallback_settings,
+            {
+                "requested_profile": current_profile or None,
+                "fallback_profile": fallback_profile,
+                "reason": str(exc),
+            },
+        )
 
 
 @dataclass
@@ -845,13 +939,15 @@ def _normalize_backend_label(value: object) -> str:
     return name
 
 
-def _external_model_aliases(settings: dict) -> set[str]:
+def _external_model_aliases(settings: dict, model_obj: object | None = None) -> set[str]:
     core = settings.get("core", {}) or {}
     aliases: set[str] = set()
     for raw in (
         core.get("external_model"),
         core.get("hf_model"),
         core.get("model"),
+        getattr(model_obj, "model_id", None),
+        getattr(getattr(model_obj, "cfg", None), "model", None),
     ):
         text = str(raw or "").strip().lower()
         if not text:
@@ -862,19 +958,33 @@ def _external_model_aliases(settings: dict) -> set[str]:
     return aliases
 
 
-def _resolve_requested_backend(requested_model: object, settings: dict, default_backend: str) -> tuple[str | None, bool]:
+def _resolve_requested_backend(
+    requested_model: object,
+    settings: dict,
+    default_backend: str,
+    external_model: object | None = None,
+) -> tuple[str | None, bool]:
     text = str(requested_model or "").strip()
     if not text:
         return None, False
     lowered = text.lower()
     if lowered in {"auto", "router"}:
         return None, True
+    if lowered in {"local", "default", "current"}:
+        return _normalize_backend_label(default_backend), False
     normalized = _normalize_backend_label(text)
     if normalized != lowered:
         return normalized, False
-    if str(default_backend or "").strip().lower() == "external":
-        if lowered in _external_model_aliases(settings):
-            return "external", False
+    core = settings.get("core", {}) or {}
+    external_runtime_configured = bool(
+        core.get("external_base_url")
+        or core.get("external_url")
+        or core.get("external_model")
+        or external_model is not None
+        or str(core.get("backend", "") or "").strip().lower() in {"external", "vllm", "sglang"}
+    )
+    if external_runtime_configured and lowered in _external_model_aliases(settings, external_model):
+        return "external", False
     return normalized, False
 
 
@@ -950,17 +1060,72 @@ def _build_operational_status(app_state, settings: dict, base_dir: Path) -> dict
     if active_backend not in models and models:
         active_backend = next(iter(models.keys()))
     model_obj = models.get(active_backend) or getattr(app_state, "model", None)
+    model_loading = bool(getattr(app_state, "model_loading", False))
+    model_loaded = model_obj is not None
+    model_load_error = _safe_str(getattr(app_state, "model_load_error", None))
+    model_load_started_at = getattr(app_state, "model_load_started_at", None)
+    model_loaded_at = getattr(app_state, "model_loaded_at", None)
+    if active_backend == "external" and model_loaded and bool(prepare_state.get("engine_ready", False)):
+        core = settings.get("core", {}) or {}
+        external_cfg = getattr(model_obj, "cfg", None)
+        external_engine = _safe_str(core.get("external_engine") or getattr(external_cfg, "engine", None)) or "external"
+        external_base_url = _safe_str(
+            core.get("external_base_url")
+            or core.get("external_url")
+            or getattr(external_cfg, "base_url", None)
+        )
+        external_model = (
+            _safe_str(prepare_state.get("active_model"))
+            or _safe_str(core.get("external_model"))
+            or _safe_str(getattr(external_cfg, "model", None))
+            or _safe_str(getattr(model_obj, "model_id", None))
+        )
+        prepare_state["engine_kind"] = external_engine
+        if external_base_url:
+            prepare_state["engine_base_url"] = external_base_url
+        prepare_state["active_model"] = external_model or None
+        prepare_state["model_ready"] = bool(external_model)
+        prepare_state["model_reason"] = (
+            "model_ready" if external_model else prepare_state.get("model_reason")
+        )
+    offline_ready = bool(prepare_state.get("offline_ready", False))
+    engine_ready = bool(prepare_state.get("engine_ready", False))
+    model_ready = bool(prepare_state.get("model_ready", False))
+    if not model_loaded:
+        model_ready = False
+        if model_loading:
+            prepare_state["model_reason"] = "model_loading"
+        elif model_load_error:
+            prepare_state["model_reason"] = f"model_load_failed:{model_load_error}"
+        else:
+            prepare_state["model_reason"] = "model_not_loaded"
+    stack_ok = bool(offline_ready and engine_ready and model_ready and model_loaded)
+    chat_ready = bool(engine_ready and model_ready and model_loaded)
+    chat_mode = "primary" if stack_ok else ("fallback_degraded" if chat_ready else "unavailable")
+    chat_block_reason = None
+    if not chat_ready:
+        chat_block_reason = (
+            prepare_state.get("model_reason")
+            or prepare_state.get("engine_reason")
+            or prepare_state.get("docker_reason")
+            or prepare_state.get("offline_reason")
+            or prepare_state.get("degraded_reason")
+        )
     payload: dict[str, Any] = {
-        "ok": bool(
-            prepare_state.get("offline_ready", False)
-            and prepare_state.get("engine_ready", False)
-            and prepare_state.get("model_ready", False)
-        ),
-        "offline_ready": bool(prepare_state.get("offline_ready", False)),
-        "engine_ready": bool(prepare_state.get("engine_ready", False)),
+        "ok": stack_ok,
+        "chat_ready": chat_ready,
+        "chat_mode": chat_mode,
+        "chat_block_reason": chat_block_reason,
+        "offline_ready": offline_ready,
+        "engine_ready": engine_ready,
         "engine_kind": prepare_state.get("engine_kind"),
         "engine_base_url": prepare_state.get("engine_base_url"),
-        "model_ready": bool(prepare_state.get("model_ready", False)),
+        "model_ready": model_ready,
+        "model_loaded": model_loaded,
+        "model_loading": model_loading,
+        "model_load_error": model_load_error,
+        "model_load_started_at": model_load_started_at,
+        "model_loaded_at": model_loaded_at,
         "active_backend": active_backend,
         "active_model": prepare_state.get("active_model")
         or _active_model_name(settings, backend=active_backend),
@@ -979,6 +1144,8 @@ def _build_operational_status(app_state, settings: dict, base_dir: Path) -> dict
         "backend": active_backend,
         "ollama_ready": prepare_state.get("ollama_ready"),
         "ollama_reason": prepare_state.get("ollama_reason"),
+        "active_profile": str(getattr(app_state, "active_profile", "") or settings.get("_profile") or "").strip() or None,
+        "boot_fallback": getattr(app_state, "boot_fallback", None),
     }
     instructions = getattr(app_state, "instructions", None)
     if isinstance(instructions, dict):
@@ -1204,6 +1371,21 @@ def _stream_decode_args_for_model(
     return decode_args
 
 
+def _chat_kwargs_for_model(
+    model: object,
+    messages: list[dict],
+    default_system: str | None,
+) -> dict[str, Any]:
+    if bool(getattr(model, "is_external", False)):
+        return {"messages": list(messages)}
+    if bool(getattr(model, "is_hf", False)):
+        kwargs: dict[str, Any] = {"messages": list(messages)}
+        if default_system:
+            kwargs["system"] = str(default_system)
+        return kwargs
+    return {}
+
+
 def _new_request_id(raw: str | None = None) -> str:
     if raw:
         return str(raw)
@@ -1326,6 +1508,18 @@ def _append_jsonl(path: Path, payload: dict) -> int:
     return offset
 
 
+def _load_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
 def _log_chat_episode(
     base_dir: Path, index: EpisodeIndex | None, payload: dict
 ) -> None:
@@ -1348,6 +1542,241 @@ def _log_training_event(base_dir: Path, payload: dict) -> None:
     _append_jsonl(path, payload)
 
 
+def _default_learning_queue_state() -> dict[str, Any]:
+    return {
+        "items": {},
+        "quick_threshold": DEFAULT_QUICK_QUEUE_THRESHOLD,
+        "quick_cooldown_s": DEFAULT_QUICK_QUEUE_COOLDOWN_S,
+        "last_quick_dispatch_at": None,
+        "last_quick_dispatch_run_id": None,
+        "updated_at": time.time(),
+    }
+
+
+def _load_learning_queue_state(base_dir: Path) -> dict[str, Any]:
+    path = base_dir / "data" / "control" / "learning_queue_state.json"
+    current = _load_json(path, _default_learning_queue_state())
+    merged = _default_learning_queue_state()
+    if isinstance(current, dict):
+        merged.update(current)
+    items = merged.get("items")
+    merged["items"] = dict(items) if isinstance(items, dict) else {}
+    return merged
+
+
+def _write_learning_queue_state(base_dir: Path, patch: dict[str, Any]) -> dict[str, Any]:
+    path = base_dir / "data" / "control" / "learning_queue_state.json"
+    current = _load_learning_queue_state(base_dir)
+    existing_items = dict(current.get("items") or {})
+    current.update(patch)
+    if "items" in patch and isinstance(patch["items"], dict):
+        merged_items = dict(existing_items)
+        merged_items.update(patch["items"])
+        current["items"] = merged_items
+    current["updated_at"] = time.time()
+    _write_json(path, current)
+    return current
+
+
+def _control_candidate_urls(settings: dict) -> list[str]:
+    candidates: list[str] = []
+    for raw in (
+        os.getenv("C3RNT2_CONTROL_URL"),
+        os.getenv("VORTEX_CONTROL_URL"),
+        os.getenv("KLIMEAI_CONTROL_URL"),
+        ((settings.get("server", {}) or {}).get("control_url") if isinstance(settings, dict) else None),
+    ):
+        text = str(raw or "").strip()
+        if text:
+            candidates.append(text.rstrip("/"))
+    default_port = int(((settings.get("server", {}) or {}).get("control_port")) or DEFAULT_CONTROL_PORT)
+    for host in ("127.0.0.1", "localhost", "host.docker.internal"):
+        candidates.append(f"http://{host}:{default_port}")
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        key = item.rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    return ordered
+
+
+def _learning_queue_depth(base_dir: Path) -> int:
+    queue_path = base_dir / "data" / "control" / "learning_queue.jsonl"
+    items_state = _load_learning_queue_state(base_dir).get("items") or {}
+    depth = 0
+    if not queue_path.exists():
+        return 0
+    for line in queue_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        item_id = str(payload.get("id") or "").strip()
+        state = items_state.get(item_id) if item_id and isinstance(items_state, dict) else None
+        status = str((state or {}).get("status") or payload.get("status") or "queued")
+        if status != "consumed":
+            depth += 1
+    return depth
+
+
+def _enqueue_learning_example(base_dir: Path, feedback: dict[str, Any], episode: dict[str, Any], training_event: dict[str, Any]) -> dict[str, Any]:
+    queue_path = base_dir / "data" / "control" / "learning_queue.jsonl"
+    state = _load_learning_queue_state(base_dir)
+    item_id = f"learn-{uuid.uuid4().hex[:12]}"
+    score = 1.0 if str(feedback.get("rating") or "").lower() == "up" else -1.0
+    fingerprint = json.dumps(
+        {
+            "request_id": feedback.get("request_id"),
+            "prompt_text": training_event.get("prompt_text"),
+            "response": training_event.get("response"),
+            "messages": training_event.get("messages"),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    queue_item = {
+        "id": item_id,
+        "ts": time.time(),
+        "request_id": feedback.get("request_id"),
+        "source_kind": "chat_feedback",
+        "score": score,
+        "origin": {
+            "request_id": feedback.get("request_id"),
+            "backend": episode.get("backend"),
+            "endpoint": "/v1/feedback",
+        },
+        "hash": f"sha256:{hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()}",
+        "inclusion_reason": "positive_feedback",
+        "curation_status": "queued",
+        "status": "queued",
+        "backend": episode.get("backend"),
+        "messages": training_event.get("messages"),
+        "prompt_text": training_event.get("prompt_text"),
+        "response": training_event.get("response"),
+        "notes": feedback.get("notes"),
+        "ideal_response": feedback.get("ideal_response"),
+    }
+    _append_jsonl(queue_path, queue_item)
+    _write_learning_queue_state(
+        base_dir,
+        {
+            "items": {
+                item_id: {
+                    "status": "queued",
+                    "curation_status": "queued",
+                    "queued_at": queue_item["ts"],
+                    "request_id": feedback.get("request_id"),
+                }
+            }
+        },
+    )
+    state = _load_learning_queue_state(base_dir)
+    return {
+        "queue_item": queue_item,
+        "queue_depth": _learning_queue_depth(base_dir),
+        "quick_threshold": int(state.get("quick_threshold") or DEFAULT_QUICK_QUEUE_THRESHOLD),
+        "quick_cooldown_s": int(state.get("quick_cooldown_s") or DEFAULT_QUICK_QUEUE_COOLDOWN_S),
+        "last_quick_dispatch_at": state.get("last_quick_dispatch_at"),
+        "last_quick_dispatch_run_id": state.get("last_quick_dispatch_run_id"),
+    }
+
+
+def _maybe_schedule_quick_training(base_dir: Path, settings: dict, *, queue_depth: int) -> dict[str, Any]:
+    state = _load_learning_queue_state(base_dir)
+    threshold = int(state.get("quick_threshold") or DEFAULT_QUICK_QUEUE_THRESHOLD)
+    cooldown_s = int(state.get("quick_cooldown_s") or DEFAULT_QUICK_QUEUE_COOLDOWN_S)
+    now = time.time()
+    last_dispatch_at = state.get("last_quick_dispatch_at")
+    try:
+        last_dispatch_val = float(last_dispatch_at) if last_dispatch_at is not None else None
+    except Exception:
+        last_dispatch_val = None
+    if queue_depth < threshold:
+        return {
+            "scheduled": False,
+            "reason": "below_threshold",
+            "queue_depth": queue_depth,
+            "quick_threshold": threshold,
+            "cooldown_s": cooldown_s,
+        }
+    if last_dispatch_val is not None and (now - last_dispatch_val) < cooldown_s:
+        return {
+            "scheduled": False,
+            "reason": "cooldown_active",
+            "queue_depth": queue_depth,
+            "quick_threshold": threshold,
+            "cooldown_s": cooldown_s,
+            "cooldown_remaining_s": max(0, int(cooldown_s - (now - last_dispatch_val))),
+            "last_quick_dispatch_run_id": state.get("last_quick_dispatch_run_id"),
+        }
+    if requests is None:
+        return {
+            "scheduled": False,
+            "reason": "requests_unavailable",
+            "queue_depth": queue_depth,
+            "quick_threshold": threshold,
+            "cooldown_s": cooldown_s,
+        }
+    last_error: str | None = None
+    for base_url in _control_candidate_urls(settings):
+        try:
+            response = requests.post(
+                f"{base_url}/control/training/start",
+                json={"mode": "quick", "source": "feedback_queue"},
+                timeout=2.5,
+            )
+            payload = response.json() if response.content else {}
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+        if not response.ok or not isinstance(payload, dict):
+            last_error = str((payload or {}).get("detail") or (payload or {}).get("error") or f"http_{response.status_code}")
+            continue
+        if not bool(payload.get("ok")):
+            return {
+                "scheduled": False,
+                "reason": str(payload.get("error") or "control_rejected"),
+                "queue_depth": queue_depth,
+                "quick_threshold": threshold,
+                "cooldown_s": cooldown_s,
+                "scheduled_run_id": payload.get("run_id"),
+                "status": payload.get("status"),
+            }
+        run_id = payload.get("run_id")
+        _write_learning_queue_state(
+            base_dir,
+            {
+                "last_quick_dispatch_at": now,
+                "last_quick_dispatch_run_id": run_id,
+            },
+        )
+        return {
+            "scheduled": True,
+            "reason": str(payload.get("queue_reason") or "scheduled"),
+            "queue_depth": queue_depth,
+            "quick_threshold": threshold,
+            "cooldown_s": cooldown_s,
+            "scheduled_run_id": run_id,
+            "status": payload.get("status"),
+        }
+    return {
+        "scheduled": False,
+        "reason": "control_unreachable",
+        "queue_depth": queue_depth,
+        "quick_threshold": threshold,
+        "cooldown_s": cooldown_s,
+        "error": last_error,
+    }
+
+
 def _log_rag_event(base_dir: Path, payload: dict) -> None:
     log_path = base_dir / "data" / "logs" / "rag_events.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1363,6 +1792,229 @@ def _extract_query(messages: list[dict], prompt: str | None) -> str:
             if str(msg.get("role", "")).lower() == "user":
                 return str(msg.get("content", "")).strip()
     return (prompt or "").strip()
+
+
+def _build_agent_task(
+    messages: list[dict],
+    prompt: str | None = None,
+    *,
+    permission_context: str | None = None,
+) -> str:
+    objective = _extract_query(messages, prompt) or "Resolver la tarea del usuario en el repositorio actual."
+    context_blocks: list[str] = []
+    markers = (
+        "CONTEXT",
+        "MEMORY",
+        "RAG",
+        "UNTRUSTED",
+        "WEB",
+        "CURRENT REQUEST DATETIME",
+    )
+    for msg in messages[-8:]:
+        role = str(msg.get("role", "")).strip().lower()
+        if role not in {"system", "user", "assistant"}:
+            continue
+        content = str(msg.get("content", "")).strip()
+        if not content:
+            continue
+        if role == "system" and not any(marker in content.upper() for marker in markers):
+            continue
+        context_blocks.append(f"[{role}]\n{content}")
+    recent_context = "\n\n".join(context_blocks).strip()
+    if len(recent_context) > 6000:
+        recent_context = recent_context[-6000:]
+    if recent_context:
+        task_text = (
+            "Resuelve la peticion del usuario como operador tecnico dentro del repositorio actual. "
+            "Diagnostica, cambia codigo si hace falta y valida cuando puedas.\n\n"
+            f"Objetivo principal:\n{objective}\n\n"
+            f"Contexto reciente:\n{recent_context}"
+        )
+        if permission_context:
+            task_text = f"{task_text}\n\n{permission_context}"
+        return task_text
+    if permission_context:
+        return f"{objective}\n\n{permission_context}"
+    return objective
+
+
+def _build_external_agent_messages(
+    messages: list[dict],
+    prompt: str | None = None,
+    *,
+    permission_context: str | None = None,
+) -> list[dict[str, str]]:
+    objective = _extract_query(messages, prompt) or "Resolver la tarea del usuario."
+    system_content = (
+        "Actua en modo agente tecnico sobre la peticion del usuario.\n"
+        f"Objetivo principal: {objective}\n"
+        "Reglas:\n"
+        "- Da respuesta util y accionable para completar la tarea.\n"
+        "- No generes diffs, patches o logs ficticios.\n"
+        "- No digas que ejecutaste pruebas, comandos o cambios no visibles en el contexto.\n"
+        "- Si no puedes ejecutar o editar desde este contexto, di el siguiente paso concreto.\n"
+        "- Prioriza claridad, pasos cortos y codigo util cuando aplique.\n"
+    )
+    if permission_context:
+        system_content += f"Contexto de permisos reales: {permission_context}\n"
+    normalized: list[dict[str, str]] = [{"role": "system", "content": system_content}]
+    for msg in messages[-12:]:
+        role = str(msg.get("role", "")).strip().lower()
+        if role not in {"system", "user", "assistant"}:
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if text is not None:
+                        parts.append(str(text))
+                elif item is not None:
+                    parts.append(str(item))
+            content_text = "".join(parts).strip()
+        else:
+            content_text = str(content or "").strip()
+        if not content_text:
+            continue
+        normalized.append({"role": role, "content": content_text})
+    return normalized
+
+
+def _format_agent_report_text(report: dict[str, Any]) -> str:
+    summary = str(report.get("summary") or "agent_finished").strip() or "agent_finished"
+    if bool(report.get("blocked")):
+        return summary
+    parts = [summary]
+    parts.append("Tests: ok" if bool(report.get("tests_ok")) else "Tests: sin validar o con fallo")
+    browser_actions = report.get("browser_actions")
+    if isinstance(browser_actions, list):
+        urls = []
+        for item in browser_actions[:3]:
+            if not isinstance(item, dict):
+                continue
+            target = str(item.get("target") or "").strip()
+            if target:
+                urls.append(target)
+        if urls:
+            parts.append("Browser: " + ", ".join(urls))
+    patch_id = str(report.get("patch_id") or "").strip()
+    if patch_id:
+        parts.append(f"Patch: {patch_id}")
+    patch_text = str(report.get("patch") or "").strip()
+    if patch_text:
+        if len(patch_text) > 12000:
+            patch_text = patch_text[:12000].rstrip() + "\n...diff truncated..."
+        parts.append(f"```diff\n{patch_text}\n```")
+    return "\n\n".join(part for part in parts if part)
+
+
+def _parse_client_datetime(raw: object | None) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        return datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+
+
+def _resolve_request_datetime(payload: dict[str, Any]) -> tuple[datetime, str]:
+    tz_name = (
+        str(payload.get("client_timezone") or payload.get("timezone") or os.getenv("TZ") or "")
+        .strip()
+    )
+    tzinfo = None
+    if tz_name and ZoneInfo is not None:
+        try:
+            tzinfo = ZoneInfo(tz_name)
+        except Exception:
+            tzinfo = None
+    now = _parse_client_datetime(payload.get("client_now_iso"))
+    if now is None:
+        now = datetime.now(tzinfo or timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=tzinfo or timezone.utc)
+    elif tzinfo is not None:
+        now = now.astimezone(tzinfo)
+    resolved_tz = tz_name or getattr(now.tzinfo, "key", None) or str(now.tzinfo or "UTC")
+    return now, str(resolved_tz)
+
+
+def _build_temporal_system_context(payload: dict[str, Any]) -> str:
+    now, tz_name = _resolve_request_datetime(payload)
+    iso_now = now.isoformat(timespec="seconds")
+    return (
+        "Current request datetime context (authoritative, provided by the client):\n"
+        f"- local_datetime: {iso_now}\n"
+        f"- local_date: {now.date().isoformat()}\n"
+        f"- timezone: {tz_name}\n"
+        "Interpret relative dates like today, tomorrow and yesterday using this context unless the user states another date.\n"
+        "If the user asks what day, date or time it is, answer from this context directly.\n"
+        "Do not claim that you lack access to the current date or time when this context is present."
+    )
+
+
+_SPANISH_WEEKDAYS = [
+    "lunes",
+    "martes",
+    "miercoles",
+    "jueves",
+    "viernes",
+    "sabado",
+    "domingo",
+]
+
+_SPANISH_MONTHS = [
+    "",
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+]
+
+_DIRECT_TEMPORAL_QUERIES = {
+    "que dia es hoy",
+    "que fecha es hoy",
+    "cual es la fecha de hoy",
+    "fecha de hoy",
+    "dia de hoy",
+    "hoy que dia es",
+    "hoy que fecha es",
+    "que hora es",
+    "que hora es hoy",
+    "hora actual",
+    "hora de ahora",
+    "what day is today",
+    "what date is today",
+    "today date",
+    "what time is it",
+    "what time is it today",
+    "current time",
+}
+
+
+def _direct_temporal_response(payload: dict[str, Any], query: str) -> str | None:
+    normalized = _normalize_smalltalk_query(query)
+    if normalized not in _DIRECT_TEMPORAL_QUERIES:
+        return None
+    now, tz_name = _resolve_request_datetime(payload)
+    weekday_es = _SPANISH_WEEKDAYS[now.weekday()]
+    month_es = _SPANISH_MONTHS[now.month]
+    date_es = f"{weekday_es}, {now.day} de {month_es} de {now.year}"
+    time_es = now.strftime("%H:%M")
+    if "hora" in normalized or "time" in normalized:
+        return f"Ahora mismo son las {time_es} en {tz_name}."
+    return f"Hoy es {date_es} en {tz_name}."
 
 
 def _normalize_smalltalk_query(query: str) -> str:
@@ -1626,7 +2278,11 @@ def _web_search_and_ingest(
     """
     import html as _html
     import re as _re_ws
+    from urllib.parse import parse_qs as _parse_qs
     from urllib.parse import quote_plus as _qp
+    from urllib.parse import unquote as _unquote
+    from urllib.parse import urljoin as _urljoin
+    from urllib.parse import urlparse as _up
 
     from .tools.web_access import web_fetch as _wf
     from .continuous.knowledge_store import KnowledgeStore
@@ -1660,6 +2316,14 @@ def _web_search_and_ingest(
     urls: list[str] = []
     for href, _title_html in matches:
         link = _html.unescape(href).strip()
+        if link.startswith("//"):
+            link = "https:" + link
+        if link.startswith("/"):
+            parsed = _up(_urljoin("https://duckduckgo.com", link))
+            uddg = (_parse_qs(parsed.query).get("uddg") or [None])[0]
+            if uddg:
+                link = _unquote(str(uddg))
+        link = _unwrap_duckduckgo_result_url(link)
         if link and link.startswith("http"):
             urls.append(link)
         if len(urls) >= max_results:
@@ -1683,8 +2347,6 @@ def _web_search_and_ingest(
         return []
 
     # 3) Build dynamic allowlist from discovered URLs
-    from urllib.parse import urlparse as _up
-
     all_domains = list(allowlist)
     for u in urls:
         try:
@@ -1725,6 +2387,169 @@ def _web_search_and_ingest(
         len(ingested),
     )
     return ingested
+
+
+def _strip_html_for_prompt(text: str) -> str:
+    import html as _html
+
+    cleaned = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", text)
+    cleaned = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", cleaned)
+    cleaned = re.sub(r"(?is)<[^>]+>", " ", cleaned)
+    cleaned = _html.unescape(cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def _unwrap_duckduckgo_result_url(raw_url: str) -> str:
+    from urllib.parse import parse_qs as _parse_qs
+    from urllib.parse import unquote as _unquote
+    from urllib.parse import urlparse as _up
+
+    url = str(raw_url or "").strip()
+    if not url:
+        return ""
+    try:
+        parsed = _up(url)
+    except Exception:
+        return url
+    host = (parsed.netloc or "").lower().replace("www.", "")
+    uddg = (_parse_qs(parsed.query).get("uddg") or [None])[0]
+    if host == "duckduckgo.com" and parsed.path.startswith("/l/") and uddg:
+        return _unquote(str(uddg))
+    return url
+
+
+def _live_web_search_context(
+    base_dir: Path,
+    query: str,
+    settings: dict,
+    *,
+    max_results: int = 4,
+    extra_allowlist: list[str] | None = None,
+) -> tuple[str, list[dict[str, str]]]:
+    import html as _html
+    import re as _re_ws
+    from urllib.parse import parse_qs as _parse_qs
+    from urllib.parse import quote_plus as _qp
+    from urllib.parse import unquote as _unquote
+    from urllib.parse import urljoin as _urljoin
+    from urllib.parse import urlparse as _up
+
+    from .tools.web_access import web_fetch as _wf
+
+    cleaned_query = str(query or "").strip()
+    if not cleaned_query or _query_is_smalltalk(cleaned_query):
+        return "", []
+
+    base_allowlist = [
+        str(item or "").strip().lower()
+        for item in list(resolve_web_allowlist(settings) or [])
+        if str(item or "").strip()
+    ]
+    if extra_allowlist:
+        for domain in extra_allowlist:
+            item = str(domain or "").strip().lower()
+            if item and item not in base_allowlist:
+                base_allowlist.append(item)
+    search_allowlist = list(base_allowlist)
+    if "duckduckgo.com" not in search_allowlist:
+        search_allowlist.append("duckduckgo.com")
+    cache_dir = base_dir / "data" / "web_cache"
+    ddg_url = f"https://duckduckgo.com/html/?q={_qp(cleaned_query)}"
+    search_result = _wf(
+        ddg_url,
+        allowlist=search_allowlist,
+        cache_dir=cache_dir,
+        timeout_s=6,
+        cache_ttl_s=120,
+        strict=False,
+    )
+    if not search_result.ok or not search_result.text:
+        return "", []
+
+    matches = _re_ws.findall(
+        r'<a[^>]+class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>',
+        search_result.text,
+        flags=_re_ws.IGNORECASE | _re_ws.DOTALL,
+    )
+    candidates: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for href, title_html in matches:
+        url = _html.unescape(href).strip()
+        if url.startswith("//"):
+            url = "https:" + url
+        if url.startswith("/"):
+            parsed = _up(_urljoin("https://duckduckgo.com", url))
+            uddg = (_parse_qs(parsed.query).get("uddg") or [None])[0]
+            if uddg:
+                url = _unquote(str(uddg))
+        url = _unwrap_duckduckgo_result_url(url)
+        if not url.startswith("http") or url in seen_urls:
+            continue
+        title = _strip_html_for_prompt(_html.unescape(title_html))
+        seen_urls.add(url)
+        candidates.append((url, title))
+        if len(candidates) >= max_results:
+            break
+    if not candidates:
+        return "", []
+
+    page_allowlist = list(search_allowlist)
+    for url, _title in candidates:
+        try:
+            domain = (_up(url).netloc or "").lower().replace("www.", "")
+        except Exception:
+            domain = ""
+        if domain and domain not in page_allowlist:
+            page_allowlist.append(domain)
+
+    blocks: list[str] = []
+    refs: list[dict[str, str]] = []
+    for index, (url, title) in enumerate(candidates, start=1):
+        try:
+            page = _wf(
+                url,
+                allowlist=page_allowlist,
+                cache_dir=cache_dir,
+                timeout_s=6,
+                cache_ttl_s=180,
+                strict=False,
+            )
+        except Exception:
+            continue
+        if not page.ok or not page.text:
+            continue
+        snippet = _strip_html_for_prompt(page.text)
+        if len(snippet) < 120:
+            continue
+        snippet = snippet[:900].rsplit(" ", 1)[0].strip() if len(snippet) > 900 else snippet
+        label = title or (_up(url).netloc or url)
+        blocks.append(f"[{index}] {label}\nURL: {url}\nSnippet: {snippet}")
+        refs.append({"kind": "web", "ref": url})
+    if not blocks:
+        return "", []
+    context = (
+        "LIVE WEB RESULTS (use these as the freshest context for the current answer):\n"
+        + "\n\n".join(blocks)
+    )
+    return context, refs
+
+
+def _compose_dynamic_system_prompt(
+    base_system: str,
+    *,
+    temporal_context: str | None,
+    web_context: str | None,
+) -> str:
+    parts = [str(base_system or "").strip()]
+    if temporal_context:
+        parts.append(temporal_context.strip())
+    if web_context:
+        parts.append(
+            "When live web results are present, prefer them over stale prior knowledge for time-sensitive questions."
+        )
+        parts.append(web_context.strip())
+    return "\n\n".join(part for part in parts if part)
 
 
 def _inject_rag_context(
@@ -1836,6 +2661,65 @@ def _inject_rag_context(
     return new_messages, None, rag_info
 
 
+def _inject_chat_memory_context(
+    store: ChatSessionStore | None,
+    settings: dict,
+    payload: dict,
+    messages: list[dict],
+) -> tuple[list[dict], dict[str, Any]]:
+    memory_cfg = settings.get("chat_memory", {}) or {}
+    enabled = bool(memory_cfg.get("enabled", True))
+    info: dict[str, Any] = {
+        "enabled": enabled,
+        "account_id": None,
+        "session_id": None,
+        "refs": [],
+        "chars": 0,
+    }
+    if not enabled or store is None:
+        return messages, info
+    account_id = str(payload.get("account_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    info["account_id"] = account_id or None
+    info["session_id"] = session_id or None
+    if not account_id:
+        return messages, info
+    query = _extract_query(messages, None)
+    if not query or _query_is_smalltalk(query):
+        return messages, info
+    raw_ids = payload.get("context_message_ids")
+    exclude_ids = (
+        {
+            str(item).strip()
+            for item in raw_ids
+            if str(item).strip()
+        }
+        if isinstance(raw_ids, list)
+        else set()
+    )
+    block, refs = store.render_memory_block(
+        account_id,
+        query,
+        session_id=session_id or None,
+        exclude_message_ids=exclude_ids,
+        top_k=int(memory_cfg.get("top_k", 8)),
+        max_chars=int(memory_cfg.get("max_chars", 2400)),
+    )
+    if not block:
+        return messages, info
+    insert_at = 0
+    for msg in messages:
+        if str(msg.get("role", "")).lower() == "system":
+            insert_at += 1
+        else:
+            break
+    new_messages = list(messages)
+    new_messages.insert(insert_at, {"role": "system", "content": block})
+    info["refs"] = refs
+    info["chars"] = len(block)
+    return new_messages, info
+
+
 def create_app(settings: dict, base_dir: Path) -> FastAPI:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
@@ -1911,66 +2795,95 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             allow_headers=["*"],
         )
 
-    def _guardrail_completion_response(*, message: str, request_id: str, stream: bool):
+    def _text_completion_response(
+        *,
+        message: str,
+        request_id: str,
+        stream: bool,
+        model_name: str,
+        sources: list[dict[str, Any]] | None = None,
+        perf: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ):
         created = int(time.time())
         resp_id = f"chatcmpl-{request_id}"
         if not stream:
-            return JSONResponse(
-                content={
-                    "id": resp_id,
-                    "object": "chat.completion",
-                    "created": created,
-                    "model": "vortex-x",
-                    "request_id": request_id,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {"role": "assistant", "content": str(message)},
-                            "finish_reason": "stop",
-                        }
-                    ],
-                }
-            )
+            payload = {
+                "id": resp_id,
+                "object": "chat.completion",
+                "created": created,
+                "model": str(model_name),
+                "request_id": request_id,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": str(message)},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+            if sources is not None:
+                payload["sources"] = sources
+            if perf is not None:
+                payload["perf"] = perf
+            return JSONResponse(content=payload, headers=dict(headers or {}))
 
-        async def _iter_guardrail():
+        async def _iter_text():
             header = {
                 "id": resp_id,
                 "object": "chat.completion.chunk",
                 "created": created,
-                "model": "vortex-x",
+                "model": str(model_name),
                 "choices": [
                     {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
                 ],
                 "request_id": request_id,
             }
             yield f"data: {json.dumps(header)}\n\n"
-            chunk = {
-                "id": resp_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": "vortex-x",
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"content": str(message)},
-                        "finish_reason": None,
-                    }
-                ],
-                "request_id": request_id,
-            }
-            yield f"data: {json.dumps(chunk)}\n\n"
+            if message:
+                chunk = {
+                    "id": resp_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": str(model_name),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": str(message)},
+                            "finish_reason": None,
+                        }
+                    ],
+                    "request_id": request_id,
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
             done = {
                 "id": resp_id,
                 "object": "chat.completion.chunk",
                 "created": created,
-                "model": "vortex-x",
+                "model": str(model_name),
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                 "request_id": request_id,
             }
+            if sources is not None:
+                done["sources"] = sources
+            if perf is not None:
+                done["perf"] = perf
             yield f"data: {json.dumps(done)}\n\n"
             yield "data: [DONE]\n\n"
 
-        return StreamingResponse(_iter_guardrail(), media_type="text/event-stream")
+        return StreamingResponse(
+            _iter_text(),
+            media_type="text/event-stream",
+            headers=dict(headers or {}),
+        )
+
+    def _guardrail_completion_response(*, message: str, request_id: str, stream: bool):
+        return _text_completion_response(
+            message=message,
+            request_id=request_id,
+            stream=stream,
+            model_name="vortex-x",
+        )
 
     @app.middleware("http")
     async def _auth_middleware(req: Request, call_next):
@@ -2025,6 +2938,8 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
     router_cfg = (
         settings.get("core", {}).get("router", settings.get("router", {})) or {}
     )
+    server_cfg = settings.get("server", {}) or {}
+    lazy_model_load = bool(server_cfg.get("lazy_model_load", False))
     router_enabled = bool(router_cfg.get("enabled", False))
     router = None
     router_path = Path(router_cfg.get("path", "data/runs/router.pt"))
@@ -2033,20 +2948,11 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
 
     core_backend = str(settings.get("core", {}).get("backend", "vortex")).lower()
     default_backend_label = _normalize_backend_label(core_backend)
-    model = _load_backend_model(settings, base_dir, default_backend_label)
-    models = {default_backend_label: model}
-    if router_enabled and bool(router_cfg.get("multi_backend", False)):
-        for backend in ("core", "hf"):
-            if backend in models:
-                continue
-            try:
-                models[backend] = _load_backend_model(settings, base_dir, backend)
-            except Exception:
-                continue
 
     model_lock = RWLock()
     episode_lock = threading.Lock()
     episode_index = EpisodeIndex(base_dir / "data" / "episodes" / "index.sqlite")
+    chat_sessions_store = ChatSessionStore(base_dir / "data" / "chat" / "sessions.sqlite")
     adapters_registry: AdapterRegistry | ExpertRegistry = ExpertRegistry.from_settings(
         settings, base_dir=base_dir
     )
@@ -2059,19 +2965,103 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         adapters_router = cast(
             AdapterRouter | ExpertRouter, AdapterRouter.from_settings(settings)
         )
-    app.state.model = model
-    app.state.models = models
+    app.state.model = None
+    app.state.models = {}
     app.state.settings = settings
     app.state.model_lock = model_lock
     app.state.episode_lock = episode_lock
     app.state.episode_index = episode_index
+    app.state.chat_sessions_store = chat_sessions_store
     app.state.router = router
     app.state.router_cfg = router_cfg
     app.state.instructions = load_instruction_bundle(settings, base_dir=base_dir)
     app.state.adapters_registry = adapters_registry
     app.state.adapters_router = adapters_router
+    app.state.active_profile = str(settings.get("_profile") or "").strip() or None
+    app.state.boot_fallback = None
+    app.state.model_loading = False
+    app.state.model_load_error = None
+    app.state.model_load_started_at = None
+    app.state.model_loaded_at = None
+    app.state.model_lazy_enabled = lazy_model_load
     app.state.training_active = False
     app.state.maintenance_until = 0.0
+
+    def _apply_loaded_settings(loaded_settings: dict, boot_fallback: dict[str, Any] | None) -> None:
+        settings.clear()
+        settings.update(loaded_settings)
+        app.state.settings = settings
+        app.state.instructions = load_instruction_bundle(settings, base_dir=base_dir)
+        app.state.active_profile = str(settings.get("_profile") or "").strip() or None
+        app.state.boot_fallback = boot_fallback
+
+    def _publish_loaded_models(
+        loaded_model: Any,
+        loaded_models: dict[str, Any],
+        loaded_settings: dict,
+        boot_fallback: dict[str, Any] | None,
+    ) -> None:
+        with model_lock.write_lock():
+            _apply_loaded_settings(loaded_settings, boot_fallback)
+            app.state.model = loaded_model
+            app.state.models = loaded_models
+            app.state.model_loading = False
+            app.state.model_load_error = None
+            app.state.model_loaded_at = time.time()
+
+    def _boot_models_now() -> tuple[Any, dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+        return _load_initial_models_with_boot_fallback(
+            settings,
+            base_dir,
+            default_backend_label,
+            router_enabled=router_enabled,
+            router_cfg=router_cfg,
+        )
+
+    def _boot_models_async() -> None:
+        try:
+            loaded_model, loaded_models, loaded_settings, boot_fallback = _boot_models_now()
+        except Exception as exc:
+            with model_lock.write_lock():
+                app.state.model_loading = False
+                app.state.model_load_error = str(exc)
+            LOG.exception("background_model_load_failed err=%s", exc)
+            return
+        _publish_loaded_models(
+            loaded_model,
+            loaded_models,
+            loaded_settings,
+            boot_fallback,
+        )
+
+    def _start_background_model_boot() -> None:
+        with model_lock.write_lock():
+            if app.state.model_loading or app.state.models:
+                return
+            app.state.model_loading = True
+            app.state.model_load_error = None
+            app.state.model_load_started_at = time.time()
+            app.state.model_loaded_at = None
+        loader = threading.Thread(
+            target=_boot_models_async,
+            name="vortex-model-boot",
+            daemon=True,
+        )
+        app.state.model_loader_thread = loader
+        loader.start()
+
+    if lazy_model_load:
+        _start_background_model_boot()
+    else:
+        app.state.model_loading = True
+        app.state.model_load_started_at = time.time()
+        loaded_model, loaded_models, loaded_settings, boot_fallback = _boot_models_now()
+        _publish_loaded_models(
+            loaded_model,
+            loaded_models,
+            loaded_settings,
+            boot_fallback,
+        )
 
     @app.get("/healthz")
     async def healthz():
@@ -2098,6 +3088,86 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             except Exception:
                 pass
         return PlainTextResponse(text, media_type="text/plain; version=0.0.4")
+
+    @app.get("/v1/chat/sessions")
+    async def list_chat_sessions(account_id: str):
+        store = getattr(app.state, "chat_sessions_store", None)
+        if store is None:
+            return JSONResponse(content={"ok": True, "sessions": []})
+        account = str(account_id or "").strip()
+        if not account:
+            raise HTTPException(
+                status_code=400,
+                detail=_openai_error(
+                    "account_id_required",
+                    type="invalid_request_error",
+                    code="account_id_required",
+                    param="account_id",
+                ),
+            )
+        return JSONResponse(content={"ok": True, "sessions": store.list_sessions(account)})
+
+    @app.post("/v1/chat/sessions/sync")
+    async def sync_chat_sessions(request: StarletteRequest):
+        store = getattr(app.state, "chat_sessions_store", None)
+        if store is None:
+            raise HTTPException(
+                status_code=501,
+                detail=_openai_error(
+                    "chat_sessions_not_available",
+                    type="server_error",
+                    code="not_implemented",
+                ),
+            )
+        payload = await request.json()
+        account_id = str(payload.get("account_id") or "").strip()
+        sessions = payload.get("sessions")
+        replace = bool(payload.get("replace", True))
+        if not account_id:
+            raise HTTPException(
+                status_code=400,
+                detail=_openai_error(
+                    "account_id_required",
+                    type="invalid_request_error",
+                    code="account_id_required",
+                    param="account_id",
+                ),
+            )
+        if not isinstance(sessions, list):
+            raise HTTPException(
+                status_code=400,
+                detail=_openai_error(
+                    "sessions_required",
+                    type="invalid_request_error",
+                    code="sessions_required",
+                    param="sessions",
+                ),
+            )
+        synced = store.sync_sessions(account_id, sessions, replace=replace)
+        return JSONResponse(content={"ok": True, "sessions": synced, "count": len(synced)})
+
+    @app.delete("/v1/chat/sessions")
+    async def delete_chat_sessions(account_id: str, session_id: str | None = None):
+        store = getattr(app.state, "chat_sessions_store", None)
+        if store is None:
+            return JSONResponse(content={"ok": True})
+        account = str(account_id or "").strip()
+        target = str(session_id or "").strip()
+        if not account:
+            raise HTTPException(
+                status_code=400,
+                detail=_openai_error(
+                    "account_id_required",
+                    type="invalid_request_error",
+                    code="account_id_required",
+                    param="account_id",
+                ),
+            )
+        if target:
+            store.delete_session(account, target)
+        else:
+            store.clear_account(account)
+        return JSONResponse(content={"ok": True})
 
     @app.get("/v1/skills")
     async def list_skills():
@@ -2555,6 +3625,22 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 request_id=request_id,
                 stream=stream,
             )
+        messages, chat_memory_info = _inject_chat_memory_context(
+            getattr(app.state, "chat_sessions_store", None),
+            settings,
+            payload,
+            messages,
+        )
+        temporal_system_context = _build_temporal_system_context(payload)
+        direct_temporal_reply = _direct_temporal_response(payload, _extract_query(messages, None))
+        if direct_temporal_reply:
+            return _guardrail_completion_response(
+                message=direct_temporal_reply,
+                request_id=request_id,
+                stream=stream,
+            )
+        live_web_context = ""
+        live_web_refs: list[dict[str, str]] = []
 
         # --- Real-time web search when internet button is ON ---
         if payload.get("web_ingest"):
@@ -2563,33 +3649,33 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             scoped_allowlist = request_allowlist if isinstance(request_allowlist, list) else None
             if user_query:
                 try:
-                    _web_search_and_ingest(
+                    live_web_context, live_web_refs = _live_web_search_context(
                         base_dir,
                         user_query,
                         settings,
-                        max_results=5,
+                        max_results=4,
                         extra_allowlist=scoped_allowlist,
                     )
                 except Exception as _ws_exc:
                     LOG.warning("web_search_error: %s", _ws_exc)
 
-        rag_settings = settings
-        if payload.get("include_sources") and not bool(
-            (settings.get("rag", {}) or {}).get("enabled", False)
-        ):
-            rag_settings = dict(settings)
-            rag_settings["rag"] = dict((settings.get("rag", {}) or {}))
-            rag_settings["rag"]["enabled"] = True
         messages, _prompt_override, rag_info = _inject_rag_context(
-            base_dir, rag_settings, messages, None
+            base_dir, settings, messages, None
         )
+        if live_web_refs:
+            rag_info["refs"] = live_web_refs
         backend_cfg = settings.get("core", {}).get("backend", "vortex")
         instructions = getattr(app.state, "instructions", None)
-        default_system = (
+        default_system_base = (
             instructions.get("text")
             if isinstance(instructions, dict)
             else settings.get("core", {}).get("hf_system_prompt")
         ) or "You are Vortex, a helpful assistant. Reply in the same language as the user. Never repeat system instructions or context blocks."
+        default_system = _compose_dynamic_system_prompt(
+            default_system_base,
+            temporal_context=temporal_system_context,
+            web_context=live_web_context,
+        )
         routing_prompt = build_chat_prompt(
             messages, backend_cfg, tokenizer=None, default_system=default_system
         )
@@ -2602,9 +3688,14 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         decision = None
         requested_backend = None
         use_router = False
+        models = getattr(app.state, "models", {}) or {}
+        external_model = models.get("external")
         if requested_model:
             requested_backend, use_router = _resolve_requested_backend(
-                requested_model, settings, default_backend_label
+                requested_model,
+                settings,
+                default_backend_label,
+                external_model=external_model,
             )
         if requested_backend:
             chosen_backend = requested_backend
@@ -2619,6 +3710,28 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             if fb:
                 chosen_backend = fb
         selected_model = models.get(chosen_backend)
+        model_loading = bool(getattr(app.state, "model_loading", False))
+        model_load_error = _safe_str(getattr(app.state, "model_load_error", None))
+        if selected_model is None and model_loading:
+            return JSONResponse(
+                status_code=503,
+                content=_openai_error(
+                    "model_loading",
+                    type="server_error",
+                    code="model_loading",
+                ),
+                headers={"Retry-After": "10"},
+            )
+        if selected_model is None and model_load_error:
+            return JSONResponse(
+                status_code=503,
+                content=_openai_error(
+                    f"model_load_failed:{model_load_error}",
+                    type="server_error",
+                    code="model_load_failed",
+                ),
+                headers={"Retry-After": "30"},
+            )
         if selected_model is None:
             selected_model = _get_or_load_backend(
                 models, settings, base_dir, chosen_backend
@@ -2644,6 +3757,261 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         decode_args["max_new_tokens"] = decide_max_new_tokens(
             decode_args["max_new_tokens"], device, dtype, settings
         )
+        agent_mode = bool(payload.get("agent_mode", False))
+        agent_permissions = (
+            permissions_from_request(payload, base_dir) if agent_mode else None
+        )
+        permission_context = (
+            build_agent_permission_context(agent_permissions)
+            if agent_permissions is not None
+            else None
+        )
+        force_tool_runner = bool(
+            agent_permissions is not None and agent_permissions.requires_tool_runner
+        )
+
+        if agent_mode:
+            start = time.time()
+            if bool(getattr(selected_model, "is_external", False)) and not force_tool_runner:
+                agent_messages = _build_external_agent_messages(
+                    messages,
+                    payload.get("prompt"),
+                    permission_context=permission_context,
+                )
+                agent_prompt = build_chat_prompt(
+                    agent_messages,
+                    backend_cfg,
+                    tokenizer=getattr(selected_model, "tokenizer", None),
+                    default_system=default_system,
+                )
+                with model_lock.read_lock():
+                    text = selected_model.generate(
+                        agent_prompt,
+                        max_new_tokens=decode_args["max_new_tokens"],
+                        temperature=decode_args["temperature"],
+                        top_p=decode_args["top_p"],
+                        repetition_penalty=decode_args["repetition_penalty"],
+                        no_repeat_ngram=decode_args["no_repeat_ngram"],
+                        **_chat_kwargs_for_model(
+                            selected_model, agent_messages, default_system
+                        ),
+                    )
+                elapsed = max(1e-6, time.time() - start)
+                if stream_topk_override is not None:
+                    _maybe_set_stream_topk(
+                        selected_model,
+                        enabled=bool(stream_topk_override),
+                        top_k=int(stream_topk_override)
+                        if stream_topk_override
+                        else None,
+                    )
+                prompt_tokens = _estimate_tokens(agent_prompt, selected_model)
+                tokens_out = _estimate_tokens(text, selected_model)
+                vram_peak = None
+                if torch is not None and torch.cuda.is_available():
+                    try:
+                        vram_peak = float(torch.cuda.max_memory_allocated() / (1024**2))
+                    except Exception:
+                        vram_peak = None
+                perf = {
+                    "latency_ms": float(elapsed * 1000.0),
+                    "tokens_out_est": int(tokens_out),
+                    "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
+                    "vram_peak_mb": vram_peak,
+                    "agent_mode": True,
+                    "agent_strategy": "external_chat",
+                }
+                if hasattr(selected_model, "runtime_stats"):
+                    try:
+                        ext_stats = selected_model.runtime_stats()
+                    except Exception:
+                        ext_stats = None
+                    if isinstance(ext_stats, dict):
+                        perf["external_runtime"] = ext_stats
+                episode = {
+                    "version": 1,
+                    "ts": time.time(),
+                    "request_id": request_id,
+                    "backend": str(chosen_backend),
+                    "messages": agent_messages,
+                    "prompt_text": agent_prompt,
+                    "response_text": text,
+                    "decode_args": decode_args,
+                    "rag": rag_info,
+                    "chat_memory": chat_memory_info,
+                    "perf": perf,
+                    "agent_mode": True,
+                    "agent_strategy": "external_chat",
+                    "agent_permissions": agent_permissions.to_dict()
+                    if agent_permissions is not None
+                    else None,
+                }
+                with app.state.episode_lock:
+                    _log_chat_episode(base_dir, app.state.episode_index, episode)
+                try:
+                    app.state.metrics.observe_chat(
+                        stream=stream,
+                        prompt_tokens_est=int(prompt_tokens),
+                        completion_tokens_est=int(tokens_out),
+                        latency_ms=float(elapsed * 1000.0),
+                        vram_peak_mb=vram_peak,
+                    )
+                except Exception:
+                    pass
+                try:
+                    LOG.info(
+                        "chat_done request_id=%s model=%s stream=%s agent_mode=true strategy=external_chat prompt_tokens=%s completion_tokens=%s latency_ms=%.1f tok_s=%.2f",
+                        str(request_id),
+                        str(chosen_backend),
+                        str(stream).lower(),
+                        str(prompt_tokens),
+                        str(tokens_out),
+                        float(elapsed * 1000.0),
+                        float(perf.get("tokens_per_sec") or 0.0),
+                    )
+                except Exception:
+                    pass
+                headers = {
+                    "X-Request-Id": str(request_id),
+                    "X-Vortex-Backend": str(chosen_backend),
+                }
+                ext_stats_header = perf.get("external_runtime")
+                if isinstance(ext_stats_header, dict):
+                    retries = ext_stats_header.get("retries_total")
+                    if retries is not None:
+                        headers["X-Vortex-External-Retries"] = str(retries)
+                return _text_completion_response(
+                    message=text,
+                    request_id=request_id,
+                    stream=stream,
+                    model_name=str(chosen_backend),
+                    sources=rag_info.get("refs", [])
+                    if payload.get("include_sources")
+                    else None,
+                    perf=perf if payload.get("include_perf") else None,
+                    headers=headers,
+                )
+
+            agent_cfg = settings.get("agent", {}) or {}
+            agent_default_iters = 5
+            agent_workspace_root = (
+                agent_permissions.scope_root if agent_permissions is not None else base_dir
+            )
+            agent_task = _build_agent_task(
+                messages,
+                payload.get("prompt"),
+                permission_context=permission_context,
+            )
+            report = run_agent(
+                agent_task,
+                settings,
+                base_dir,
+                max_iters=max(
+                    1,
+                    int(
+                        agent_cfg.get("max_iters", agent_default_iters)
+                        or agent_default_iters
+                    ),
+                ),
+                model=selected_model,
+                model_lock=model_lock.read_lock,
+                permissions=agent_permissions,
+                workspace_root=agent_workspace_root,
+            )
+            elapsed = max(1e-6, time.time() - start)
+            if stream_topk_override is not None:
+                _maybe_set_stream_topk(
+                    selected_model,
+                    enabled=bool(stream_topk_override),
+                    top_k=int(stream_topk_override) if stream_topk_override else None,
+                )
+            text = _format_agent_report_text(report)
+            prompt_tokens = _estimate_tokens(agent_task, selected_model)
+            tokens_out = _estimate_tokens(text, selected_model)
+            vram_peak = None
+            if torch is not None and torch.cuda.is_available():
+                try:
+                    vram_peak = float(torch.cuda.max_memory_allocated() / (1024**2))
+                except Exception:
+                    vram_peak = None
+            perf = {
+                "latency_ms": float(elapsed * 1000.0),
+                "tokens_out_est": int(tokens_out),
+                "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
+                "vram_peak_mb": vram_peak,
+                "agent_mode": True,
+                "agent_strategy": "tool_runner",
+                "tests_ok": bool(report.get("tests_ok")),
+                "patch_id": report.get("patch_id"),
+                "permissions": report.get("permissions"),
+                "browser_actions": report.get("browser_actions") or [],
+            }
+            if hasattr(selected_model, "runtime_stats"):
+                try:
+                    ext_stats = selected_model.runtime_stats()
+                except Exception:
+                    ext_stats = None
+                if isinstance(ext_stats, dict):
+                    perf["external_runtime"] = ext_stats
+            episode = {
+                "version": 1,
+                "ts": time.time(),
+                "request_id": request_id,
+                "backend": str(chosen_backend),
+                "messages": messages,
+                "prompt_text": agent_task,
+                "response_text": text,
+                "decode_args": decode_args,
+                "rag": rag_info,
+                "chat_memory": chat_memory_info,
+                "perf": perf,
+                "agent_mode": True,
+                "agent_report": report,
+                "agent_permissions": report.get("permissions"),
+            }
+            with app.state.episode_lock:
+                _log_chat_episode(base_dir, app.state.episode_index, episode)
+            try:
+                app.state.metrics.observe_chat(
+                    stream=stream,
+                    prompt_tokens_est=int(prompt_tokens),
+                    completion_tokens_est=int(tokens_out),
+                    latency_ms=float(elapsed * 1000.0),
+                    vram_peak_mb=vram_peak,
+                )
+            except Exception:
+                pass
+            try:
+                LOG.info(
+                    "chat_done request_id=%s model=%s stream=%s agent_mode=true prompt_tokens=%s completion_tokens=%s latency_ms=%.1f tok_s=%.2f",
+                    str(request_id),
+                    str(chosen_backend),
+                    str(stream).lower(),
+                    str(prompt_tokens),
+                    str(tokens_out),
+                    float(elapsed * 1000.0),
+                    float(perf.get("tokens_per_sec") or 0.0),
+                )
+            except Exception:
+                pass
+            headers = {
+                "X-Request-Id": str(request_id),
+                "X-Vortex-Backend": str(chosen_backend),
+            }
+            ext_stats_header = perf.get("external_runtime")
+            if isinstance(ext_stats_header, dict):
+                retries = ext_stats_header.get("retries_total")
+                if retries is not None:
+                    headers["X-Vortex-External-Retries"] = str(retries)
+            return _text_completion_response(
+                message=text,
+                request_id=request_id,
+                stream=stream,
+                model_name=str(chosen_backend),
+                sources=rag_info.get("refs", []) if payload.get("include_sources") else None,
+                perf=perf if payload.get("include_perf") else None,
+                headers=headers,
+            )
 
         # Inject prompt-only Agent Skills (trusted, local) as a system message.
         try:
@@ -2875,7 +4243,9 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                         "repetition_penalty"
                                     ],
                                     no_repeat_ngram=decode_args["no_repeat_ngram"],
-                                    messages=engine_messages if bool(getattr(selected_model, "is_external", False)) else None,
+                                    **_chat_kwargs_for_model(
+                                        selected_model, engine_messages, default_system
+                                    ),
                                     return_stats=True,
                                 )
                             else:
@@ -2888,7 +4258,9 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                         "repetition_penalty"
                                     ],
                                     no_repeat_ngram=decode_args["no_repeat_ngram"],
-                                    messages=engine_messages if bool(getattr(selected_model, "is_external", False)) else None,
+                                    **_chat_kwargs_for_model(
+                                        selected_model, engine_messages, default_system
+                                    ),
                                 )
                                 stats = None
                         else:
@@ -2928,7 +4300,11 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                                 no_repeat_ngram=decode_args[
                                                     "no_repeat_ngram"
                                                 ],
-                                                messages=engine_messages if bool(getattr(selected_model, "is_external", False)) else None,
+                                                **_chat_kwargs_for_model(
+                                                    selected_model,
+                                                    engine_messages,
+                                                    default_system,
+                                                ),
                                                 return_stats=True,
                                             )
                                         else:
@@ -2945,7 +4321,11 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                                 no_repeat_ngram=decode_args[
                                                     "no_repeat_ngram"
                                                 ],
-                                                messages=engine_messages if bool(getattr(selected_model, "is_external", False)) else None,
+                                                **_chat_kwargs_for_model(
+                                                    selected_model,
+                                                    engine_messages,
+                                                    default_system,
+                                                ),
                                             )
                                             stats = None
                                     else:
@@ -3038,6 +4418,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 "response_text": text,
                 "decode_args": decode_args,
                 "rag": rag_info,
+                "chat_memory": chat_memory_info,
                 "perf": perf,
             }
             with app.state.episode_lock:
@@ -3140,8 +4521,11 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                             stream_args = _stream_decode_args_for_model(
                                 current_model, decode_args
                             )
-                            if bool(getattr(current_model, "is_external", False)):
-                                stream_args["messages"] = engine_messages
+                            stream_args.update(
+                                _chat_kwargs_for_model(
+                                    current_model, engine_messages, default_system
+                                )
+                            )
                             gen = current_model.stream_generate(prompt, **stream_args)
                         else:
                             gen = _stream_generate(
@@ -3173,8 +4557,13 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                         stream_args = _stream_decode_args_for_model(
                                             current_model, decode_args
                                         )
-                                        if bool(getattr(current_model, "is_external", False)):
-                                            stream_args["messages"] = engine_messages
+                                        stream_args.update(
+                                            _chat_kwargs_for_model(
+                                                current_model,
+                                                engine_messages,
+                                                default_system,
+                                            )
+                                        )
                                         gen = current_model.stream_generate(
                                             prompt, **stream_args
                                         )
@@ -3321,6 +4710,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 "response_text": full_text,
                 "decode_args": decode_args,
                 "rag": rag_info,
+                "chat_memory": chat_memory_info,
                 "perf": perf,
             }
             with app.state.episode_lock:
@@ -3402,6 +4792,12 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 },
             )
         training_event = None
+        learning_queue = None
+        scheduling = {
+            "scheduled": False,
+            "reason": "not_requested",
+            "queue_depth": _learning_queue_depth(base_dir),
+        }
         if rating == "up" and ideal_response:
             training_event = {
                 "version": 1,
@@ -3415,11 +4811,32 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             }
             with app.state.episode_lock:
                 _log_training_event(base_dir, training_event)
+            learning_queue = _enqueue_learning_example(base_dir, feedback, episode, training_event)
+            scheduling = _maybe_schedule_quick_training(
+                base_dir,
+                settings,
+                queue_depth=int(learning_queue.get("queue_depth") or 0),
+            )
         return JSONResponse(
             content={
                 "ok": True,
                 "request_id": request_id,
                 "training_event": bool(training_event),
+                "learning_queue_item": (
+                    {
+                        "id": learning_queue["queue_item"]["id"],
+                        "status": learning_queue["queue_item"]["status"],
+                        "source_kind": learning_queue["queue_item"]["source_kind"],
+                        "score": learning_queue["queue_item"]["score"],
+                        "queued_at": learning_queue["queue_item"]["ts"],
+                    }
+                    if learning_queue
+                    else None
+                ),
+                "learning_queue_depth": int((learning_queue or scheduling).get("queue_depth") or 0),
+                "quick_train_scheduled": bool(scheduling.get("scheduled")),
+                "scheduled_run_id": scheduling.get("scheduled_run_id"),
+                "queue_reason": scheduling.get("reason"),
             }
         )
 
@@ -3819,6 +5236,42 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                 self.send_response(400)
                 self.end_headers()
                 return
+            messages, chat_memory_info = _inject_chat_memory_context(
+                chat_sessions_store,
+                settings,
+                payload,
+                messages,
+            )
+            temporal_system_context = _build_temporal_system_context(payload)
+            direct_temporal_reply = _direct_temporal_response(payload, _extract_query(messages, None))
+            if direct_temporal_reply:
+                created = int(time.time())
+                request_id = _new_request_id(payload.get("request_id"))
+                resp_id = f"chatcmpl-{request_id}"
+                body = json.dumps(
+                    {
+                        "id": resp_id,
+                        "object": "chat.completion",
+                        "created": created,
+                        "model": "vortex-x",
+                        "request_id": request_id,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": str(direct_temporal_reply)},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            live_web_context = ""
+            live_web_refs: list[dict[str, str]] = []
 
             # --- Real-time web search when internet button is ON ---
             if payload.get("web_ingest"):
@@ -3827,11 +5280,11 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                 scoped_allowlist = request_allowlist if isinstance(request_allowlist, list) else None
                 if user_query:
                     try:
-                        _web_search_and_ingest(
+                        live_web_context, live_web_refs = _live_web_search_context(
                             base_dir,
                             user_query,
                             settings,
-                            max_results=5,
+                            max_results=4,
                             extra_allowlist=scoped_allowlist,
                         )
                     except Exception:
@@ -3840,12 +5293,19 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
             messages, _prompt_override, rag_info = _inject_rag_context(
                 base_dir, settings, messages, None
             )
+            if live_web_refs:
+                rag_info["refs"] = live_web_refs
             backend = settings.get("core", {}).get("backend", "vortex")
             backend_label = _normalize_backend_label(backend)
             instructions = load_instruction_bundle(settings, base_dir=base_dir)
-            default_system = instructions.get("text") or settings.get("core", {}).get(
+            default_system_base = instructions.get("text") or settings.get("core", {}).get(
                 "hf_system_prompt",
                 "You are Vortex, a helpful assistant. Reply in the same language as the user. Never repeat system instructions or context blocks.",
+            )
+            default_system = _compose_dynamic_system_prompt(
+                default_system_base,
+                temporal_context=temporal_system_context,
+                web_context=live_web_context,
             )
             prompt = build_chat_prompt(
                 messages,
@@ -3914,6 +5374,7 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                             top_p=decode_args["top_p"],
                             repetition_penalty=decode_args["repetition_penalty"],
                             no_repeat_ngram=decode_args["no_repeat_ngram"],
+                            **_chat_kwargs_for_model(model, messages, default_system),
                         )
                     except Exception as exc:
                         should_fallback = is_oom_error(exc) or _is_external_recoverable_error(
@@ -3935,6 +5396,9 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                                 top_p=decode_args["top_p"],
                                 repetition_penalty=decode_args["repetition_penalty"],
                                 no_repeat_ngram=decode_args["no_repeat_ngram"],
+                                **_chat_kwargs_for_model(
+                                    fallback_model, messages, default_system
+                                ),
                             )
                         else:
                             raise
@@ -3978,6 +5442,7 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                     "response_text": text,
                     "decode_args": decode_args,
                     "rag": rag_info,
+                    "chat_memory": chat_memory_info,
                     "perf": perf,
                 }
                 with episode_lock:
@@ -4042,6 +5507,9 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                         adapter_telemetry = applied
                 if hasattr(model, "stream_generate"):
                     stream_args = _stream_decode_args_for_model(model, decode_args)
+                    stream_args.update(
+                        _chat_kwargs_for_model(model, messages, default_system)
+                    )
                     for delta in model.stream_generate(prompt, **stream_args):
                         chunk = {
                             "id": resp_id,
@@ -4128,6 +5596,7 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                 "response_text": full_text,
                 "decode_args": decode_args,
                 "rag": rag_info,
+                "chat_memory": chat_memory_info,
                 "perf": perf,
             }
             with episode_lock:

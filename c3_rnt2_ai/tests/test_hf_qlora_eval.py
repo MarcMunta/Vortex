@@ -157,3 +157,29 @@ def test_train_once_eval_failure_sets_ok_false(tmp_path: Path, monkeypatch) -> N
     assert result.ok_eval is False
     assert result.eval_ok is False
     assert result.ok is False
+
+
+def test_resolve_lora_target_modules_filters_out_multimodal_wrappers() -> None:
+    class Gemma4ClippableLinear:
+        pass
+
+    class _NamedModules:
+        def named_modules(self):
+            return iter(
+                [
+                    ("model.language_model.layers.0.self_attn.q_proj", torch.nn.Linear(4, 4, bias=False)),
+                    ("model.language_model.layers.0.self_attn.k_proj", torch.nn.Linear(4, 4, bias=False)),
+                    ("model.vision_tower.encoder.layers.0.self_attn.q_proj", Gemma4ClippableLinear()),
+                    ("model.audio_tower.layers.0.self_attn.q_proj.linear", torch.nn.Linear(4, 4, bias=False)),
+                ]
+            )
+
+    resolved = hf_qlora._resolve_lora_target_modules(
+        _NamedModules(),
+        {"target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]},
+    )
+
+    assert resolved == [
+        "model.language_model.layers.0.self_attn.q_proj",
+        "model.language_model.layers.0.self_attn.k_proj",
+    ]

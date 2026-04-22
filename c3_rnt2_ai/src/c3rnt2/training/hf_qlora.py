@@ -45,6 +45,57 @@ class HfTrainResult:
     error: str | None = None
 
 
+def _resolve_lora_target_modules(model: object, cfg: dict) -> list[str]:
+    requested = [str(item).strip() for item in list(cfg.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"])) if str(item).strip()]
+    if not requested:
+        return ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+    scopes = [str(item).strip() for item in list(cfg.get("target_module_scopes", ["language_model.layers.", "model.layers."])) if str(item).strip()]
+    supported_types = {
+        "Linear",
+        "Embedding",
+        "Conv1d",
+        "Conv2d",
+        "Conv3d",
+        "Conv1D",
+        "MultiheadAttention",
+    }
+    resolved: list[str] = []
+    seen: set[str] = set()
+    named_modules = getattr(model, "named_modules", None)
+    if callable(named_modules):
+        for name, module in named_modules():
+            module_type = module.__class__.__name__
+            if module_type not in supported_types:
+                continue
+            if scopes and not any(scope in name for scope in scopes):
+                continue
+            path_tokens = [token for token in name.split(".") if token]
+            if any(
+                name == target
+                or name.endswith(f".{target}")
+                or name.endswith(target)
+                or target in path_tokens
+                for target in requested
+            ):
+                if name not in seen:
+                    seen.add(name)
+                    resolved.append(name)
+    if resolved:
+        return resolved
+    fallback = [
+        target
+        for target in requested
+        if "." in target or target in supported_types
+    ]
+    if fallback:
+        return fallback
+    raise ValueError(
+        "No supported LoRA target modules could be resolved from the requested configuration. "
+        f"requested={requested!r}"
+    )
+
+
 def _load_bench_baseline(reg_dir: Path) -> float | None:
     path = reg_dir / "bench_baseline.json"
     if not path.exists():
@@ -694,11 +745,12 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
     if adapter_path:
         model = PeftModel.from_pretrained(model, str(adapter_path), is_trainable=True)
     else:
+        target_modules = _resolve_lora_target_modules(model, cfg)
         lora_cfg = LoraConfig(
             r=int(cfg.get("lora_rank", 8)),
             lora_alpha=int(cfg.get("lora_alpha", 16)),
             lora_dropout=float(cfg.get("lora_dropout", 0.05)),
-            target_modules=list(cfg.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"])),
+            target_modules=target_modules,
             bias="none",
             task_type="CAUSAL_LM",
         )

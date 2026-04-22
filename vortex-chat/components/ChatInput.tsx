@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Square, ArrowUp, Globe, Timer, FlaskConical } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { AppMode, Language } from '../types';
 import { translations } from '../translations';
 
@@ -17,6 +17,7 @@ interface ChatInputProps {
   sendDisabledReason?: string;
   isThinking?: boolean;
   onStop?: () => void;
+  permissionChips?: string[];
   onInteraction?: () => void;
   onFocusChange?: (focused: boolean) => void;
   onDraftChange?: (hasDraft: boolean) => void;
@@ -34,6 +35,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
   sendDisabledReason,
   isThinking,
   onStop,
+  permissionChips = [],
   onInteraction,
   onFocusChange,
   onDraftChange,
@@ -90,6 +92,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   const statusChips = [
+    ...permissionChips,
     mode === 'agent'
       ? (language === 'es' ? 'Agente activo' : 'Agent active')
       : (language === 'es' ? 'Consulta guiada' : 'Grounded query'),
@@ -100,7 +103,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
       ? (language === 'es' ? 'Internet en este prompt' : 'Internet on this prompt')
       : null,
     autoTrainEnabled
-      ? (language === 'es' ? 'Aprender tras responder' : 'Learn after reply')
+      ? (language === 'es' ? 'Encolar para aprendizaje' : 'Queue for learning')
       : null,
   ].filter(Boolean) as string[];
 
@@ -110,41 +113,14 @@ const ChatInput: React.FC<ChatInputProps> = ({
       : 'Enter to send. Shift+Enter for a new line.');
 
   return (
-    <div className="mx-auto w-full max-w-[860px] relative px-6 accelerated">
-      <AnimatePresence>
-        {isLoading && (
-          <motion.div
-            initial={{ opacity: 0, y: 10, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 10, scale: 0.95 }}
-            className="absolute -top-11 left-10 z-20 flex items-center gap-3 rounded-2xl border border-border/60 px-4 py-2 glass-card"
-          >
-            <div className="flex gap-1.5">
-              {[0, 0.2, 0.4].map((d) => (
-                <motion.span
-                  key={d}
-                  animate={{ opacity: [0.3, 1, 0.3], scale: [0.9, 1.1, 0.9] }}
-                  transition={{ duration: 1.2, repeat: Infinity, delay: d }}
-                  className="w-1.5 h-1.5 rounded-full bg-primary"
-                />
-              ))}
-            </div>
-            <span className="text-[9px] font-black uppercase tracking-[0.2em] opacity-70">
-              {mode === 'agent'
-                ? (language === 'es' ? 'Modo agente activo' : 'Agent mode active')
-                : (language === 'es' ? 'Procesando' : 'Processing')}
-            </span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
+    <div className="mx-auto w-full max-w-[1160px] relative px-6 accelerated">
       <motion.div 
         layout
         className={`surface-panel relative flex w-full items-end rounded-[1.5rem] p-1.5 transition-all duration-500 group accelerated ${
           isLoading 
             ? 'border-border/70 opacity-90' 
             : mode === 'agent'
-              ? 'focus-within:border-primary/35 focus-within:ring-[4px] focus-within:ring-primary/5'
+              ? 'focus-within:border-primary/40 focus-within:ring-[4px] focus-within:ring-primary/10 shadow-[0_20px_70px_-48px_hsla(var(--primary)/0.55)]'
               : 'focus-within:border-primary/35 focus-within:ring-[4px] focus-within:ring-primary/5'
         }`}
       >
@@ -180,7 +156,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
             <motion.div
               animate={{ x: mode === 'ask' ? 0 : 58, backgroundColor: 'hsl(var(--primary))' }}
               transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-              className="absolute top-0.5 bottom-0.5 w-[58px] rounded-xl shadow-lg z-0"
+              className="mode-pill-active absolute top-0.5 bottom-0.5 w-[58px] rounded-xl shadow-lg z-0"
             />
             <button onClick={() => { onModeChange('ask'); onInteraction?.(); }} className={`relative z-10 flex-1 flex items-center justify-center gap-1.5 text-[8px] font-black uppercase tracking-widest transition-all duration-300 ${mode === 'ask' ? 'text-white' : 'text-muted-foreground dark:text-zinc-400 hover:text-foreground'}`}>
                {t.input_ask_mode}
@@ -216,8 +192,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
               setAutoTrainEnabled(!autoTrainEnabled);
               onInteraction?.();
             }}
-            aria-label={autoTrainEnabled ? (language === 'es' ? 'Auto-entrenamiento activo' : 'Auto-training active') : (language === 'es' ? 'Auto-entrenamiento inactivo' : 'Auto-training inactive')}
-            title={autoTrainEnabled ? (language === 'es' ? 'Auto-entrenamiento activado' : 'Auto-training enabled') : (language === 'es' ? 'Auto-entrenamiento desactivado' : 'Auto-training disabled')}
+            aria-label={autoTrainEnabled ? (language === 'es' ? 'Encolar para aprendizaje activo' : 'Queue for learning active') : (language === 'es' ? 'Encolar para aprendizaje inactivo' : 'Queue for learning inactive')}
+            title={autoTrainEnabled ? (language === 'es' ? 'Encolar para aprendizaje activado' : 'Queue for learning enabled') : (language === 'es' ? 'Encolar para aprendizaje desactivado' : 'Queue for learning disabled')}
             className={`flex items-center justify-center rounded-full border border-transparent p-2.5 transition-all duration-300 ${
               !allowAutoTrain
                 ? 'text-muted-foreground/20 dark:text-zinc-700 cursor-not-allowed'

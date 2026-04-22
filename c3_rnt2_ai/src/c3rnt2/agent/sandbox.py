@@ -49,8 +49,9 @@ def run_sandbox_command(
     timeout_s: int = 120,
 ) -> dict:
     ts = time.strftime("%Y%m%d_%H%M%S")
+    nonce = str(time.time_ns())[-6:]
     sandbox_root.mkdir(parents=True, exist_ok=True)
-    sandbox_dir = sandbox_root / f"run_{ts}"
+    sandbox_dir = sandbox_root / f"run_{ts}_{nonce}"
     repo_copy = _copy_repo(repo_root, sandbox_dir / "repo")
     try:
         result = subprocess.run(

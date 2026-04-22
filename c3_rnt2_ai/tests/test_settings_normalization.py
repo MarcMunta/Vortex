@@ -7,10 +7,12 @@ from pathlib import Path
 
 from c3rnt2.config import load_settings, validate_profile
 
+BASE_DIR = Path(__file__).resolve().parents[1]
+
 
 def _assert_profile(profile: str) -> None:
     settings = load_settings(profile)
-    validate_profile(settings, base_dir=Path("."))
+    validate_profile(settings, base_dir=BASE_DIR)
     tok = settings.get("tokenizer", {})
     assert tok.get("vortex_tok_path")
     runtime = settings.get("runtime", {})
@@ -27,6 +29,9 @@ def _assert_profile(profile: str) -> None:
 
 def test_settings_normalization_profiles() -> None:
     _assert_profile("dev_small")
+    _assert_profile("rtx4080_16gb_gemma4_26b_a4b_hf")
+    _assert_profile("rtx4080_16gb_gemma4_31b_hf")
+    _assert_profile("rtx4080_16gb_gemma3_12b_hf")
     _assert_profile("rtx4080_16gb_vortexx_next")
     _assert_profile("safe_selftrain_4080")
     _assert_profile("rtx4080_16gb_programming_local")

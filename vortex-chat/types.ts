@@ -8,6 +8,20 @@ export type ViewType = 'chat' | 'analysis' | 'training' | 'edits' | 'terminal';
 export type AppMode = 'ask' | 'agent';
 export type FontSize = 'small' | 'medium' | 'large';
 export type Language = 'es' | 'en';
+export type PermissionLevel = 'none' | 'full';
+export type PermissionActionMode = 'safe' | 'full';
+
+export interface WorkspacePermissions {
+  level: PermissionLevel;
+  workspaceRoot: string;
+  projectPath: string;
+  actionMode: PermissionActionMode;
+}
+
+export interface BrowserAction {
+  target: string;
+  opened?: boolean;
+}
 
 export interface LocalAccount {
   id: string;
@@ -41,6 +55,9 @@ export interface Message {
   thought?: string;
   requestId?: string;
   trainingEvent?: boolean;
+  learningStatus?: 'queued' | 'scheduled' | 'consumed' | 'skipped' | string;
+  learningQueueId?: string;
+  learningRunId?: string;
   sources?: Source[];
   groundingSupports?: GroundingSupport[];
   timestamp: number;
@@ -59,6 +76,7 @@ export interface UserSettings {
   codeTheme: 'dark' | 'light' | 'match-app';
   fontSize: FontSize;
   language: Language;
+  permissions: WorkspacePermissions;
 }
 
 export interface LogEntry {
@@ -70,6 +88,9 @@ export interface LogEntry {
 
 export interface OperationalStatus {
   ok: boolean;
+  chat_ready?: boolean;
+  chat_mode?: 'primary' | 'fallback_degraded' | 'unavailable' | string | null;
+  chat_block_reason?: string | null;
   offline_ready: boolean;
   engine_ready: boolean;
   engine_kind?: string | null;
@@ -88,10 +109,114 @@ export interface OperationalStatus {
   docker_reason?: string | null;
   wsl_ready?: boolean;
   wsl_reason?: string | null;
+  runtime_mode?: string | null;
+  fallback_active?: boolean;
+  fallback_backend?: string | null;
   instructions?: {
     digest?: string | null;
     sources?: string[];
   };
+}
+
+export interface TrainingRunEvent {
+  id: string;
+  ts: number;
+  run_id: string;
+  phase: string;
+  kind: string;
+  message: string;
+  latest_metrics?: Record<string, unknown>;
+  progress_pct?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TrainingDialogueTurn {
+  id: string;
+  speaker: 'analyst' | 'builder' | 'system' | string;
+  speaker_label?: string;
+  kind?: string;
+  ts?: number;
+  message: string;
+  cycle_id?: string | null;
+}
+
+export interface TrainingReviewSection {
+  key: string;
+  title: string;
+  content: string;
+}
+
+export interface TrainingNotebookSection {
+  id: string;
+  phase: string;
+  kind: string;
+  title: string;
+  content: string;
+  ts?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TrainingMetricPoint {
+  ts: number;
+  phase: string;
+  metrics: Record<string, unknown>;
+}
+
+export interface TrainingGateResults {
+  manual_only?: boolean;
+  promoted?: boolean;
+  eval_ok?: boolean;
+  bench_ok?: boolean;
+  smoke_check_required?: boolean;
+  repo_clean_for_autoedit?: boolean;
+  autoedit_scope_ok?: boolean;
+  smoke_ok?: boolean;
+  smoke_waited_s?: number | null;
+  [key: string]: unknown;
+}
+
+export interface TrainingApplyResult {
+  applied?: boolean;
+  decision?: string;
+  adapter_path?: string;
+  requested_adapter_path?: string;
+  queued_reload?: boolean;
+  error?: string | null;
+  reload?: Record<string, unknown>;
+  smoke?: Record<string, unknown>;
+}
+
+export interface TrainingRollbackResult {
+  ok?: boolean;
+  reason?: string;
+  requested_adapter_path?: string;
+  request?: Record<string, unknown>;
+  smoke?: Record<string, unknown>;
+}
+
+export interface TrainingComparison {
+  parent_run_id?: string | null;
+  outcome?: string | null;
+  summary?: string | null;
+  source_mix_delta?: Record<string, number>;
+  apply_changed?: boolean;
+  verification_changed?: boolean;
+}
+
+export interface TrainingCampaignSummary {
+  campaign_id: string;
+  objective?: string;
+  started_at?: number;
+  run_count?: number;
+  completed_count?: number;
+  rolled_back_count?: number;
+  degraded_count?: number;
+  active_run_id?: string | null;
+  success_streak?: number;
+  failure_streak?: number;
+  throughput_per_hour?: number;
+  last_apply?: TrainingApplyResult | Record<string, unknown> | null;
+  last_rollback?: TrainingRollbackResult | Record<string, unknown> | null;
 }
 
 export interface TrainingRunSummary {
@@ -99,6 +224,7 @@ export interface TrainingRunSummary {
   mode: 'quick' | 'full' | string;
   status: string;
   stage?: string;
+  lifecycle_state?: string;
   created_at?: number;
   updated_at?: number;
   profile?: string;
@@ -118,11 +244,77 @@ export interface TrainingRunSummary {
   train_result?: Record<string, unknown>;
   eval_result?: Record<string, unknown>;
   bench_result?: Record<string, unknown>;
+  runtime_mode?: string | null;
+  fallback_active?: boolean;
+  fallback_backend?: string | null;
+  progress_pct?: number;
+  execution_progress_pct?: number;
+  pipeline_progress_pct?: number;
+  queue_reason?: string | null;
+  blocked_reason?: string | null;
+  blocked_since?: number | null;
+  retry_in_s?: number | null;
+  next_run_scheduled_at?: number | null;
+  queue_diagnostics?: {
+    blocking_roles?: string[];
+    lock_errors?: string[];
+    runtime?: Record<string, unknown>;
+    [key: string]: unknown;
+  } | null;
+  latest_metrics?: Record<string, unknown>;
+  artifacts?: Record<string, string>;
+  failure?: Record<string, unknown> | null;
+  dataset_manifest?: {
+    queued_count?: number;
+    consumed_count?: number;
+    quick_threshold?: number;
+    source_kinds?: Record<string, number>;
+    request_ids?: string[];
+    items?: Array<Record<string, unknown>>;
+  };
+  latest_event?: TrainingRunEvent | null;
+  events?: TrainingRunEvent[];
+  log_tail?: string[];
+  logs?: Record<string, string[]>;
+  display_name?: string;
+  display_description?: string;
+  objective?: string;
+  learning_focus?: string[];
+  campaign_id?: string | null;
+  parent_run_id?: string | null;
+  attempt?: number;
+  run_lineage?: string[];
+  agent_dialogue?: TrainingDialogueTurn[];
+  review_sections?: TrainingReviewSection[];
+  notebook_sections?: TrainingNotebookSection[];
+  live_metrics_series?: TrainingMetricPoint[];
+  gate_results?: TrainingGateResults | null;
+  apply_result?: TrainingApplyResult | null;
+  rollback_result?: TrainingRollbackResult | null;
+  source_mix?: Record<string, number>;
+  terminal_reason?: string | null;
+  comparison?: TrainingComparison | null;
 }
 
 export interface TrainingStreamPayload {
   ts: number;
   active_run_id?: string | null;
+  active_run?: TrainingRunSummary | null;
+  phase?: string | null;
+  progress_pct?: number | null;
+  execution_progress_pct?: number | null;
+  pipeline_progress_pct?: number | null;
+  latest_metrics?: Record<string, unknown>;
+  runtime_mode?: string | null;
+  fallback_active?: boolean;
+  fallback_backend?: string | null;
+  last_event?: TrainingRunEvent | null;
+  log_tail?: string[];
+  campaign?: TrainingCampaignSummary | null;
+  next_run_scheduled_at?: number | null;
+  scheduled_followup_reason?: string | null;
+  pipeline_runs?: TrainingRunSummary[];
+  blocked_runs?: TrainingRunSummary[];
   runs?: TrainingRunSummary[];
 }
 
@@ -139,6 +331,15 @@ export interface AutonomyRollbackState {
   ts?: number | null;
   status?: string | null;
   target?: string | null;
+  reason?: string | null;
+}
+
+export interface TrainingOutcomeSummary {
+  run_id?: string | null;
+  mode?: string | null;
+  status?: string | null;
+  stage?: string | null;
+  updated_at?: number | null;
   reason?: string | null;
 }
 
@@ -165,16 +366,35 @@ export interface AutonomyStatus {
   last_patch_at?: number | null;
   autoedit_scope: string;
   last_rollback?: AutonomyRollbackState | null;
+  training_queue?: string[];
+  next_cycle_at?: number | null;
+  next_run_scheduled_at?: number | null;
+  scheduled_run_mode?: string | null;
+  scheduled_parent_run_id?: string | null;
+  scheduled_followup_reason?: string | null;
+  maintenance_mode?: boolean;
+  runtime_drained_for_training?: boolean;
+  current_dataset_mix?: Record<string, number>;
+  campaign?: TrainingCampaignSummary | null;
+  blocked_run_count?: number;
+  blocked_runs?: TrainingRunSummary[];
+  last_eval_summary?: Record<string, unknown> | null;
+  last_bench_summary?: Record<string, unknown> | null;
+  last_training_outcome?: TrainingOutcomeSummary | null;
   config?: {
     reflection_enabled?: boolean;
     training_enabled?: boolean;
     autoedit_enabled?: boolean;
+    multi_agent_dialogue_enabled?: boolean;
+    descriptive_reports_enabled?: boolean;
+    live_autoedit_enabled?: boolean;
     reflection_interval_s?: number;
     quick_train_interval_s?: number;
     full_train_interval_s?: number;
     autoedit_interval_s?: number;
   };
   latest_events?: AutonomyEvent[];
+  latest_dialogue?: TrainingDialogueTurn[];
 }
 
 export interface AutonomyStreamPayload {
@@ -213,6 +433,9 @@ export interface ControlStatus {
     api_ready?: boolean;
     runtime_ready?: boolean;
     readyz?: { ok?: boolean };
+    runtime_mode?: string | null;
+    fallback_active?: boolean;
+    fallback_backend?: string | null;
     status?: OperationalStatus | null;
   };
   frontend?: {
@@ -222,6 +445,22 @@ export interface ControlStatus {
   };
   internet?: {
     allowlist?: string[];
+  };
+  learning_queue?: {
+    queued_count?: number;
+    quick_threshold?: number;
+    quick_cooldown_s?: number;
+    last_quick_dispatch_at?: number | null;
+    last_quick_dispatch_run_id?: string | null;
+    items?: Array<{
+      id?: string;
+      request_id?: string;
+      source_kind?: string;
+      score?: number;
+      status?: string;
+      queued_at?: number;
+      consumed_by?: string | null;
+    }>;
   };
   instructions?: {
     digest?: string | null;

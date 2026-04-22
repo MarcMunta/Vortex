@@ -1,31 +1,41 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useRef, useCallback } from 'react';
 import { PanelLeft, Globe, Zap, MessageSquare, BarChart3, Terminal as TerminalIcon, FileCode, FlaskConical } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import ChatInput from './components/ChatInput';
-import CommandPalette from './components/CommandPalette';
-import SettingsModal, { type SettingsTab } from './components/SettingsModal';
-import HelpModal from './components/HelpModal';
-import ReasoningDrawer from './components/ReasoningDrawer';
-import AnalysisView from './components/AnalysisView';
-import TrainingView from './components/TrainingView';
-import TerminalView from './components/TerminalView';
-import SelfEditsView from './components/SelfEditsView';
+import type { SettingsTab } from './components/SettingsModal';
 import VortexLogo from './components/VortexLogo';
 import TopBarStackStatus from './components/TopBarStackStatus';
 import VirtualizedMessageList from './components/VirtualizedMessageList';
-import ModificationExplorerModal from './components/ModificationExplorerModal';
-import { ChatSession, Message, Role, UserSettings, ViewType, LogEntry, AppMode, Source, Language, OperationalStatus, ControlStatus, LocalAccount } from './types';
+import { BrowserAction, ChatSession, Message, Role, UserSettings, ViewType, LogEntry, AppMode, Source, Language, OperationalStatus, ControlStatus, LocalAccount, WorkspacePermissions } from './types';
 import { vortexService } from './services/vortexService';
 import { controlService } from './services/controlService';
 import { translations } from './translations';
 import { motion, AnimatePresence, useScroll, useMotionValueEvent } from 'framer-motion';
 
+const CommandPalette = lazy(() => import('./components/CommandPalette'));
+const SettingsModal = lazy(() => import('./components/SettingsModal'));
+const HelpModal = lazy(() => import('./components/HelpModal'));
+const ReasoningDrawer = lazy(() => import('./components/ReasoningDrawer'));
+const AnalysisView = lazy(() => import('./components/AnalysisView'));
+const TrainingView = lazy(() => import('./components/TrainingView'));
+const TerminalView = lazy(() => import('./components/TerminalView'));
+const SelfEditsView = lazy(() => import('./components/SelfEditsView'));
+const ModificationExplorerModal = lazy(() => import('./components/ModificationExplorerModal'));
+
+const DEFAULT_PERMISSIONS: WorkspacePermissions = {
+  level: 'none',
+  workspaceRoot: '',
+  projectPath: '',
+  actionMode: 'safe',
+};
+
 const DEFAULT_SETTINGS: UserSettings = {
   categoryOrder: ['Acciones Rápidas', 'Preferencias', 'Interfaz', 'Datos', 'Chats Recientes', 'Sistema'],
   codeTheme: 'dark',
   fontSize: 'medium',
-  language: 'es'
+  language: 'es',
+  permissions: DEFAULT_PERMISSIONS,
 };
 
 const VIEW_INDEX: Record<ViewType, number> = { 'chat': 0, 'analysis': 1, 'training': 2, 'edits': 3, 'terminal': 4 };
@@ -62,12 +72,21 @@ const normalizeSettings = (rawSettings: unknown): UserSettings => {
   if (!rawSettings || typeof rawSettings !== 'object') return DEFAULT_SETTINGS;
 
   const candidate = rawSettings as Partial<UserSettings>;
+  const rawPermissions = candidate.permissions && typeof candidate.permissions === 'object'
+    ? candidate.permissions as Partial<WorkspacePermissions>
+    : {};
   return {
     ...DEFAULT_SETTINGS,
     ...candidate,
     categoryOrder: Array.isArray(candidate.categoryOrder)
       ? candidate.categoryOrder.map((entry) => repairMojibakeText(String(entry)))
       : DEFAULT_SETTINGS.categoryOrder,
+    permissions: {
+      ...DEFAULT_PERMISSIONS,
+      ...rawPermissions,
+      workspaceRoot: repairMojibakeText(String(rawPermissions.workspaceRoot || DEFAULT_PERMISSIONS.workspaceRoot)),
+      projectPath: repairMojibakeText(String(rawPermissions.projectPath || DEFAULT_PERMISSIONS.projectPath)),
+    },
   };
 };
 
@@ -92,6 +111,16 @@ const createLocalAccount = (name: string, email: string, handle?: string): Local
     lastUsedAt: Date.now(),
   };
 };
+
+const MAX_LOCAL_SESSION_CACHE_SESSIONS = 12;
+const MAX_LOCAL_SESSION_CACHE_MESSAGES = 18;
+
+const buildSessionCache = (sessions: ChatSession[]): ChatSession[] => (
+  sessions.slice(0, MAX_LOCAL_SESSION_CACHE_SESSIONS).map((session) => ({
+    ...session,
+    messages: session.messages.slice(-MAX_LOCAL_SESSION_CACHE_MESSAGES),
+  }))
+);
 
 const createDefaultAccount = (): LocalAccount => createLocalAccount('Vortex Local', 'local@vortex.dev', '@vortex');
 const accountSessionsKey = (accountId: string) => `chat-sessions:${accountId}`;
@@ -135,6 +164,7 @@ const App: React.FC = () => {
   const [activeModificationFiles, setActiveModificationFiles] = useState<{ path: string, diff: string }[] | null>(null);
   
   const inactivityTimerRef = useRef<number | null>(null);
+  const sessionsSyncTimerRef = useRef<number | null>(null);
   const isAutoScrollingRef = useRef<boolean>(false);
   const lastScrollYRef = useRef(0);
   
@@ -150,21 +180,66 @@ const App: React.FC = () => {
   const currentSession = sessions.find(s => s.id === currentSessionId);
   const hasMessages = currentSession && currentSession.messages && currentSession.messages.length > 0;
   const internetAllowlist = controlStatus?.internet?.allowlist || [];
+  const stackReady = Boolean(operationalStatus?.ok);
+  const rawStatusReason = operationalStatus?.chat_block_reason
+    || operationalStatus?.degraded_reason
+    || operationalStatus?.engine_reason
+    || operationalStatus?.model_reason
+    || operationalStatus?.docker_reason
+    || operationalStatus?.offline_reason;
+  const chatReady = Boolean(operationalStatus?.chat_ready ?? operationalStatus?.ok);
+  const chatMode = operationalStatus?.chat_mode || (chatReady ? 'primary' : 'unavailable');
   const canUseInternet = Boolean(controlStatus?.ok);
   const canStartTraining = Boolean(controlStatus?.ok);
-  const sendDisabledReason = operationalStatus?.ok
+  const degradedChatAvailable = !stackReady && chatReady;
+  const sendDisabledReason = chatReady
     ? undefined
-    : operationalStatus?.degraded_reason
-      || operationalStatus?.engine_reason
-      || operationalStatus?.model_reason
-      || operationalStatus?.docker_reason
-      || operationalStatus?.offline_reason
+    : rawStatusReason
       || (settings.language === 'es' ? 'Stack local no listo.' : 'Local stack not ready.');
+  const permissionsActive = settings.permissions.level === 'full';
+  const permissionScope = settings.permissions.projectPath || settings.permissions.workspaceRoot;
+  const permissionScopeLabel = permissionScope
+    ? permissionScope.split(/[\\/]/).filter(Boolean).pop() || permissionScope
+    : null;
   const activeModelLabel = operationalStatus?.active_model || (settings.language === 'es' ? 'Modelo base pendiente' : 'Base model pending');
   const activeEngineLabel = (operationalStatus?.engine_kind || 'local').toUpperCase();
-  const readyLabel = operationalStatus?.ok
+  const permissionChips = permissionsActive
+    ? [
+        settings.language === 'es' ? 'Permisos: todo' : 'Permissions: full',
+        settings.permissions.actionMode === 'full'
+          ? (settings.language === 'es' ? 'Acciones completas' : 'Full actions')
+          : (settings.language === 'es' ? 'Solo lectura operativa' : 'Read-only ops'),
+        permissionScopeLabel
+          ? `${settings.language === 'es' ? 'Scope' : 'Scope'}: ${permissionScopeLabel}`
+          : (settings.language === 'es' ? 'Scope: sin carpeta' : 'Scope: no folder'),
+      ]
+    : [
+        settings.language === 'es' ? 'Permisos: nada' : 'Permissions: none',
+      ];
+  const readyLabel = stackReady
     ? (settings.language === 'es' ? 'Listo' : 'Ready')
-    : (settings.language === 'es' ? 'Pendiente' : 'Pending');
+    : degradedChatAvailable || chatMode === 'fallback_degraded'
+      ? (settings.language === 'es' ? 'Degradado' : 'Degraded')
+      : (settings.language === 'es' ? 'Pendiente' : 'Pending');
+  const lazyPanelFallback = (
+    <div className="flex h-full items-center justify-center px-6 text-xs font-black uppercase tracking-[0.14em] text-muted-foreground">
+      {settings.language === 'es' ? 'Cargando vista...' : 'Loading view...'}
+    </div>
+  );
+  const statusHeadline = stackReady
+    ? (settings.language === 'es' ? 'Stack local listo para trabajar.' : 'Local stack is ready to work.')
+    : degradedChatAvailable || chatMode === 'fallback_degraded'
+      ? (settings.language === 'es' ? 'Chat degradado disponible.' : 'Degraded chat is available.')
+      : (settings.language === 'es' ? 'Revisa el estado antes de empezar.' : 'Review the stack before you start.');
+  const statusBody = stackReady
+    ? (settings.language === 'es'
+      ? 'Consulta, agente, navegación puntual y entrenamiento siguen visibles desde la misma interfaz.'
+      : 'Query, agent mode, prompt browsing, and training stay visible from the same interface.')
+    : degradedChatAvailable || chatMode === 'fallback_degraded'
+      ? (settings.language === 'es'
+        ? 'El chat sigue disponible mientras el runtime principal termina de recuperarse o mientras el entrenamiento usa el fallback.'
+        : 'Chat stays available while the primary runtime recovers or training uses the fallback.')
+      : rawStatusReason || sendDisabledReason;
   const heroCards = settings.language === 'es'
     ? [
         { label: 'Modo', value: 'Consulta y agente' },
@@ -176,6 +251,40 @@ const App: React.FC = () => {
         { label: 'Internet', value: 'Only when enabled' },
         { label: 'Training', value: 'Visible and manual' },
       ];
+  const modeThemeStyle = (mode === 'agent'
+    ? (isDarkMode
+      ? {
+          '--primary': '272 100% 72%',
+          '--ring': '272 100% 72%',
+          '--accent': '274 33% 18%',
+          '--accent-foreground': '210 20% 98%',
+          '--ambient-core': '272 100% 72%',
+          '--ambient-accent': '314 100% 72%',
+          '--surface-elevated': '260 29% 12%',
+          '--surface-glass': '259 26% 14%',
+          '--border': '270 30% 26%',
+          '--input': '262 25% 16%',
+          '--ambient-shadow': '254 46% 6%',
+        }
+      : {
+          '--primary': '270 95% 68%',
+          '--ring': '270 95% 68%',
+          '--accent': '278 42% 95%',
+          '--accent-foreground': '278 30% 18%',
+          '--ambient-core': '272 100% 70%',
+          '--ambient-accent': '312 96% 71%',
+          '--surface-elevated': '284 60% 98%',
+          '--surface-glass': '282 44% 97%',
+          '--border': '278 46% 83%',
+          '--input': '278 42% 89%',
+          '--ambient-shadow': '283 58% 91%',
+        })
+    : {
+        '--primary': isDarkMode ? '203 100% 58%' : '203 92% 56%',
+        '--ring': isDarkMode ? '203 100% 58%' : '203 92% 56%',
+        '--ambient-core': isDarkMode ? '203 100% 58%' : '203 92% 56%',
+        '--ambient-accent': isDarkMode ? '189 100% 68%' : '190 94% 66%',
+      }) as React.CSSProperties;
 
   const openSettings = useCallback((tab: SettingsTab = 'general') => {
     setSettingsInitialTab(tab);
@@ -245,6 +354,26 @@ const App: React.FC = () => {
       }
     }
   }, [acceptAndApplyProposal, addLog, currentSessionId, extractDiffBlocks, sessions, settings.language]);
+
+  const openBrowserActions = useCallback((actions: BrowserAction[]) => {
+    if (settings.permissions.level !== 'full' || settings.permissions.actionMode !== 'full') return;
+    const openedTargets = new Set<string>();
+    for (const action of actions) {
+      const target = repairMojibakeText(String(action?.target || '').trim());
+      if (!target || openedTargets.has(target) || !/^https?:\/\//i.test(target)) continue;
+      openedTargets.add(target);
+      try {
+        const handle = window.open(target, '_blank', 'noopener,noreferrer');
+        if (handle) {
+          addLog('SYSTEM', settings.language === 'es' ? `Navegador abierto: ${target}` : `Browser opened: ${target}`);
+        } else {
+          addLog('SYSTEM', settings.language === 'es' ? `Apertura bloqueada por el navegador: ${target}` : `Browser blocked opening: ${target}`);
+        }
+      } catch {
+        addLog('SYSTEM', settings.language === 'es' ? `No se pudo abrir el navegador: ${target}` : `Could not open browser: ${target}`);
+      }
+    }
+  }, [addLog, settings.language, settings.permissions.actionMode, settings.permissions.level]);
 
   const resetInactivityTimer = useCallback(() => {
     if (inactivityTimerRef.current) window.clearTimeout(inactivityTimerRef.current);
@@ -542,60 +671,85 @@ const App: React.FC = () => {
 
     const savedSessions = localStorage.getItem(accountSessionsKey(currentAccountId));
     const savedSettings = localStorage.getItem(accountSettingsKey(currentAccountId));
+    let disposed = false;
 
-    if (savedSettings) {
-      try {
-        setSettings(normalizeSettings(JSON.parse(savedSettings)));
-      } catch {
-        setSettings(DEFAULT_SETTINGS);
+    const nextSettings = savedSettings
+      ? (() => {
+          try {
+            return normalizeSettings(JSON.parse(savedSettings));
+          } catch {
+            return DEFAULT_SETTINGS;
+          }
+        })()
+      : DEFAULT_SETTINGS;
+
+    const applyCandidateSessions = (candidate: unknown, language: Language): boolean => {
+      const normalizedSessions = Array.isArray(candidate)
+        ? candidate
+            .map((session) => normalizeSession(session))
+            .filter((session): session is ChatSession => session !== null)
+            .filter((session, index, all) => {
+              const isEmptyDraft = session.messages.length === 0;
+              if (!isEmptyDraft) return true;
+              return all.findIndex((item) => item && item.title === session.title && item.messages.length === 0) === index;
+            })
+        : [];
+
+      if (normalizedSessions.length > 0) {
+        setSessions(normalizedSessions);
+        setCurrentSessionId(normalizedSessions[0].id);
+        return true;
       }
-    } else {
-      setSettings(DEFAULT_SETTINGS);
-    }
 
-    if (savedSessions) {
-      try {
-        const parsedSessions = JSON.parse(savedSessions);
-        const normalizedSessions = Array.isArray(parsedSessions)
-          ? parsedSessions
-              .map((session) => normalizeSession(session))
-              .filter((session): session is ChatSession => session !== null)
-              .filter((session, index, all) => {
-                const isEmptyDraft = session.messages.length === 0;
-                if (!isEmptyDraft) return true;
-                return all.findIndex(candidate =>
-                  candidate
-                  && candidate.title === session.title
-                  && candidate.messages.length === 0
-                ) === index;
-              })
-          : [];
-
-        if (normalizedSessions.length > 0) {
-          setSessions(normalizedSessions);
-          setCurrentSessionId(normalizedSessions[0].id);
-        } else {
-          const freshSession = createEmptySession(DEFAULT_SETTINGS.language);
-          setSessions([freshSession]);
-          setCurrentSessionId(freshSession.id);
-        }
-      } catch {
-        const freshSession = createEmptySession(DEFAULT_SETTINGS.language);
-        setSessions([freshSession]);
-        setCurrentSessionId(freshSession.id);
-      }
-    } else {
-      const freshSession = createEmptySession(DEFAULT_SETTINGS.language);
+      const freshSession = createEmptySession(language);
       setSessions([freshSession]);
       setCurrentSessionId(freshSession.id);
+      return false;
+    };
+
+    setSettings(nextSettings);
+
+    let usedCache = false;
+    if (savedSessions) {
+      try {
+        usedCache = applyCandidateSessions(JSON.parse(savedSessions), nextSettings.language);
+      } catch {
+        usedCache = applyCandidateSessions([], nextSettings.language);
+      }
+    } else {
+      applyCandidateSessions([], nextSettings.language);
     }
 
-    setAccounts((prev) => prev.map((account) => (
-      account.id === currentAccountId
-        ? { ...account, lastUsedAt: Date.now() }
-        : account
-    )));
-    setIsAccountHydrated(true);
+    const finalizeHydration = () => {
+      if (disposed) return;
+      setAccounts((prev) => prev.map((account) => (
+        account.id === currentAccountId
+          ? { ...account, lastUsedAt: Date.now() }
+          : account
+      )));
+      setIsAccountHydrated(true);
+    };
+
+    void vortexService.fetchChatSessions(currentAccountId).then((result) => {
+      if (disposed) return;
+      if (result.ok && Array.isArray(result.sessions) && result.sessions.length > 0) {
+        applyCandidateSessions(result.sessions, nextSettings.language);
+        try {
+          localStorage.setItem(accountSessionsKey(currentAccountId), JSON.stringify(buildSessionCache(result.sessions)));
+        } catch {
+          // keep remote state authoritative
+        }
+      } else if (!usedCache) {
+        applyCandidateSessions([], nextSettings.language);
+      }
+      finalizeHydration();
+    }).catch(() => {
+      finalizeHydration();
+    });
+
+    return () => {
+      disposed = true;
+    };
   }, [currentAccountId]);
 
   useEffect(() => {
@@ -619,7 +773,11 @@ const App: React.FC = () => {
   }, [currentAccountId]);
   useEffect(() => {
     if (isAccountHydrated && currentAccountId) {
-      localStorage.setItem(accountSessionsKey(currentAccountId), JSON.stringify(sessions));
+      try {
+        localStorage.setItem(accountSessionsKey(currentAccountId), JSON.stringify(buildSessionCache(sessions)));
+      } catch {
+        // Backend persistence remains the source of truth when cache is full.
+      }
     }
   }, [currentAccountId, isAccountHydrated, sessions]);
   useEffect(() => {
@@ -627,6 +785,23 @@ const App: React.FC = () => {
       localStorage.setItem(accountSettingsKey(currentAccountId), JSON.stringify(settings));
     }
   }, [currentAccountId, isAccountHydrated, settings]);
+  useEffect(() => {
+    if (!isAccountHydrated || !currentAccountId) return;
+    if (sessionsSyncTimerRef.current) {
+      window.clearTimeout(sessionsSyncTimerRef.current);
+      sessionsSyncTimerRef.current = null;
+    }
+    if (isLoading) return;
+    sessionsSyncTimerRef.current = window.setTimeout(() => {
+      void vortexService.syncChatSessions(currentAccountId, sessions);
+    }, 600);
+    return () => {
+      if (sessionsSyncTimerRef.current) {
+        window.clearTimeout(sessionsSyncTimerRef.current);
+        sessionsSyncTimerRef.current = null;
+      }
+    };
+  }, [currentAccountId, isAccountHydrated, isLoading, sessions]);
   useEffect(() => {
     if (sessions.length === 0) {
       setCurrentSessionId(null);
@@ -665,7 +840,7 @@ const App: React.FC = () => {
     const freshSession = createEmptySession(freshSettings.language);
 
     localStorage.setItem(accountSettingsKey(nextAccount.id), JSON.stringify(freshSettings));
-    localStorage.setItem(accountSessionsKey(nextAccount.id), JSON.stringify([freshSession]));
+    localStorage.setItem(accountSessionsKey(nextAccount.id), JSON.stringify(buildSessionCache([freshSession])));
 
     setAccounts((prev) => [nextAccount, ...prev]);
     setIsAccountHydrated(false);
@@ -869,12 +1044,15 @@ const VORTEX_CONFIG = {
         useThinking,
         selectedMode,
         settings.language,
-        internetAllowlist
+        internetAllowlist,
+        { accountId: currentAccountId, sessionId: targetSessionId },
+        settings.permissions
       );
       let started = false;
       let aborted = false;
       let lastText = '';
       let lastRequestId: string | undefined;
+      let lastBrowserActions: BrowserAction[] = [];
       for await (const chunk of stream) {
         if (abortControllerRef.current) {
           aborted = true;
@@ -887,28 +1065,53 @@ const VORTEX_CONFIG = {
         setIsSearching(false);
         lastText = chunk.text || lastText;
         if (chunk.requestId) lastRequestId = chunk.requestId;
+        if (chunk.browserActions?.length) lastBrowserActions = chunk.browserActions;
         setSessions(prev => prev.map(s => s.id === targetSessionId ? { ...s, messages: s.messages.map(m => m.id === aiMessageId ? { ...m, content: chunk.text, thought: chunk.thought || m.thought, requestId: chunk.requestId || m.requestId, sources: chunk.sources.length > 0 ? chunk.sources : m.sources, fileChanges: chunk.fileChanges || m.fileChanges } : m) } : s));
       }
       if (aborted) {
         addLog('SYSTEM', settings.language === 'es' ? 'Ejecución abortada por el usuario.' : 'Run aborted by user.');
-      } else if (autoTrain && lastRequestId && lastText) {
-        addLog('LEARN', settings.language === 'es' ? 'Auto-train: enviando feedback...' : 'Auto-train: sending feedback...');
-        const feedback = await vortexService.submitFeedback(lastRequestId, lastText);
-        if (feedback.ok && feedback.trainingEvent) {
-          addLog('LEARN', settings.language === 'es' ? 'Auto-train registrado (training_event creado).' : 'Auto-train logged (training_event created).');
-          setSessions(prev => prev.map(s => s.id === targetSessionId ? { ...s, messages: s.messages.map(m => m.id === aiMessageId ? { ...m, trainingEvent: true } : m) } : s));
-          const quickTrain = await controlService.startTraining('quick').catch(() => null);
-          if (quickTrain?.ok && quickTrain.run_id) {
-            addLog('LEARN', settings.language === 'es' ? `Aprendizaje rápido lanzado: ${quickTrain.run_id}` : `Quick learning launched: ${quickTrain.run_id}`);
-          }
-          await suggestPatchFromMessage(aiMessageId, 'auto-train');
-        } else if (feedback.ok) {
-          addLog('SYSTEM', settings.language === 'es' ? 'Auto-train OK, pero sin training_event.' : 'Auto-train OK, but no training_event.');
-        } else {
-          addLog('SYSTEM', settings.language === 'es' ? `Auto-train falló: ${feedback.error || 'error'}` : `Auto-train failed: ${feedback.error || 'error'}`);
+      } else {
+        if (lastBrowserActions.length > 0) {
+          openBrowserActions(lastBrowserActions);
         }
-      } else if (autoTrain) {
-        addLog('SYSTEM', settings.language === 'es' ? 'Auto-train omitido: request_id ausente.' : 'Auto-train skipped: missing request_id.');
+        if (autoTrain && lastRequestId && lastText) {
+          addLog('LEARN', settings.language === 'es' ? 'Aprendizaje: encolando respuesta para curaciÃ³n...' : 'Learning: queueing answer for curation...');
+          const feedback = await vortexService.submitFeedback(lastRequestId, lastText);
+          if (feedback.ok && feedback.trainingEvent) {
+            const learningStatus = feedback.quickTrainScheduled
+              ? 'scheduled'
+              : (feedback.learningQueueItem?.status || 'queued');
+            setSessions(prev => prev.map(s => s.id === targetSessionId ? {
+              ...s,
+              messages: s.messages.map(m => m.id === aiMessageId ? {
+                ...m,
+                trainingEvent: true,
+                learningStatus,
+                learningQueueId: feedback.learningQueueItem?.id,
+                learningRunId: feedback.scheduledRunId || undefined,
+              } : m),
+            } : s));
+            addLog(
+              'LEARN',
+              settings.language === 'es'
+                ? `Respuesta en cola (${feedback.learningQueueDepth || 0}). Motivo: ${feedback.queueReason || 'queued'}.`
+                : `Answer queued (${feedback.learningQueueDepth || 0}). Reason: ${feedback.queueReason || 'queued'}.`,
+            );
+            if (feedback.quickTrainScheduled && feedback.scheduledRunId) {
+              addLog('LEARN', settings.language === 'es' ? `Quick learning programado: ${feedback.scheduledRunId}` : `Quick learning scheduled: ${feedback.scheduledRunId}`);
+            }
+            await suggestPatchFromMessage(aiMessageId, 'auto-train');
+            return;
+          }
+          if (feedback.ok) {
+            addLog('SYSTEM', settings.language === 'es' ? 'Aprendizaje no encolado: falta muestra curable para training.' : 'Learning not queued: no curatable sample available for training.');
+            return;
+          }
+          addLog('SYSTEM', settings.language === 'es' ? `Aprendizaje fallÃ³: ${feedback.error || 'error'}` : `Learning failed: ${feedback.error || 'error'}`);
+          return;
+        } else if (autoTrain) {
+          addLog('SYSTEM', settings.language === 'es' ? 'Aprendizaje omitido: request_id ausente.' : 'Learning skipped: missing request_id.');
+        }
       }
     } catch (error) {
       const detail = error instanceof Error ? error.message : (settings.language === 'es' ? 'Interrupción de flujo.' : 'Flow interrupted.');
@@ -930,18 +1133,23 @@ const VORTEX_CONFIG = {
   const direction = VIEW_INDEX[activeView] > VIEW_INDEX[prevView] ? 1 : -1;
 
   return (
-    <div className={`relative flex h-screen w-full overflow-hidden bg-background text-foreground accelerated ${mode === 'agent' ? 'agent-shell' : 'ask-shell'}`}>
+    <div style={modeThemeStyle} className={`relative flex h-screen w-full overflow-hidden bg-background text-foreground accelerated ${mode === 'agent' ? 'agent-shell' : 'ask-shell'}`}>
       <div className="pointer-events-none absolute inset-0">
+        <div className="mode-ambient absolute inset-0 transition-all duration-500" />
         <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.12),transparent)] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.03),transparent)]" />
       </div>
-      <CommandPalette isOpen={isCommandPaletteOpen} onClose={() => setIsCommandPaletteOpen(false)} sessions={sessions} currentSessionId={currentSessionId} onSelectSession={setCurrentSessionId} onNewChat={handleNewChat} onDeleteSession={handleDeleteSession} onClearHistory={handleClearHistory} onExportChat={() => {}} isDarkMode={isDarkMode} toggleDarkMode={() => setIsDarkMode(!isDarkMode)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => { const next = !isSidebarOpen; setIsSidebarOpen(next); if (next) setIsReasoningOpen(false); }} onOpenSettings={() => openSettings('general')} onOpenHelp={() => setIsHelpOpen(true)} categoryOrder={settings.categoryOrder} language={settings.language} onSetFontSize={(size) => setSettings({ ...settings, fontSize: size })} />
+      {isCommandPaletteOpen && (
+        <Suspense fallback={null}>
+          <CommandPalette isOpen={isCommandPaletteOpen} onClose={() => setIsCommandPaletteOpen(false)} sessions={sessions} currentSessionId={currentSessionId} onSelectSession={setCurrentSessionId} onNewChat={handleNewChat} onDeleteSession={handleDeleteSession} onClearHistory={handleClearHistory} onExportChat={() => {}} isDarkMode={isDarkMode} toggleDarkMode={() => setIsDarkMode(!isDarkMode)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => { const next = !isSidebarOpen; setIsSidebarOpen(next); if (next) setIsReasoningOpen(false); }} onOpenSettings={() => openSettings('general')} onOpenHelp={() => setIsHelpOpen(true)} categoryOrder={settings.categoryOrder} language={settings.language} onSetFontSize={(size) => setSettings({ ...settings, fontSize: size })} />
+        </Suspense>
+      )}
       <AnimatePresence initial={false}>{isSidebarOpen && !activeModificationFiles && (
           <motion.div initial={{ width: 0, opacity: 0 }} animate={{ width: 280, opacity: 1 }} exit={{ width: 0, opacity: 0 }} transition={springConfig} className="h-full overflow-hidden shrink-0 z-50 flex border-r border-border/50 shadow-2xl relative"><Sidebar sessions={sessions} currentSessionId={currentSessionId} activeView={activeView} onSelectSession={setCurrentSessionId} onSelectView={handleSelectView} onNewChat={handleNewChat} onDeleteSession={handleDeleteSession} isDarkMode={isDarkMode} toggleDarkMode={() => setIsDarkMode(!isDarkMode)} onClose={() => setIsSidebarOpen(false)} onOpenSettings={openSettings} isOpen={true} language={settings.language} selfEditsPendingCount={selfEditsPendingCount} currentAccount={currentAccount} accounts={accounts} currentAccountId={currentAccountId} onSelectAccount={handleSelectAccount} /></motion.div>
       )}</AnimatePresence>
       <div className="flex-1 flex overflow-hidden relative">
         <main className="flex-1 flex flex-col h-full bg-background relative z-0 overflow-hidden">
           {!activeModificationFiles && (
-          <motion.header initial={false} animate={{ y: headerVisible ? 0 : -100, opacity: headerVisible ? 1 : 0 }} transition={springConfig} className="absolute top-0 left-0 right-0 z-40 flex h-[72px] items-center justify-between border-b border-border/60 bg-background/90 px-5 backdrop-blur-xl pointer-events-auto accelerated lg:px-8">
+            <motion.header initial={false} animate={{ y: headerVisible ? 0 : -100, opacity: headerVisible ? 1 : 0 }} transition={springConfig} className="absolute top-0 left-0 right-0 z-40 flex h-[72px] items-center justify-between border-b border-border/60 bg-background/88 px-5 backdrop-blur-xl pointer-events-auto accelerated lg:px-8">
               <div className="flex items-center gap-8">
                 <AnimatePresence mode="wait">{!isSidebarOpen && (<motion.button initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.8, opacity: 0 }} whileHover={{ scale: 1.1, backgroundColor: 'hsla(var(--muted-foreground) / 0.1)' }} whileTap={{ scale: 0.9 }} onClick={() => { setIsSidebarOpen(true); setIsReasoningOpen(false); }} className="p-3.5 rounded-2xl transition-all"><PanelLeft size={24} /></motion.button>)}</AnimatePresence>
                 <div className="flex items-center gap-4">
@@ -983,9 +1191,9 @@ const VORTEX_CONFIG = {
             {hasMessages && !activeModificationFiles && <div className="pt-24 shrink-0" />}
             <AnimatePresence mode="popLayout" custom={direction}>
               {activeView === 'chat' && (
-                <motion.div key="chat" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className={`mx-auto flex min-h-full w-full flex-1 flex-col px-4 md:px-8 lg:px-12 transition-all duration-500 ${!hasMessages ? 'justify-center pt-24 pb-40 max-w-[960px]' : 'pt-8 max-w-[920px]'}`}>
+                <motion.div key="chat" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className={`mx-auto flex min-h-full w-full flex-1 flex-col px-4 md:px-8 lg:px-10 xl:px-12 transition-all duration-500 ${!hasMessages ? 'justify-center pt-20 pb-36 max-w-[1120px]' : 'pt-4 max-w-[1260px]'}`}>
                   {!hasMessages ? (
-                    <div className="mx-auto flex w-full max-w-[860px] flex-col items-center justify-center gap-8 text-center">
+                    <div className="mx-auto flex w-full max-w-[980px] flex-col items-center justify-center gap-8 text-center">
                       <div className="flex flex-col items-center gap-5">
                         <div className="inline-flex items-center gap-3 rounded-full border border-border/60 bg-background px-4 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground shadow-sm">
                           <VortexLogo size={20} alt="Vortex" />
@@ -1028,14 +1236,10 @@ const VORTEX_CONFIG = {
                           </motion.button>
                         </div>
 
-                        <p className="max-w-2xl text-sm font-medium text-muted-foreground">
-                          {operationalStatus?.ok
-                            ? (settings.language === 'es' ? 'Stack local listo para trabajar, buscar y entrenar desde una sola interfaz.' : 'The local stack is ready to work, browse, and train from one interface.')
-                            : sendDisabledReason}
-                        </p>
+                        <p className="max-w-2xl text-sm font-medium text-muted-foreground">{statusBody}</p>
                       </div>
 
-                      <motion.div initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease: 'easeOut' }} className="surface-panel relative isolate w-full max-w-[760px] overflow-hidden rounded-[1.6rem] p-5 text-foreground">
+                      <motion.div initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease: 'easeOut' }} className="surface-panel relative isolate w-full max-w-[820px] overflow-hidden rounded-[1.6rem] p-5 text-foreground">
                         <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.10),transparent)] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.03),transparent)]" />
 
                         <div className="relative z-10 flex flex-col gap-5">
@@ -1050,9 +1254,7 @@ const VORTEX_CONFIG = {
                             </motion.div>
                             <div className="text-left">
                               <p className="text-sm font-bold tracking-tight text-foreground">
-                                {operationalStatus?.ok
-                                  ? (settings.language === 'es' ? 'Stack local listo para trabajar.' : 'Local stack is ready to work.')
-                                  : (settings.language === 'es' ? 'Revisa el estado antes de empezar.' : 'Review the stack before you start.')}
+                                {statusHeadline}
                               </p>
                               <p className="mt-1 text-sm leading-6 text-muted-foreground">
                                 {operationalStatus?.ok
@@ -1090,7 +1292,7 @@ const VORTEX_CONFIG = {
                       </motion.div>
                     </div>
                   ) : (
-                    <div className="pb-40">
+                    <div className="pb-36">
                       <VirtualizedMessageList 
                         messages={currentSession.messages} 
                         fontSize={settings.fontSize} 
@@ -1109,15 +1311,15 @@ const VORTEX_CONFIG = {
                   )}
                 </motion.div>
               )}
-              {activeView === 'analysis' && <motion.div key="analysis" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><AnalysisView sessions={sessions} onNavigateToChat={handleNavigateToChat} onAddLog={addLog} language={settings.language} controlStatus={controlStatus} operationalStatus={operationalStatus} onBootstrap={() => controlService.bootstrap(false)} onModelInit={() => controlService.initModel()} onRestartRuntime={() => controlService.restartRuntime()} onReloadInstructions={() => controlService.reloadInstructions()} onStartTraining={(trainingMode) => controlService.startTraining(trainingMode)} onSaveAllowlist={(domains) => controlService.saveAllowlist(domains)} focusTab={analysisFocusTab} /></motion.div>}
-              {activeView === 'training' && <motion.div key="training" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><TrainingView sessions={sessions} language={settings.language} controlStatus={controlStatus} onAddLog={addLog} onStartTraining={(trainingMode) => controlService.startTraining(trainingMode)} onStartAutonomy={() => controlService.startAutonomy()} onStopAutonomy={() => controlService.stopAutonomy()} onConfigureAutonomy={(config) => controlService.configureAutonomy(config)} /></motion.div>}
-              {activeView === 'edits' && <motion.div key="edits" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><SelfEditsView language={settings.language} onAddLog={addLog} onPendingCountChange={setSelfEditsPendingCount} /></motion.div>}
-              {activeView === 'terminal' && <motion.div key="terminal" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><TerminalView logs={logs} onClear={() => setLogs([])} language={settings.language} /></motion.div>}
+              {activeView === 'analysis' && <motion.div key="analysis" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><Suspense fallback={lazyPanelFallback}><AnalysisView sessions={sessions} onNavigateToChat={handleNavigateToChat} onAddLog={addLog} language={settings.language} controlStatus={controlStatus} operationalStatus={operationalStatus} onBootstrap={() => controlService.bootstrap(false)} onModelInit={() => controlService.initModel()} onRestartRuntime={() => controlService.restartRuntime()} onReloadInstructions={() => controlService.reloadInstructions()} onStartTraining={(trainingMode) => controlService.startTraining(trainingMode)} onSaveAllowlist={(domains) => controlService.saveAllowlist(domains)} focusTab={analysisFocusTab} /></Suspense></motion.div>}
+              {activeView === 'training' && <motion.div key="training" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><Suspense fallback={lazyPanelFallback}><TrainingView sessions={sessions} language={settings.language} controlStatus={controlStatus} onAddLog={addLog} onStartTraining={(trainingMode) => controlService.startTraining(trainingMode)} onStartAutonomy={() => controlService.startAutonomy()} onStopAutonomy={() => controlService.stopAutonomy()} onConfigureAutonomy={(config) => controlService.configureAutonomy(config)} /></Suspense></motion.div>}
+              {activeView === 'edits' && <motion.div key="edits" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><Suspense fallback={lazyPanelFallback}><SelfEditsView language={settings.language} onAddLog={addLog} onPendingCountChange={setSelfEditsPendingCount} /></Suspense></motion.div>}
+              {activeView === 'terminal' && <motion.div key="terminal" custom={direction} variants={{ initial: (d: number) => ({ opacity: 0, x: d * 40, filter: 'blur(10px)' }), animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: springConfig }, exit: (d: number) => ({ opacity: 0, x: -d * 40, filter: 'blur(10px)', transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1"><Suspense fallback={lazyPanelFallback}><TerminalView logs={logs} onClear={() => setLogs([])} language={settings.language} /></Suspense></motion.div>}
             </AnimatePresence>
           </div>
 
           {!activeModificationFiles && activeView === 'chat' && (
-            <motion.div initial={false} animate={{ y: footerVisible ? 0 : 200, opacity: footerVisible ? 1 : 0 }} transition={{ type: 'spring', damping: 30, stiffness: 200 }} className="absolute bottom-0 left-0 right-0 z-30 bg-gradient-to-t from-background via-background/95 to-transparent pt-10 pb-8 pointer-events-auto accelerated">
+            <motion.div initial={false} animate={{ y: footerVisible ? 0 : 200, opacity: footerVisible ? 1 : 0 }} transition={{ type: 'spring', damping: 30, stiffness: 200 }} className="absolute bottom-0 left-0 right-0 z-30 bg-gradient-to-t from-background via-background/95 to-transparent pt-6 pb-6 pointer-events-auto accelerated">
               <div className="pointer-events-auto">
                 <ChatInput
                   onSend={handleSendMessageLocalFirst}
@@ -1130,6 +1332,7 @@ const VORTEX_CONFIG = {
                   sendDisabledReason={sendDisabledReason}
                   onStop={() => { abortControllerRef.current = true; }}
                   language={settings.language}
+                  permissionChips={permissionChips}
                   onInteraction={() => { resetInactivityTimer(); if (!footerVisible) setFooterVisible(true); }}
                   onFocusChange={setIsComposerFocused}
                   onDraftChange={setHasComposerDraft}
@@ -1140,32 +1343,42 @@ const VORTEX_CONFIG = {
         </main>
         
         <AnimatePresence>{isReasoningOpen && !activeModificationFiles && (
-            <motion.div initial={{ width: 0, opacity: 0 }} animate={{ width: 400, opacity: 1 }} exit={{ width: 0, opacity: 0 }} transition={springConfig} className="h-full border-l border-border/50 shrink-0 z-50 overflow-hidden bg-zinc-950/95 shadow-[-20px_0_50px_rgba(0,0,0,0.5)]"><ReasoningDrawer isOpen={isReasoningOpen} onClose={() => setIsReasoningOpen(false)} thought={activeThought} language={settings.language} isStreaming={isCurrentThoughtStreaming} /></motion.div>
+            <motion.div initial={{ width: 0, opacity: 0 }} animate={{ width: 400, opacity: 1 }} exit={{ width: 0, opacity: 0 }} transition={springConfig} className="h-full border-l border-border/50 shrink-0 z-50 overflow-hidden bg-zinc-950/95 shadow-[-20px_0_50px_rgba(0,0,0,0.5)]"><Suspense fallback={null}><ReasoningDrawer isOpen={isReasoningOpen} onClose={() => setIsReasoningOpen(false)} thought={activeThought} language={settings.language} isStreaming={isCurrentThoughtStreaming} /></Suspense></motion.div>
         )}</AnimatePresence>
       </div>
 
       <AnimatePresence>
         {activeModificationFiles && (
-          <ModificationExplorerModal 
-            fileChanges={activeModificationFiles} 
-            onClose={() => { setActiveModificationFiles(null); setHeaderVisible(true); setFooterVisible(true); }} 
-            language={settings.language} 
-          />
+          <Suspense fallback={null}>
+            <ModificationExplorerModal 
+              fileChanges={activeModificationFiles} 
+              onClose={() => { setActiveModificationFiles(null); setHeaderVisible(true); setFooterVisible(true); }} 
+              language={settings.language} 
+            />
+          </Suspense>
         )}
       </AnimatePresence>
 
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        initialTab={settingsInitialTab}
-        settings={settings}
-        onUpdateSettings={setSettings}
-        accounts={accounts}
-        currentAccountId={currentAccountId}
-        onSelectAccount={handleSelectAccount}
-        onCreateAccount={handleCreateAccount}
-      />
-      <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} isDarkMode={isDarkMode} language={settings.language} />
+      {isSettingsOpen && (
+        <Suspense fallback={null}>
+          <SettingsModal
+            isOpen={isSettingsOpen}
+            onClose={() => setIsSettingsOpen(false)}
+            initialTab={settingsInitialTab}
+            settings={settings}
+            onUpdateSettings={setSettings}
+            accounts={accounts}
+            currentAccountId={currentAccountId}
+            onSelectAccount={handleSelectAccount}
+            onCreateAccount={handleCreateAccount}
+          />
+        </Suspense>
+      )}
+      {isHelpOpen && (
+        <Suspense fallback={null}>
+          <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} isDarkMode={isDarkMode} language={settings.language} />
+        </Suspense>
+      )}
     </div>
   );
 };

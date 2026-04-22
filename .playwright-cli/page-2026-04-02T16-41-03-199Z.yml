@@ -1,0 +1,210 @@
+- generic [ref=e3]:
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - button "Vortex Local core Vortex Frontend principal" [ref=e8] [cursor=pointer]:
+          - img "Vortex" [ref=e11]
+          - generic [ref=e12]:
+            - paragraph [ref=e13]: Local core
+            - paragraph [ref=e14]: Vortex
+            - paragraph [ref=e15]: Frontend principal
+        - button "Cerrar lateral" [ref=e16] [cursor=pointer]:
+          - img [ref=e17]
+      - button "Nueva sesión Abrir chat limpio" [ref=e20] [cursor=pointer]:
+        - generic [ref=e21]:
+          - paragraph [ref=e22]: Nueva sesión
+          - paragraph [ref=e23]: Abrir chat limpio
+        - img [ref=e25]
+    - generic [ref=e27]:
+      - button "Chat" [ref=e28] [cursor=pointer]:
+        - img [ref=e31]
+        - generic [ref=e33]: Chat
+      - button "Control" [ref=e34] [cursor=pointer]:
+        - img [ref=e36]
+        - generic [ref=e38]: Control
+      - button "Entrenamiento" [ref=e39] [cursor=pointer]:
+        - img [ref=e41]
+        - generic [ref=e43]: Entrenamiento
+      - button "Cambios" [ref=e44] [cursor=pointer]:
+        - img [ref=e46]
+        - generic [ref=e51]: Cambios
+      - button "Registros" [ref=e52] [cursor=pointer]:
+        - img [ref=e54]
+        - generic [ref=e57]: Registros
+    - generic [ref=e58]:
+      - generic [ref=e60]:
+        - paragraph [ref=e61]: Sesiones
+        - paragraph [ref=e62]: 1 activas
+      - generic [ref=e217]:
+        - button "Nueva Conversación 2 mensajes · 18:41" [ref=e233] [cursor=pointer]:
+          - generic [ref=e220]:
+            - paragraph [ref=e221]: Nueva Conversación
+            - paragraph [ref=e222]: 2 mensajes · 18:41
+        - button "Eliminar sesión" [ref=e223] [cursor=pointer]:
+          - img [ref=e224]
+    - generic [ref=e63]:
+      - generic [ref=e64]:
+        - button "Modo oscuro" [ref=e65] [cursor=pointer]:
+          - img [ref=e66]
+          - generic [ref=e68]: Modo oscuro
+        - button "Configuracion" [ref=e69] [cursor=pointer]:
+          - img [ref=e70]
+      - button "VO Vortex Local local@vortex.dev" [ref=e74] [cursor=pointer]:
+        - generic [ref=e75]: VO
+        - generic [ref=e76]:
+          - paragraph [ref=e77]: Vortex Local
+          - paragraph [ref=e78]: local@vortex.dev
+        - img [ref=e80]
+  - main [ref=e84]:
+    - generic [ref=e85]:
+      - generic [ref=e87]:
+        - img "Vortex" [ref=e91]
+        - generic [ref=e92]:
+          - generic [ref=e93]:
+            - heading "Vortex" [level=1] [ref=e94]
+            - generic [ref=e95]: HF
+          - generic [ref=e96]: NUCLEO_SISTEMA
+      - generic [ref=e97]:
+        - button "es" [ref=e98] [cursor=pointer]:
+          - img "es" [ref=e99]
+        - generic [ref=e100]:
+          - button [ref=e101] [cursor=pointer]:
+            - img [ref=e102]
+          - button [ref=e105] [cursor=pointer]:
+            - img [ref=e106]
+          - button [ref=e108] [cursor=pointer]:
+            - img [ref=e109]
+          - button [ref=e111] [cursor=pointer]:
+            - img [ref=e112]
+          - button [ref=e117] [cursor=pointer]:
+            - img [ref=e118]
+        - button "Chat degradado HF -> HF" [ref=e227] [cursor=pointer]:
+          - img [ref=e228]
+          - generic [ref=e125]:
+            - paragraph [ref=e126]: Chat degradado
+            - paragraph [ref=e127]: HF -> HF
+          - img [ref=e128]
+        - button "ALT+K" [ref=e130] [cursor=pointer]:
+          - img [ref=e131]
+          - generic [ref=e133]: ALT+K
+    - generic [ref=e236]:
+      - generic [ref=e240]:
+        - paragraph [ref=e243]: Activar protocolo de demostración.
+        - generic [ref=e245]: 18:40
+      - generic [ref=e248]:
+        - img [ref=e250]
+        - generic [ref=e253]:
+          - generic [ref=e254]:
+            - generic [ref=e256] [cursor=pointer]:
+              - generic [ref=e257]:
+                - img [ref=e259]
+                - generic [ref=e263]:
+                  - heading "Gestor de Modificaciones Vortex" [level=4] [ref=e264]
+                  - generic [ref=e265]:
+                    - generic [ref=e266]: 2 Archivos
+                    - generic [ref=e267]:
+                      - img [ref=e268]
+                      - text: "2"
+                    - generic [ref=e269]:
+                      - img [ref=e270]
+                      - text: "2"
+              - generic [ref=e271]:
+                - generic [ref=e272]:
+                  - button "Expandir" [ref=e273]
+                  - button "Colapsar" [ref=e274]
+                - img [ref=e276]
+            - generic [ref=e278]:
+              - paragraph [ref=e279]: Protocolo activado. He analizado la estructura actual y optimizado los parámetros del kernel.
+              - heading "Análisis de Componentes:" [level=3] [ref=e280]
+              - list [ref=e281]:
+                - listitem [ref=e282]:
+                  - generic [ref=e285]:
+                    - strong [ref=e286]: Motor de Animación
+                    - text: ": Optimización de constantes de resorte (stiffness) para mayor fluidez."
+                - listitem [ref=e287]:
+                  - generic [ref=e290]:
+                    - strong [ref=e291]: Gestión de Estado
+                    - text: ": Reducción de latencia en el ciclo de renderizado virtualizado."
+                - listitem [ref=e292]:
+                  - generic [ref=e295]:
+                    - strong [ref=e296]: Seguridad
+                    - text: ": Verificación de firmas de integridad en parches dinámicos."
+              - heading "Parámetros de Configuración Actualizados:" [level=3] [ref=e297]
+              - generic [ref=e299]:
+                - generic [ref=e300]:
+                  - generic [ref=e301]:
+                    - img [ref=e303]
+                    - generic [ref=e307]: typescript
+                  - button "Copiar" [ref=e308] [cursor=pointer]:
+                    - img [ref=e309]
+                    - text: Copiar
+                - code [ref=e313]: "const VORTEX_CONFIG = { neuralPrecision: 0.98, latencyThreshold: \"45ms\", autoSync: true, engineVersion: \"v2.5.0-beta\", activeModules: [\"Search\", \"PatchExplorer\", \"NeuralReasoning\"] };"
+              - heading "Modificaciones de Archivo Propuestas:" [level=3] [ref=e314]
+              - generic [ref=e317] [cursor=pointer]:
+                - generic:
+                  - img
+                - generic:
+                  - generic: App.tsx
+                  - generic:
+                    - generic:
+                      - img
+                      - text: "1"
+                    - generic:
+                      - img
+                      - text: "1"
+                - img
+                - button "Expandir o colapsar App.tsx" [ref=e318]
+              - generic [ref=e321] [cursor=pointer]:
+                - generic:
+                  - img
+                - generic:
+                  - generic: components/Sidebar.tsx
+                  - generic:
+                    - generic:
+                      - img
+                      - text: "1"
+                    - generic:
+                      - img
+                      - text: "1"
+                - img
+                - button "Expandir o colapsar components/Sidebar.tsx" [ref=e322]
+            - generic [ref=e323]:
+              - 'link "Aprendizaje: React Hooks" [ref=e325] [cursor=pointer]':
+                - /url: https://react.dev
+                - generic [ref=e327]: "Aprendizaje: React Hooks"
+              - 'link "Aprendizaje: FastAPI" [ref=e329] [cursor=pointer]':
+                - /url: https://fastapi.tiangolo.com
+                - generic [ref=e331]: "Aprendizaje: FastAPI"
+              - 'link "MDN: Element.scrollIntoView()" [ref=e333] [cursor=pointer]':
+                - /url: https://developer.mozilla.org/es/docs/Web/API/Element/scrollIntoView
+                - generic [ref=e335]: "MDN: Element.scrollIntoView()"
+          - generic [ref=e336]:
+            - generic [ref=e337]:
+              - button "Copiar" [ref=e338] [cursor=pointer]:
+                - img [ref=e339]
+                - text: Copiar
+              - button "Razonamiento" [ref=e342] [cursor=pointer]:
+                - img [ref=e344]
+                - generic [ref=e352]: Razonamiento
+                - img [ref=e353]
+            - generic [ref=e355]: 18:40
+    - generic [ref=e188]:
+      - generic [ref=e189]:
+        - button "Modo Thinking activo" [ref=e191] [cursor=pointer]:
+          - img [ref=e192]
+        - textbox "Escribe una consulta..." [ref=e195]: Dime en una frase qué backend y qué modelo están activos ahora mismo.
+        - generic [ref=e196]:
+          - generic [ref=e197]:
+            - button "CONSULTA" [ref=e199] [cursor=pointer]
+            - button "AGENTE" [ref=e200] [cursor=pointer]
+          - button "Activar Internet" [ref=e201] [cursor=pointer]:
+            - img [ref=e202]
+          - button "Encolar para aprendizaje inactivo" [ref=e205] [cursor=pointer]:
+            - img [ref=e206]
+          - button "Enviar mensaje" [disabled] [ref=e208]:
+            - img [ref=e209]
+      - generic [ref=e211]:
+        - generic [ref=e212]:
+          - generic [ref=e213]: Consulta guiada
+          - generic [ref=e214]: Thinking
+        - paragraph [ref=e215]: autolearn.web_ingest=true
