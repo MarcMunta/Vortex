@@ -646,16 +646,7 @@ const App: React.FC = () => {
     }
 
     if (nextAccounts.length === 0) {
-      const fallback = createDefaultAccount();
-      nextAccounts = [fallback];
-      const legacySessions = localStorage.getItem('chat-sessions');
-      const legacySettings = localStorage.getItem('user-settings');
-      if (legacySessions && !localStorage.getItem(accountSessionsKey(fallback.id))) {
-        localStorage.setItem(accountSessionsKey(fallback.id), legacySessions);
-      }
-      if (legacySettings && !localStorage.getItem(accountSettingsKey(fallback.id))) {
-        localStorage.setItem(accountSettingsKey(fallback.id), legacySettings);
-      }
+      nextAccounts = [createDefaultAccount()];
     }
 
     const safeCurrentAccountId = nextAccounts.some((account) => account.id === savedCurrentAccountId)
