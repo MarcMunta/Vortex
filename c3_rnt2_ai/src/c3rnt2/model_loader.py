@@ -4,11 +4,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .model.core_transformer import CoreTransformer
-from .hf_model import load_hf_model
-from .tensorrt_backend import load_tensorrt_model
-
-
 def _fallback_backend(settings: dict, current: str) -> str | None:
     core = settings.get("core", {}) or {}
     contract = settings.get("profile_contract", {}) or {}
@@ -82,6 +77,8 @@ def load_inference_model(settings: dict, backend_override: str | None = None) ->
             raise
     if backend == "hf":
         try:
+            from .hf_model import load_hf_model
+
             return load_hf_model(settings)
         except Exception:
             fb = _fallback_backend(settings, backend)
@@ -100,10 +97,16 @@ def load_inference_model(settings: dict, backend_override: str | None = None) ->
             raise
     if backend == "tensorrt":
         try:
+            from .tensorrt_backend import load_tensorrt_model
+
             return load_tensorrt_model(settings)
         except Exception:
             fb = _fallback_backend(settings, backend)
             if fb:
                 return load_inference_model(settings, backend_override=fb)
+            from .model.core_transformer import CoreTransformer
+
             return CoreTransformer.from_settings(settings)
+    from .model.core_transformer import CoreTransformer
+
     return CoreTransformer.from_settings(settings)

@@ -16,7 +16,7 @@ La ruta principal soportada es ahora **Docker-first + SGLang + Qwen2.5-Coder-14B
 
 Perfiles principales:
 - `rtx4080_16gb_programming_local`: serving local con `SGLang` en Docker y `Qwen/Qwen2.5-Coder-14B-Instruct-AWQ`.
-- `rtx4080_16gb_programming_train_docker`: training manual en contenedor separado con `Qwen/Qwen2.5-Coder-14B-Instruct` en QLoRA 4-bit.
+- `rtx4080_16gb_programming_train_docker`: training manual en contenedor separado con `google/gemma-4-E4B-it` + LoRA 4-bit.
 
 Los perfiles `120B-like`, `local_lab`, `security-lab` y variantes WSL quedan como secundarios o de compatibilidad. La identidad principal de Vortex sale de:
 - `config/instructions/vortex_system.md`
@@ -338,7 +338,7 @@ python scripts\\run_daemon.py --profile autonomous_4080_hf --host 0.0.0.0 --port
 ```
 Para activar RAG en el servidor:
 ```bash
-# en config/settings.yaml
+# en config/profiles/*.yaml (o via manifest `config/settings.yaml`)
 rag:
   enabled: true
   top_k: 3
@@ -380,7 +380,7 @@ python -m c3rnt2 agent-run --task "Fix failing test" --profile qwen8b_base
 ```
 
 ## Agent safe mode
-- Web tool desactivada por defecto. Activar en `config/settings.yaml` (`tools.web.enabled: true`) y allowlist.
+- Web tool desactivada por defecto. Activar en `config/profiles/*.yaml` (`tools.web.enabled: true`) y allowlist.
 - Tests de herramientas en sandbox con `C3RNT2_NO_NET=1` y sin secretos del entorno.
 
 ## Web tools allowlist
@@ -423,7 +423,7 @@ python -m c3rnt2 self-train --once --profile qwen8b_train
 ```
 
 ## Configuración
-`config/settings.yaml` define perfiles (`dev_small`, `core_only`, `c3_paged`, `agent`) con parámetros para Vortex, BAD y self-train.
+`config/settings.yaml` es el manifest principal y carga perfiles fragmentados desde `config/profiles/*.yaml` (`dev_small`, `core_only`, `c3_paged`, `agent`, etc.) con parámetros para Vortex, BAD y self-train.
 
 Flags útiles:
 - `core.mtp_k`: activa Multi-Token Prediction (MTP).

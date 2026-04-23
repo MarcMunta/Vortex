@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import json
 import random
@@ -14,8 +15,6 @@ try:
     import torch
 except Exception:  # pragma: no cover
     torch = None
-
-from .model_loader import load_inference_model
 
 
 @dataclass(frozen=True)
@@ -32,6 +31,11 @@ class BenchArgs:
     jsonl_out: Path | None = None
     mock: bool = False
     scenario: str = "default"
+
+
+def load_inference_model(*args: Any, **kwargs: Any) -> Any:
+    module = importlib.import_module(".model_loader", package=__package__)
+    return getattr(module, "load_inference_model")(*args, **kwargs)
 
 
 def _resolve_stream_topk(settings: dict) -> int | bool:

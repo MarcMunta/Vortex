@@ -5,9 +5,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from c3rnt2.config import load_settings, validate_profile
+from c3rnt2.config import (
+    load_settings,
+    load_settings_document,
+    resolve_settings_sources,
+    validate_profile,
+)
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+
+
+def _read_all_settings_text() -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in resolve_settings_sources()
+    )
 
 
 def _assert_profile(profile: str) -> None:
@@ -47,6 +58,17 @@ def test_settings_safety_defaults() -> None:
     assert bool(autolearn.get("enabled", False)) is False
 
 
+def test_settings_manifest_loads_fragmented_profiles() -> None:
+    document = load_settings_document()
+    sources = resolve_settings_sources()
+
+    assert "dev_small" in document["profiles"]
+    assert "rtx4080_16gb_programming_train_docker" in document["profiles"]
+    assert "ethical_security_lab_4080_offensive_lab" in document["profiles"]
+    assert sources[-1].name == "settings.yaml"
+    assert len(sources) == 6
+
+
 def _assert_security_lab_profile_is_local_and_safe(profile: str) -> None:
     settings = load_settings(profile)
     core = settings.get("core", {}) or {}
@@ -77,9 +99,7 @@ def test_security_lab_profiles_are_local_and_safe() -> None:
 
 
 def test_legacy_offensive_profile_name_removed() -> None:
-    raw = (Path(__file__).resolve().parents[1] / "config" / "settings.yaml").read_text(
-        encoding="utf-8"
-    )
+    raw = _read_all_settings_text()
     assert "ethical_hacking_autolearn_4080" not in raw
     assert "ethical_security_lab_4080:" not in raw
     assert "ethical_security_lab_4080_offensive_lab:" in raw
@@ -109,19 +129,20 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert daily["continuous"]["local_sources"]["include_repo"] is True
     assert daily["hf_train"]["enabled"] is False
 
-    assert train["core"]["backend"] == "external"
-    assert train["core"]["external_engine"] == "sglang"
-    assert train["core"]["hf_model"] == "Qwen/Qwen2.5-Coder-14B-Instruct"
+    assert train["core"]["backend"] == "hf"
+    assert train["core"]["hf_model"] == "google/gemma-4-E4B-it"
     assert train["core"]["backend_fallback"] is None
-    assert train["core"]["hf_fallback"] is None
+    assert train["core"].get("hf_fallback") is None
     assert train["core"]["allow_implicit_hf_fallback"] is False
-    assert train["server"]["train_strategy"] == "subprocess_unload"
+    assert train["server"]["train_strategy"] == "inprocess"
     assert train["hf_train"]["enabled"] is True
-    assert train["hf_train"]["model_name"] == "Qwen/Qwen2.5-Coder-14B-Instruct"
-    assert train["hf_train"]["manual_promotion_only"] is True
+    assert train["hf_train"]["model_name"] == "google/gemma-4-E4B-it"
+    assert train["hf_train"]["manual_promotion_only"] is False
     assert train["hf_train"]["extra_training_paths"] == [
         "data/registry/hf_train/sft_samples.jsonl",
         "data/registry/hf_train/programming_eval.jsonl",
+        "config/datasets/flutter_dart_seed.jsonl",
+        "config/datasets/flutter_dart_eval.jsonl",
     ]
     assert train["profile_contract"]["require_docker"] is True
     assert train["profile_contract"]["disable_fallbacks"] is True

@@ -1,0 +1,345 @@
+profiles:
+  qwen8b_train:
+    base_profile: qwen8b_base
+    server:
+      block_during_training: true
+      maintenance_window_s: 10
+      train_strategy: subprocess
+    tools:
+      web:
+        enabled: true
+    hf_train:
+      enabled: true
+      model_name: "Qwen/Qwen2.5-7B-Instruct"
+      registry_dir: data/registry/hf_train
+      dataset_path: data/registry/hf_train/sft_samples.jsonl
+      state_path: data/registry/hf_train/state.json
+      max_samples: 128
+      auto_tune_batch: true
+      auto_tune_retries: 2
+      min_quality: 0.3
+      prompt_template: "Context:\n{text}\nAnswer:"
+      max_seq_len: 1024
+      micro_batch_size: 1
+      grad_accum_steps: 8
+      max_steps: 100
+      lr: 2.0e-4
+      load_in_4bit: true
+      load_in_8bit: false
+      quant_type: nf4
+      double_quant: true
+      compute_dtype: bf16
+      gradient_checkpointing: true
+      lora_rank: 8
+      lora_alpha: 16
+      lora_dropout: 0.05
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+      use_weighted_sampling: true
+      source_kind_weights:
+        chat_feedback: 1.5
+        chat_feedback_soft: 0.7
+        episode: 1.2
+        web: 0.8
+        logs: 0.8
+  qwen8b_chat_qlora:
+    # QLoRA chat finetune on external chat datasets (RTX 4080 16GB).
+    base_profile: qwen8b_train
+    core:
+      backend: hf
+      hf_model: "Qwen/Qwen2.5-7B-Instruct"
+    hf_train:
+      enabled: true
+      dataset_path: data/registry/hf_train/sft_samples.jsonl
+      max_samples: 20000
+      max_seq_len: 1024
+      micro_batch_size: 1
+      grad_accum_steps: 8
+      max_steps: 400
+      lr: 2.0e-4
+      load_in_4bit: true
+      quant_type: nf4
+      double_quant: true
+      compute_dtype: bf16
+      gradient_checkpointing: true
+      lora_rank: 8
+      lora_alpha: 16
+      lora_dropout: 0.05
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  safe_selftrain_4080_hf:
+    # HF Qwen-8B self-train (safe defaults for 16GB)
+    base_profile: qwen8b_train
+    core:
+      backend: hf
+      hf_model: "Qwen/Qwen2.5-7B-Instruct"
+    server:
+      train_strategy: subprocess_unload
+      block_during_training: true
+      auto_reload_adapter: true
+      reload_interval_s: 30
+      maintenance_window_s: 10
+    tools:
+      web:
+        enabled: false
+    continuous:
+      ingest_web: false
+    autopilot:
+      enabled: false
+      interval_minutes: 30
+      ingest_cooldown_minutes: 10
+      train_cooldown_minutes: 60
+      eval_cooldown_minutes: 60
+      patch_cooldown_minutes: 120
+      train_max_steps: 25
+      training_jsonl_max_items: 500
+      min_improvement: 0.0
+      reuse_dataset: false
+      autopatch_enabled: false
+      autopatch_on_test_fail: true
+      autopatch_on_doctor_fail: true
+      autopatch_require_eval: true
+      todo_regex: "TODO\\((P1|PRIORITY)\\)|TODO!|TODO:HIGH|TODO:CRITICAL"
+  rtx4080_16gb_safe_hf:
+    # Alias: safe HF self-train profile for RTX 4080 16GB
+    base_profile: safe_selftrain_4080_hf
+    decode:
+      max_new_tokens: 256
+    bench_thresholds:
+      min_tokens_per_sec: 10.0
+      max_regression: 0.15
+  rtx4080_16gb_safe:
+    # RTX 4080 16GB safe core profile (no downloads, deny-by-default web).
+    base_profile: rtx4080_16gb_safe_vortex
+    core:
+      precision: bf16
+    kv:
+      window_size: 1024
+    runtime:
+      paged_lm_head: true
+      cache_vram_budget_mb: 3072
+      prefetch_depth: 2
+      kv_quant: int8
+      kv_quant_2bit_experimental: false
+      paged_lm_head_stream_topk: false
+    decode:
+      max_new_tokens: 64
+    continuous:
+      ingest_web: false
+      batch_tokens: 4096
+    tools:
+      web:
+        enabled: false
+    security:
+      web:
+        strict: true
+        allowlist_domains: []
+  rtx4080_16gb_safe_windows_hf:
+    # Windows-safe RTX 4080 16GB (HF). Defaults: safe, offline, fail-closed promotion.
+    base_profile: qwen8b_train
+    core:
+      backend: hf
+      hf_model: "Qwen/Qwen2.5-7B-Instruct"
+      hf_use_latest_adapter: false
+      hf_adapter_path: null
+      hf_merge_adapter: false
+    rag:
+      enabled: false
+      top_k: 0
+      max_chars: 0
+    tools:
+      web:
+        enabled: false
+    continuous:
+      ingest_web: false
+    server:
+      train_strategy: subprocess_unload
+      block_during_training: true
+      auto_reload_adapter: true
+      reload_interval_s: 30
+    hf_train:
+      enabled: false
+      # Tip (Windows): to run HF self-train without double-loading/VRAM spikes, use WSL2 and set
+      # `server.train_strategy: wsl_subprocess_unload` + `server.wsl_workdir` (see docs/WINDOWS_SELF_TRAIN_WSL.md).
+      max_seq_len: 2048
+      micro_batch_size: 1
+      grad_accum_steps: 8
+      lora_rank: 8
+      eval:
+        enabled: true
+    autopilot:
+      enabled: false
+      autopatch_enabled: false
+    learning:
+      require_eval_ok: true
+      require_bench_ok: true
+    experts:
+      enabled: false
+      max_loaded: 6
+      default: null
+      paths: {}
+      router:
+        mode: hybrid
+        keyword_map: {}
+    bench:
+      required_ctx: 4096
+      max_regression_pct: 15
+      max_vram_peak_mb: 15500
+      min_tokens_per_sec: 0
+  rtx4080_16gb_programming_train_docker:
+    # Continuous training profile aligned with the live Gemma 4 E4B Docker runtime.
+    base_profile: rtx4080_16gb_gemma4_e4b_hf_docker
+    core:
+      backend: hf
+      hf_model: "google/gemma-4-E4B-it"
+      hf_device: cuda
+      hf_load_in_4bit: true
+      hf_attn_implementation: sdpa
+      dtype: bf16
+      backend_fallback: null
+    server:
+      train_strategy: inprocess
+      auto_reload_adapter: false
+      train_host_ram_threshold_mb: 8192
+      allow_parallel_runtime_training: false
+    docker:
+      enabled: true
+      compose_path: "docker-compose.yml"
+      runtime_service: "sglang-runtime"
+      api_service: "vortex-api"
+      trainer_service: "trainer"
+      eval_service: "eval"
+    instructions:
+      vortex_system_path: "config/instructions/vortex_system.md"
+      domain_policy_path: "config/instructions/domain_policy.md"
+    agent:
+      web_allowlist: []
+    tools:
+      web:
+        enabled: false
+        allow_domains: []
+    security:
+      web:
+        strict: true
+        allowlist_domains: []
+    continuous:
+      ingest_web: false
+      ingest_urls: []
+      max_steps_per_tick: 120
+      batch_tokens: 4096
+      grad_accum_steps: 2
+      max_minutes_per_tick: 30
+      mtp_loss_weight: 0.2
+      trigger:
+        enabled: true
+        min_new_docs: 2
+        min_novelty: 0.35
+        min_successes: 1
+      filter:
+        min_quality: 0.5
+        max_repeat_ratio: 0.5
+        min_chars: 300
+        min_novelty: 0.35
+        semantic_dedup_threshold: 0.96
+        quarantine_limit: 300
+      replay:
+        max_items: 10000
+        top_frac: 0.8
+        random_frac: 0.2
+        sample_size: 96
+        seed_chunks: 80
+      source_weights:
+        episode: 2.0
+        web: 1.0
+        memory: 1.5
+        logs: 0.7
+        unknown: 1.0
+      adapters:
+        rank: 8
+        alpha: 2.0
+        target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        strict_target_modules: false
+      eval:
+        max_regression: 0.1
+        min_improvement: 0.01
+      budgets:
+        max_steps_per_day: 1200
+        max_tokens_per_day: 3000000
+        max_disk_mb: 30720
+        max_walltime_min: 90
+      consolidation:
+        enabled: true
+        every_n_runs: 5
+        top_n: 5
+        weights:
+          loss: 1.0
+          anchors: 1.0
+          episodes: 0.5
+      local_sources:
+        enabled: true
+        include_repo: true
+        include_local_corpus: true
+        include_lessons: true
+        include_logs: false
+        include_memory: false
+        repo_paths:
+          - "README.md"
+          - "src"
+          - "tests"
+          - "scripts"
+          - "docs"
+          - "config"
+          - "../vortex-chat/src"
+          - "../vortex-chat/package.json"
+    autolearn:
+      enabled: false
+      web_ingest: false
+      url_discovery: false
+      allow_domains: []
+    hf_train:
+      enabled: true
+      model_name: "google/gemma-4-E4B-it"
+      registry_dir: "data/registry/hf_train/gemma4_e4b"
+      dataset_path: "data/registry/hf_train/gemma4_e4b_sft_samples.jsonl"
+      state_path: "data/registry/hf_train/gemma4_e4b_state.json"
+      extra_training_paths:
+        - "data/registry/hf_train/sft_samples.jsonl"
+        - "data/registry/hf_train/programming_eval.jsonl"
+        - "config/datasets/flutter_dart_seed.jsonl"
+        - "config/datasets/flutter_dart_eval.jsonl"
+      source_kind_weights:
+        flutter_dart_seed: 2.5
+        flutter_dart_eval: 2.0
+        episode: 1.5
+        web: 0.8
+        memory: 1.0
+        logs: 0.5
+      load_in_4bit: true
+      max_seq_len: 768
+      micro_batch_size: 1
+      grad_accum_steps: 8
+      max_steps: 12
+      gradient_checkpointing: true
+      lora_rank: 8
+      target_module_scopes:
+        - "language_model.layers."
+        - "model.layers."
+      manual_promotion_only: false
+    profile_contract:
+      offline_required: true
+      require_web_disabled: true
+      require_external_engine:
+      require_local_base_url: false
+      require_ollama: false
+      require_docker: true
+      disable_fallbacks: true
+      require_wsl_training: false
+      approved_training_sources_only: true
+      min_host_ram_free_mb: 8192
+  rtx4080_16gb_programming_train_wsl:
+    # Legacy compatibility alias. Prefer rtx4080_16gb_programming_train_docker.
+    base_profile: rtx4080_16gb_programming_train_docker
+    server:
+      train_strategy: wsl_subprocess_unload
+      wsl_python: python
+      wsl_workdir: "/mnt/d/Vortex/c3_rnt2_ai"
+    profile_contract:
+      require_wsl_training: true

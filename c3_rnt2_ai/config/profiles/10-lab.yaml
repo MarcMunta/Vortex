@@ -1,0 +1,273 @@
+profiles:
+  local_learning_lab_4080:
+    # Local-first learning profile: Ollama on localhost + strict sandbox-only execution.
+    base_profile: safe_selftrain_4080_hf
+    core:
+      backend: external
+      external_engine: ollama
+      external_base_url: "http://127.0.0.1:11434"
+      external_model: "qwen2.5-coder:14b-instruct-q4_K_S"
+      external_retry_max_attempts: 3
+      external_retry_backoff_base_s: 0.2
+      external_retry_backoff_max_s: 2.0
+      external_circuit_enabled: true
+      external_circuit_fail_threshold: 3
+      external_circuit_open_s: 20.0
+      backend_fallback: hf
+      hf_system_prompt: "You are Vortex, a local learning assistant for Python, FastAPI, React, Linux, and secure coding. Prefer short explanations, small exercises, and exact validation loops."
+    decode:
+      max_new_tokens: 256
+    agent:
+      tools_enabled: ["read_file", "grep", "list_tree", "run_tests", "propose_patch", "sandbox_patch", "summarize_diff"]
+    tools:
+      web:
+        enabled: false
+        allow_domains: []
+    security:
+      web:
+        strict: true
+        allowlist_domains: []
+    local_lab:
+      enabled: true
+      track: python_fastapi_react
+      curriculum_path: config/local_lab_curriculum.yaml
+      progress_path: "D:\\Vault\\learning\\progress.json"
+      lessons_path: "D:\\Vault\\learning\\lessons"
+      workspaces_path: "D:\\AI\\workspaces"
+      host_paths:
+        ollama: "D:\\AI\\ollama"
+        openwebui: "D:\\AI\\openwebui"
+        workspaces: "D:\\AI\\workspaces"
+        vault_learning: "D:\\Vault\\learning"
+        cyber_range: "D:\\Labs\\cyber-range"
+      sandbox_root: data/workspaces
+      guardrails_enabled: true
+      lab_confirmation_token: LAB_CONFIRMED
+  rtx4080_16gb_programming_local:
+    # Canonical daily-use profile: Docker-first SGLang runtime with a local 14B coder.
+    base_profile: local_learning_lab_4080
+    core:
+      backend: external
+      external_engine: sglang
+      external_base_url: "http://127.0.0.1:30000"
+      external_model: "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
+      backend_fallback: null
+      hf_fallback: null
+      allow_implicit_hf_fallback: false
+    docker:
+      enabled: true
+      compose_path: "docker-compose.yml"
+      runtime_service: "sglang-runtime"
+      api_service: "vortex-api"
+      trainer_service: "trainer"
+      eval_service: "eval"
+    instructions:
+      vortex_system_path: "config/instructions/vortex_system.md"
+      domain_policy_path: "config/instructions/domain_policy.md"
+    agent:
+      web_allowlist: []
+    tools:
+      web:
+        enabled: false
+        allow_domains: []
+    security:
+      web:
+        strict: true
+        allowlist_domains: []
+    continuous:
+      ingest_web: false
+      ingest_urls: []
+      trigger:
+        enabled: true
+        min_new_docs: 2
+        min_novelty: 0.35
+        min_successes: 1
+      filter:
+        min_quality: 0.5
+        max_repeat_ratio: 0.5
+        min_chars: 300
+        min_novelty: 0.35
+        semantic_dedup_threshold: 0.96
+        quarantine_limit: 300
+      replay:
+        max_items: 10000
+        top_frac: 0.8
+        random_frac: 0.2
+        sample_size: 96
+        seed_chunks: 80
+      source_weights:
+        episode: 2.0
+        web: 1.0
+        memory: 1.5
+        logs: 0.7
+        unknown: 1.0
+      local_sources:
+        enabled: true
+        include_repo: true
+        include_local_corpus: true
+        include_lessons: true
+        include_logs: false
+        include_memory: false
+        repo_paths:
+          - "README.md"
+          - "src"
+          - "tests"
+          - "scripts"
+          - "docs"
+          - "config"
+          - "../vortex-chat/src"
+          - "../vortex-chat/package.json"
+    autolearn:
+      enabled: false
+      web_ingest: false
+      url_discovery: false
+      allow_domains: []
+    hf_train:
+      enabled: false
+      manual_promotion_only: true
+    local_lab:
+      progress_path: "data/local_lab/progress.json"
+      lessons_path: "data/local_lab/lessons"
+      workspaces_path: "data/local_lab/workspaces"
+      sandbox_root: "data/workspaces"
+    profile_contract:
+      offline_required: true
+      require_web_disabled: true
+      require_ollama: false
+      require_external_engine: sglang
+      require_local_base_url: true
+      require_docker: true
+      disable_fallbacks: true
+      approved_training_sources_only: false
+      min_host_ram_free_mb: 4096
+    voice:
+      enabled: true
+      push_to_talk: true
+      vad_enabled: true
+      whisper_model: "small"
+      tts_model: "tts_models/en/ljspeech/tacotron2-DDC"
+      output_dir: "data/multimodal/voice"
+      device: auto
+      compute_type: int8
+    camera:
+      enabled: true
+      device_id: default
+      frame_width: 960
+      frame_height: 540
+      fps: 24
+    gesture:
+      enabled: true
+      mediapipe_enabled: true
+      pinch_threshold: 0.065
+      open_palm_threshold: 0.58
+      fist_threshold: 0.22
+      swipe_velocity_threshold: 0.12
+      dwell_ms: 500
+      debounce_ms: 140
+      smoothing: 0.4
+      model_asset_path: "../vortex-chat/public/models/hand_landmarker.task"
+    spatial_ui:
+      enabled: true
+      workspace_name: "Spatial Workspace"
+      perspective_enabled: true
+      default_perspective: 1100
+      stage_width: 1440
+      stage_height: 900
+    obsidian:
+      enabled: true
+      vault_path: "data/obsidian_vault"
+      folder_map:
+        architecture: "Projects/Vortex/Architecture"
+        session: "Projects/Vortex/Sessions"
+        decision: "Projects/Vortex/Decisions"
+        prompt: "Projects/Vortex/Prompts"
+        bug: "Projects/Vortex/Bugs"
+        experiment: "Projects/Vortex/Experiments"
+    multimodal_memory:
+      enabled: true
+      state_path: "data/multimodal/spatial_session.json"
+      max_notes: 4
+      max_chars: 1200
+    multimodal_context:
+      enabled: true
+      max_chars: 1800
+      include_memory: true
+      include_spatial_selection: true
+      include_voice: true
+      include_gesture: true
+    presentation:
+      default_panel_type: presentation
+      page_step: 1
+      swipe_enabled: true
+    workspace_panels:
+      max_active_panels: 12
+      default_width: 360
+      default_height: 220
+      default_kinds: ["note", "presentation", "browser", "image", "obsidian", "sketch"]
+  rtx4080_16gb_programming_runtime_docker:
+    # Default Docker runtime: stable programming stack backed by the compose SGLang service.
+    base_profile: rtx4080_16gb_programming_local
+    core:
+      external_base_url: "http://sglang-runtime:30000"
+    agent:
+      max_iters: 2
+    rag:
+      enabled: true
+      top_k: 6
+      max_chars: 2200
+  ethical_security_lab_4080_offensive_lab:
+    # Offensive simulation profile for isolated, user-owned security labs only.
+    # Local-only and fail-closed by contract.
+    base_profile: local_learning_lab_4080
+    core:
+      backend: external
+      external_engine: ollama
+      external_base_url: "http://127.0.0.1:11434"
+      external_model: "qwen3:14b"
+      backend_fallback: null
+      hf_system_prompt: "You are Vortex in Security-Lab offensive-simulation mode for isolated, user-owned systems only. Help with lab-scoped adversarial emulation, detection bypass analysis, and exploit-chain reasoning for defensive validation. Refuse malware development, credential theft, persistence, destructive payloads, and any non-lab target. Require explicit lab confirmation for high-risk requests and always include detection and remediation guidance."
+    agent:
+      web_allowlist: []
+    tools:
+      web:
+        enabled: false
+        allow_domains: []
+    security:
+      web:
+        strict: true
+        allowlist_domains: []
+    continuous:
+      ingest_web: false
+      web_discovery:
+        enabled: false
+        seed_queries: []
+        max_urls_per_tick: 0
+        max_queue: 0
+    autolearn:
+      enabled: false
+      web_ingest: false
+      url_discovery: false
+      allow_domains: []
+      code_index: true
+      code_analyze: true
+    local_lab:
+      enabled: true
+      track: python_fastapi_react
+      guardrails_enabled: true
+      lab_confirmation_token: LAB_CONFIRMED
+    autopilot:
+      enabled: false
+      autopatch_enabled: false
+      autopatch_require_approval: true
+    profile_contract:
+      offline_required: true
+      require_web_disabled: true
+      require_ollama: true
+      require_local_base_url: true
+      approved_training_sources_only: false
+      min_host_ram_free_mb: 4096
+  ethical_security_lab_4080_defensive:
+    # Defensive training profile for hardening and incident-response drills.
+    base_profile: ethical_security_lab_4080_offensive_lab
+    core:
+      hf_system_prompt: "You are Vortex in Security-Lab defensive mode. Teach secure coding, hardening, threat modeling, detection engineering, and incident response only for isolated systems owned by the user. Refuse non-consensual access, malware, persistence, destructive payloads, and production abuse. If a prompt is high risk, require explicit lab confirmation and finish with remediation and verification steps."
