@@ -6,7 +6,6 @@ import importlib.util
 import json
 import os
 import random
-import inspect
 import sys
 import time
 from copy import deepcopy
@@ -18,7 +17,7 @@ try:
 except Exception:  # pragma: no cover
     torch = None
 
-from .config import DEFAULT_SETTINGS_PATH, load_settings, validate_profile
+from .config import load_settings, load_settings_document, validate_profile
 from .device import detect_device
 from .utils.locks import FileLock, LockUnavailable
 
@@ -36,10 +35,7 @@ def check_deps(modules: list[str]) -> dict[str, str]:
 
 def _profile_checks(base_dir: Path) -> dict[str, str]:
     try:
-        import yaml  # type: ignore
-
-        data = yaml.safe_load(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8")) or {}
-        profiles = data.get("profiles", {}) or {}
+        profiles = load_settings_document().get("profiles", {}) or {}
     except Exception as exc:  # pragma: no cover
         return {"error": str(exc)}
     results: dict[str, str] = {}

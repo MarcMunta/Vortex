@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import importlib
 import json
 import os
 import subprocess
@@ -19,30 +20,110 @@ except Exception:  # pragma: no cover
     torch = None  # type: ignore[assignment,no-redef]
 
 from .config import load_settings, resolve_profile, validate_profile, resolve_web_allowlist, resolve_web_strict
-from .continuous.dataset import ingest_sources, collect_samples
-from .continuous.bootstrap import run_bootstrap
 from .device import detect_device
 from .doctor import check_deps, run_deep_checks
-from .model_loader import load_inference_model
 from .prompting.chat_format import build_chat_prompt
-from .server import run_server
 from .utils.locks import LockUnavailable, acquire_exclusive_lock, FileLock, is_lock_held
-from .agent.agent_loop import run_demo_agent
-from .training.train_backend import train_once_backend
 from .utils.oom import is_oom_error, clear_cuda_cache
-from .learning_loop.data_collector import collect_from_episodes
-from .learning_loop.data_curator import curate_dataset
-from .learning_loop.trainer import train_qlora
-from .learning_loop.evaluator import evaluate_adapter, log_eval
-from .learning_loop.promoter import promote_latest
-from .agent.runner import run_agent
-from .runtime.vram_governor import decide_max_new_tokens
-from .autopilot import run_autopilot_loop, run_autopilot_tick, run_autopatch_once
-from .continuous.promotion import promote_quarantine_run
 from .utils.vram import get_vram_free_mb
 from .skills.cli import register_skills_cli
 
 _INTERNAL_TRAIN_SUBPROCESS_ENV = "C3RNT2_INTERNAL_TRAIN_SUBPROCESS"
+
+
+def _lazy_symbol(module_name: str, attr: str) -> Any:
+    module = importlib.import_module(module_name, package=__package__)
+    return getattr(module, attr)
+
+
+def ingest_sources(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".continuous.dataset", "ingest_sources")(*args, **kwargs)
+
+
+def collect_samples(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".continuous.dataset", "collect_samples")(*args, **kwargs)
+
+
+def run_bootstrap(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".continuous.bootstrap", "run_bootstrap")(*args, **kwargs)
+
+
+def load_inference_model(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".model_loader", "load_inference_model")(*args, **kwargs)
+
+
+def run_server(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".server", "run_server")(*args, **kwargs)
+
+
+def run_demo_agent(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".agent.agent_loop", "run_demo_agent")(*args, **kwargs)
+
+
+def train_once_backend(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".training.train_backend", "train_once_backend")(
+        *args, **kwargs
+    )
+
+
+def collect_from_episodes(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".learning_loop.data_collector", "collect_from_episodes")(
+        *args, **kwargs
+    )
+
+
+def curate_dataset(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".learning_loop.data_curator", "curate_dataset")(
+        *args, **kwargs
+    )
+
+
+def train_qlora(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".learning_loop.trainer", "train_qlora")(*args, **kwargs)
+
+
+def evaluate_adapter(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".learning_loop.evaluator", "evaluate_adapter")(
+        *args, **kwargs
+    )
+
+
+def log_eval(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".learning_loop.evaluator", "log_eval")(*args, **kwargs)
+
+
+def promote_latest(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".learning_loop.promoter", "promote_latest")(
+        *args, **kwargs
+    )
+
+
+def run_agent(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".agent.runner", "run_agent")(*args, **kwargs)
+
+
+def decide_max_new_tokens(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".runtime.vram_governor", "decide_max_new_tokens")(
+        *args, **kwargs
+    )
+
+
+def run_autopilot_loop(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".autopilot", "run_autopilot_loop")(*args, **kwargs)
+
+
+def run_autopilot_tick(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".autopilot", "run_autopilot_tick")(*args, **kwargs)
+
+
+def run_autopatch_once(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".autopilot", "run_autopatch_once")(*args, **kwargs)
+
+
+def promote_quarantine_run(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".continuous.promotion", "promote_quarantine_run")(
+        *args, **kwargs
+    )
 
 
 def _load_and_validate(profile: str | None, override: Callable[[dict], dict] | None = None) -> dict:

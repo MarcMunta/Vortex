@@ -9,6 +9,10 @@ data/
 *.pyd
 .pids/
 logs/
+playwright-report/
+test-results/
+vortex-chat/playwright-report/
+vortex-chat/test-results/
 
 # Skills store runtime state / untrusted staging
 c3_rnt2_ai/skills/.state.json

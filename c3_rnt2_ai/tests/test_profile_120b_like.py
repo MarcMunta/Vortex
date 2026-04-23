@@ -7,9 +7,19 @@ from types import SimpleNamespace
 from c3rnt2.config import load_settings, validate_profile
 from c3rnt2.promotion.gating import bench_gate, log_promotion_decision
 
+BASE_DIR = Path(__file__).resolve().parents[1]
+
+
+def _write_profile_support_files(base_dir: Path) -> None:
+    instructions_dir = base_dir / "config" / "instructions"
+    instructions_dir.mkdir(parents=True, exist_ok=True)
+    (instructions_dir / "vortex_system.md").write_text("system\n", encoding="utf-8")
+    (instructions_dir / "domain_policy.md").write_text("policy\n", encoding="utf-8")
+
 
 def test_profile_120b_like_loads_and_is_coherent(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
+    _write_profile_support_files(tmp_path)
     settings = load_settings("rtx4080_16gb_120b_like")
     validate_profile(settings, base_dir=tmp_path)
 
@@ -41,6 +51,7 @@ def test_doctor_deep_mock_profile_120b_like_passes(tmp_path: Path, monkeypatch) 
     from c3rnt2 import doctor as doctor_mod
 
     monkeypatch.chdir(tmp_path)
+    _write_profile_support_files(tmp_path)
     monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: object() if name == "peft" else None)
 
     # Skip base (dependency) checks to keep CI offline/fast.

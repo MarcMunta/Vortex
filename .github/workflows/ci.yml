@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-quality:
+    name: Backend Quality
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/c3_rnt2_ai/src
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: c3_rnt2_ai/pyproject.toml
+
+      - name: Install backend smoke dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --no-deps -e ./c3_rnt2_ai
+          python -m pip install pytest typer rich pyyaml numpy psutil requests zstandard lz4 tqdm fastapi uvicorn httpx
+
+      - name: Compile backend sources
+        run: python -m compileall c3_rnt2_ai/src/c3rnt2
+
+      - name: Import smoke
+        run: |
+          python - <<'PY'
+          import c3rnt2.__main__
+          import c3rnt2.bench
+          import c3rnt2.model_loader
+          import c3rnt2.server
+          import c3rnt2.control_server
+          print("import smoke ok")
+          PY
+
+      - name: Config and profile smoke
+        run: |
+          python -m pytest \
+            c3_rnt2_ai/tests/test_config_defaults.py \
+            c3_rnt2_ai/tests/test_settings_normalization.py \
+            c3_rnt2_ai/tests/test_profile_contract_validation.py \
+            c3_rnt2_ai/tests/test_multimodal_config.py \
+            c3_rnt2_ai/tests/test_profile_autonomous.py \
+            c3_rnt2_ai/tests/test_profile_120b_like.py \
+            c3_rnt2_ai/tests/test_doctor_baseline_required_120b_like.py \
+            c3_rnt2_ai/tests/test_lab_guard.py \
+            c3_rnt2_ai/tests/test_no_merge_markers.py \
+            -q
+
+      - name: Control plane smoke
+        run: |
+          python -m pytest \
+            c3_rnt2_ai/tests/test_control_server_summary.py \
+            c3_rnt2_ai/tests/test_control_server_training.py \
+            c3_rnt2_ai/tests/test_control_server_composeless.py \
+            -q
+
+      - name: API modular smoke
+        run: |
+          python -m pytest \
+            c3_rnt2_ai/tests/test_server_chat_sessions.py \
+            c3_rnt2_ai/tests/test_server_multimodal_api.py \
+            c3_rnt2_ai/tests/test_server_local_lab.py \
+            c3_rnt2_ai/tests/test_server_rag.py \
+            c3_rnt2_ai/tests/test_server_reload_request.py \
+            c3_rnt2_ai/tests/test_hf_adapters_routing.py \
+            c3_rnt2_ai/tests/test_shared_expert.py \
+            -q
+
+  frontend-quality:
+    name: Frontend Quality
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vortex-chat
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: vortex-chat/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Frontend build
+        run: npm run build
+
+      - name: Frontend smoke
+        run: npm run test:smoke
+
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            vortex-chat/playwright-report
+            vortex-chat/test-results
+          if-no-files-found: ignore
