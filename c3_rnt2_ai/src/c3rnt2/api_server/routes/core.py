@@ -22,7 +22,7 @@ def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDepend
     @app.get("/v1/models")
     async def list_models():
         return JSONResponse(
-            content=legacy._models_list_payload(app.state, settings, base_dir)
+            content=deps.models_list_payload(app.state, settings, base_dir)
         )
 
     @app.get("/metrics")
