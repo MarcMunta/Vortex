@@ -1,12 +1,12 @@
 import {
   AutonomyStreamPayload,
   AutonomyStatus,
-  ControlStatus,
   MultimodalStatus,
   MultimodalStreamPayload,
   TrainingRunSummary,
   TrainingStreamPayload,
 } from "../types";
+import { ControlContractClient } from "../contracts.generated";
 import { parseEventData, requestJson } from "./apiClient";
 
 const resolveBaseUrl = (): string => {
@@ -19,14 +19,11 @@ const resolveBaseUrl = (): string => {
 
 class ControlService {
   private readonly baseUrl = resolveBaseUrl();
+  private readonly client = new ControlContractClient(this.baseUrl, requestJson);
 
-  private async json<T>(path: string, init?: RequestInit): Promise<T> {
-    return requestJson<T>(`${this.baseUrl}${path}`, init);
-  }
-
-  async fetchStatus(): Promise<ControlStatus | null> {
+  async fetchStatus() {
     try {
-      return await this.json<ControlStatus>("/control/status", { method: "GET" });
+      return await this.client.get("GET /control/status");
     } catch {
       return null;
     }
@@ -35,41 +32,35 @@ class ControlService {
   async bootstrap(
     force: boolean = false,
     mode: "ensure" | "rebuild" = (force ? "rebuild" : "ensure"),
-  ): Promise<{ ok: boolean; started?: boolean; reason?: string; mode?: string; stage?: string; log_path?: string }> {
-    return this.json("/control/bootstrap", {
-      method: "POST",
-      body: JSON.stringify({ force, mode }),
-    });
+  ) {
+    return this.client.post("POST /control/bootstrap", { force, mode });
   }
 
-  async initModel(): Promise<{ ok: boolean; started?: boolean }> {
-    return this.json("/control/model/init", { method: "POST", body: JSON.stringify({}) });
+  async initModel() {
+    return this.client.post("POST /control/model/init");
   }
 
-  async restartRuntime(): Promise<{ ok: boolean }> {
-    return this.json("/control/runtime/restart", { method: "POST", body: JSON.stringify({}) });
+  async restartRuntime() {
+    return this.client.post("POST /control/runtime/restart");
   }
 
-  async reloadInstructions(): Promise<{ ok: boolean }> {
-    return this.json("/control/instructions/reload", { method: "POST", body: JSON.stringify({}) });
+  async reloadInstructions() {
+    return this.client.post("POST /control/instructions/reload");
   }
 
   async getAllowlist(): Promise<string[]> {
-    const payload = await this.json<{ ok: boolean; domains?: string[] }>("/control/internet/allowlist", { method: "GET" });
+    const payload = await this.client.get("GET /control/internet/allowlist");
     return Array.isArray(payload.domains) ? payload.domains : [];
   }
 
   async saveAllowlist(domains: string[]): Promise<string[]> {
-    const payload = await this.json<{ ok: boolean; domains?: string[] }>("/control/internet/allowlist", {
-      method: "POST",
-      body: JSON.stringify({ domains }),
-    });
+    const payload = await this.client.post("POST /control/internet/allowlist", { domains });
     return Array.isArray(payload.domains) ? payload.domains : [];
   }
 
   async getMultimodalStatus(): Promise<MultimodalStatus | null> {
     try {
-      const payload = await this.json<{ ok: boolean; status?: MultimodalStatus }>("/control/multimodal/status", { method: "GET" });
+      const payload = await this.client.get("GET /control/multimodal/status");
       return payload.status || null;
     } catch {
       return null;
@@ -77,52 +68,43 @@ class ControlService {
   }
 
   async getVoiceStatus() {
-    return this.json("/control/voice/status", { method: "GET" });
+    return this.client.get("GET /control/voice/status");
   }
 
   async restartVoice() {
-    return this.json("/control/voice/restart", { method: "POST", body: JSON.stringify({}) });
+    return this.client.post("POST /control/voice/restart");
   }
 
   async getObsidianStatus() {
-    return this.json("/control/obsidian/status", { method: "GET" });
+    return this.client.get("GET /control/obsidian/status");
   }
 
   async configureObsidian(payload: { enabled?: boolean; vault_path?: string }) {
-    return this.json("/control/obsidian/config", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    return this.client.post("POST /control/obsidian/config", payload);
   }
 
   async startTraining(
     mode: "quick" | "full",
     source?: string,
-  ): Promise<{ ok: boolean; run_id?: string; status?: string; queue_reason?: string | null; reused?: boolean; error?: string }> {
-    return this.json("/control/training/start", {
-      method: "POST",
-      body: JSON.stringify({ mode, source }),
-    });
+  ) {
+    return this.client.post("POST /control/training/start", { mode, source });
   }
 
   async resetTrainingState(payload?: { clear_runs?: boolean; clear_learning_queue?: boolean }) {
-    return this.json<{ ok: boolean; removed_runs?: number; runs?: TrainingRunSummary[]; autonomy?: AutonomyStatus }>("/control/training/reset", {
-      method: "POST",
-      body: JSON.stringify({
+    return this.client.post("POST /control/training/reset", {
         clear_runs: payload?.clear_runs ?? true,
         clear_learning_queue: payload?.clear_learning_queue ?? true,
-      }),
     });
   }
 
   async getTrainingRuns(): Promise<TrainingRunSummary[]> {
-    const payload = await this.json<{ ok: boolean; runs?: TrainingRunSummary[] }>("/control/training/runs", { method: "GET" });
+    const payload = await this.client.get("GET /control/training/runs");
     return Array.isArray(payload.runs) ? payload.runs : [];
   }
 
   async getTrainingRun(runId: string): Promise<TrainingRunSummary | null> {
     try {
-      const payload = await this.json<{ ok: boolean; run?: TrainingRunSummary }>(`/control/training/runs/${encodeURIComponent(runId)}`, { method: "GET" });
+      const payload = await this.client.get("GET /control/training/runs/{run_id}", { run_id: runId });
       return payload.run || null;
     } catch {
       return null;
@@ -130,12 +112,12 @@ class ControlService {
   }
 
   async getTrainingRunEvents(runId: string) {
-    const payload = await this.json<{ ok: boolean; events?: TrainingRunSummary["events"] }>(`/control/training/runs/${encodeURIComponent(runId)}/events`, { method: "GET" });
+    const payload = await this.client.get("GET /control/training/runs/{run_id}/events", { run_id: runId });
     return Array.isArray(payload.events) ? payload.events : [];
   }
 
   async getTrainingRunLogs(runId: string) {
-    const payload = await this.json<{ ok: boolean; logs?: Record<string, string[]> }>(`/control/training/runs/${encodeURIComponent(runId)}/logs`, { method: "GET" });
+    const payload = await this.client.get("GET /control/training/runs/{run_id}/logs", { run_id: runId });
     return payload.logs || {};
   }
 
@@ -143,7 +125,7 @@ class ControlService {
     onMessage: (payload: TrainingStreamPayload) => void,
     onError?: (error: Event | Error) => void,
   ): () => void {
-    const source = new EventSource(`${this.baseUrl}/control/training/stream`);
+    const source = this.client.stream("GET /control/training/stream");
     source.onmessage = (event) => {
       try {
         const payload = parseEventData<TrainingStreamPayload>(event.data, "training_stream_parse_failed");
@@ -160,25 +142,19 @@ class ControlService {
 
   async getAutonomyStatus(): Promise<AutonomyStatus | null> {
     try {
-      const payload = await this.json<{ ok: boolean; autonomy?: AutonomyStatus }>("/control/autonomy/status", { method: "GET" });
+      const payload = await this.client.get("GET /control/autonomy/status");
       return payload.autonomy || null;
     } catch {
       return null;
     }
   }
 
-  async startAutonomy(): Promise<{ ok: boolean; enabled?: boolean }> {
-    return this.json("/control/autonomy/start", {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
+  async startAutonomy() {
+    return this.client.post("POST /control/autonomy/start");
   }
 
-  async stopAutonomy(): Promise<{ ok: boolean; enabled?: boolean }> {
-    return this.json("/control/autonomy/stop", {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
+  async stopAutonomy() {
+    return this.client.post("POST /control/autonomy/stop");
   }
 
   async configureAutonomy(config: {
@@ -189,18 +165,15 @@ class ControlService {
     multi_agent_dialogue_enabled?: boolean;
     descriptive_reports_enabled?: boolean;
     live_autoedit_enabled?: boolean;
-  }): Promise<{ ok: boolean; autonomy?: AutonomyStatus }> {
-    return this.json("/control/autonomy/config", {
-      method: "POST",
-      body: JSON.stringify(config),
-    });
+  }) {
+    return this.client.post("POST /control/autonomy/config", config);
   }
 
   subscribeAutonomyStream(
     onMessage: (payload: AutonomyStreamPayload) => void,
     onError?: (error: Event | Error) => void,
   ): () => void {
-    const source = new EventSource(`${this.baseUrl}/control/autonomy/stream`);
+    const source = this.client.stream("GET /control/autonomy/stream");
     source.onmessage = (event) => {
       try {
         const payload = parseEventData<AutonomyStreamPayload>(event.data, "autonomy_stream_parse_failed");
@@ -219,7 +192,7 @@ class ControlService {
     onMessage: (payload: MultimodalStreamPayload) => void,
     onError?: (error: Event | Error) => void,
   ): () => void {
-    const source = new EventSource(`${this.baseUrl}/control/multimodal/stream`);
+    const source = this.client.stream("GET /control/multimodal/stream");
     source.onmessage = (event) => {
       try {
         const payload = parseEventData<MultimodalStreamPayload>(event.data, "multimodal_stream_parse_failed");

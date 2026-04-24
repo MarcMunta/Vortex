@@ -24,6 +24,8 @@ import uvicorn
 
 from .config import load_settings
 from .control_plane import create_control_app
+from .control_plane.dependencies import ControlDependencies
+from .control_plane.services import RuntimeCommandService
 from .control_plane.storage import OperationalStore
 from .instructions import load_instruction_bundle
 from .model_init import DEFAULT_MODEL_ID, model_cache_status, resolve_cache_dir
@@ -338,6 +340,13 @@ class ControlState:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.storage = OperationalStore(self.storage_path)
+        self.runtime_commands = RuntimeCommandService(
+            base_dir=self.base_dir,
+            compose_file=self.compose_file,
+            api_profile=self.api_profile,
+            training_profile=self.training_profile,
+            compose_actions_enabled=self.compose_actions_enabled,
+        )
 
         self._lock = threading.RLock()
         self._bootstrap_thread: threading.Thread | None = None
@@ -399,31 +408,10 @@ class ControlState:
             self._write_state_record("bootstrap", current, self.bootstrap_state_path)
 
     def _compose_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        env = dict(os.environ)
-        env.setdefault("VORTEX_API_PROFILE", self.api_profile)
-        if extra:
-            env.update(extra)
-        return env
+        return self.runtime_commands.compose_env(extra)
 
     def _compose_cmd_prefix(self) -> list[str]:
-        docker_bin = shutil.which("docker")
-        if docker_bin is not None:
-            try:
-                probe = subprocess.run(
-                    [docker_bin, "compose", "version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5.0,
-                    check=False,
-                    env=self._compose_env(),
-                )
-                if probe.returncode == 0:
-                    return ["docker", "compose"]
-            except OSError:
-                pass
-        if shutil.which("docker-compose") is not None:
-            return ["docker-compose"]
-        return ["docker", "compose"]
+        return self.runtime_commands.compose_cmd_prefix()
 
     def _compose_cmd(self, *args: str) -> list[str]:
         return [*self._compose_cmd_prefix(), "-f", str(self.compose_file), *args]
@@ -436,42 +424,15 @@ class ControlState:
         log_path: Path | None = None,
         line_callback: Callable[[str], None] | None = None,
     ) -> tuple[int, str]:
-        cmd = self._compose_cmd(*args)
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(self.base_dir),
-            env=self._compose_env(env),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
+        return self.runtime_commands.run_compose(
+            args,
+            env=env,
+            log_path=log_path,
+            line_callback=line_callback,
         )
-        lines: list[str] = []
-        sink = None
-        if log_path is not None:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            sink = log_path.open("a", encoding="utf-8")
-        try:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                clean = line.rstrip()
-                lines.append(clean)
-                if sink is not None:
-                    sink.write(line)
-                    sink.flush()
-                if line_callback is not None:
-                    try:
-                        line_callback(clean)
-                    except Exception:
-                        pass
-        finally:
-            if sink is not None:
-                sink.close()
-        return int(proc.wait()), "\n".join(lines)
 
     def _should_use_local_job_runner(self) -> bool:
-        return (not self.compose_actions_enabled) or shutil.which("docker") is None
+        return (not self.compose_actions_enabled) or self.runtime_commands.should_use_local_job_runner()
 
     def _run_local_command(
         self,
@@ -481,41 +442,12 @@ class ControlState:
         log_path: Path | None = None,
         line_callback: Callable[[str], None] | None = None,
     ) -> tuple[int, str]:
-        child_env = dict(os.environ)
-        if env:
-            child_env.update(env)
-        proc = subprocess.Popen(
+        return self.runtime_commands.run_local_command(
             cmd,
-            cwd=str(self.base_dir),
-            env=child_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
+            env=env,
+            log_path=log_path,
+            line_callback=line_callback,
         )
-        lines: list[str] = []
-        sink = None
-        if log_path is not None:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            sink = log_path.open("a", encoding="utf-8")
-        try:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                clean = line.rstrip()
-                lines.append(clean)
-                if sink is not None:
-                    sink.write(line)
-                    sink.flush()
-                if line_callback is not None:
-                    try:
-                        line_callback(clean)
-                    except Exception:
-                        pass
-        finally:
-            if sink is not None:
-                sink.close()
-        return int(proc.wait()), "\n".join(lines)
 
     def _run_local_training_job(
         self,
@@ -526,9 +458,8 @@ class ControlState:
         parallel_runtime_training: bool = False,
         line_callback: Callable[[str], None] | None = None,
     ) -> tuple[int, str]:
-        reuse_dataset = mode == "quick"
         cmd = [sys.executable, "-m", "c3rnt2", "train-once", "--profile", self.training_profile]
-        if reuse_dataset:
+        if mode == "quick":
             cmd.append("--reuse-dataset")
         if parallel_runtime_training:
             cmd.append("--allow-parallel-runtime")
@@ -4776,7 +4707,7 @@ def main() -> None:
         compose_actions_enabled=not bool(args.disable_compose_actions),
         assume_docker_ready=bool(args.assume_docker_ready),
     )
-    app = create_control_app(state)
+    app = create_control_app(ControlDependencies.from_state(state))
     uvicorn.run(app, host=str(args.host), port=int(args.port), log_level="info")
 
 

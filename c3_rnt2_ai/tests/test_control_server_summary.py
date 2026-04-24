@@ -75,6 +75,7 @@ def test_training_runs_endpoint_returns_summary_payload(tmp_path: Path, monkeypa
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
+    from c3rnt2.control_plane.dependencies import ControlDependencies
     from c3rnt2.control_server import create_control_app
 
     state = _make_state(tmp_path, monkeypatch)
@@ -99,7 +100,7 @@ def test_training_runs_endpoint_returns_summary_payload(tmp_path: Path, monkeypa
     )
     state._append_run_event(run_id, phase="done", message="trainer_finished", progress_pct=1.0)
 
-    client = TestClient(create_control_app(state))
+    client = TestClient(create_control_app(ControlDependencies.from_state(state)))
     resp = client.get("/control/training/runs")
 
     assert resp.status_code == 200

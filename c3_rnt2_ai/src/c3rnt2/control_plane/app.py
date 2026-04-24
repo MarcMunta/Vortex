@@ -17,8 +17,7 @@ _CONTROL_CORS_ORIGINS = [
 ]
 
 
-def create_control_app(state: object | ControlDependencies) -> FastAPI:
-    deps = state if isinstance(state, ControlDependencies) else ControlDependencies.from_state(state)
+def create_control_app(deps: ControlDependencies) -> FastAPI:
     app = FastAPI(title="Vortex Control", version="1.0.0")
     app.add_middleware(
         CORSMiddleware,

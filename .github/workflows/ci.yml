@@ -83,6 +83,9 @@ jobs:
             c3_rnt2_ai/tests/test_shared_expert.py \
             -q
 
+      - name: Real FastAPI integration smoke
+        run: python -m pytest c3_rnt2_ai/tests/test_real_fastapi_integration.py -q
+
   frontend-quality:
     name: Frontend Quality
     runs-on: ubuntu-latest

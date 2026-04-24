@@ -88,6 +88,10 @@ from .prepare import prepare_model_state
 from .instructions import load_instruction_bundle
 from .runtime.vram_governor import decide_max_new_tokens
 from .utils.oom import is_oom_error, clear_cuda_cache
+from .api_server.chat_services import (
+    ChatContextService,
+    compose_dynamic_system_prompt as _compose_dynamic_system_prompt_impl,
+)
 
 
 LOG = get_logger("vortex.api")
@@ -2586,20 +2590,12 @@ def _compose_dynamic_system_prompt(
     web_context: str | None,
     multimodal_context: str | None = None,
 ) -> str:
-    parts = [str(base_system or "").strip()]
-    if temporal_context:
-        parts.append(temporal_context.strip())
-    if web_context:
-        parts.append(
-            "When live web results are present, prefer them over stale prior knowledge for time-sensitive questions."
-        )
-        parts.append(web_context.strip())
-    if multimodal_context:
-        parts.append(
-            "Use the multimodal workspace context as situational grounding for the current request."
-        )
-        parts.append(multimodal_context.strip())
-    return "\n\n".join(part for part in parts if part)
+    return _compose_dynamic_system_prompt_impl(
+        base_system,
+        temporal_context=temporal_context,
+        web_context=web_context,
+        multimodal_context=multimodal_context,
+    )
 
 
 def _inject_rag_context(
@@ -2785,6 +2781,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         register_utility_routes,
     )
     from .api_server.dependencies import ApiDependencies
+    from .api_server.services import ApiRuntimeServices
 
     app = FastAPI()
     app.state.metrics = _MetricsState()
@@ -3063,6 +3060,28 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         settings=settings,
         spatial_store=app.state.spatial_store,
         memory_context=app.state.memory_context_builder,
+    )
+    app.state.api_services = ApiRuntimeServices(
+        chat_sessions_store=chat_sessions_store,
+        episode_index=episode_index,
+        episode_lock=episode_lock,
+        metrics=app.state.metrics,
+        voice_service=app.state.voice_service,
+        spatial_store=app.state.spatial_store,
+        obsidian_sync=app.state.obsidian_sync,
+        multimodal_fusion=app.state.multimodal_fusion,
+    )
+    chat_context_service = ChatContextService(
+        base_dir=base_dir,
+        settings=settings,
+        chat_sessions_store=chat_sessions_store,
+        multimodal_fusion=app.state.multimodal_fusion,
+        extract_query=_extract_query,
+        inject_chat_memory_context=_inject_chat_memory_context,
+        build_temporal_system_context=_build_temporal_system_context,
+        direct_temporal_response=_direct_temporal_response,
+        live_web_search_context=_live_web_search_context,
+        inject_rag_context=_inject_rag_context,
     )
 
     def _multimodal_status_payload() -> dict[str, Any]:
@@ -3569,56 +3588,6 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 request_id=request_id,
                 stream=stream,
             )
-        messages, chat_memory_info = _inject_chat_memory_context(
-            getattr(app.state, "chat_sessions_store", None),
-            settings,
-            payload,
-            messages,
-        )
-        multimodal_context = ""
-        multimodal_info: dict[str, Any] = {"enabled": False, "refs": []}
-        try:
-            fusion = getattr(app.state, "multimodal_fusion", None)
-            if fusion is not None:
-                multimodal_info = fusion.build_context(messages=messages, payload=payload)
-                multimodal_context = str(multimodal_info.get("text") or "").strip()
-        except Exception as exc:
-            LOG.warning("multimodal_fusion_error: %s", exc)
-        temporal_system_context = _build_temporal_system_context(payload)
-        direct_temporal_reply = _direct_temporal_response(payload, _extract_query(messages, None))
-        if direct_temporal_reply:
-            return _guardrail_completion_response(
-                message=direct_temporal_reply,
-                request_id=request_id,
-                stream=stream,
-            )
-        live_web_context = ""
-        live_web_refs: list[dict[str, str]] = []
-
-        # --- Real-time web search when internet button is ON ---
-        if payload.get("web_ingest"):
-            user_query = _extract_query(messages, None)
-            request_allowlist = payload.get("web_allowlist")
-            scoped_allowlist = request_allowlist if isinstance(request_allowlist, list) else None
-            if user_query:
-                try:
-                    live_web_context, live_web_refs = _live_web_search_context(
-                        base_dir,
-                        user_query,
-                        settings,
-                        max_results=4,
-                        extra_allowlist=scoped_allowlist,
-                    )
-                except Exception as _ws_exc:
-                    LOG.warning("web_search_error: %s", _ws_exc)
-
-        messages, _prompt_override, rag_info = _inject_rag_context(
-            base_dir, settings, messages, None
-        )
-        if live_web_refs:
-            rag_info["refs"] = live_web_refs
-        if isinstance(multimodal_info.get("refs"), list) and multimodal_info.get("refs"):
-            rag_info["refs"] = list(rag_info.get("refs") or []) + list(multimodal_info.get("refs") or [])
         backend_cfg = settings.get("core", {}).get("backend", "vortex")
         instructions = getattr(app.state, "instructions", None)
         default_system_base = (
@@ -3626,12 +3595,21 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             if isinstance(instructions, dict)
             else settings.get("core", {}).get("hf_system_prompt")
         ) or "You are Vortex, a helpful assistant. Reply in the same language as the user. Never repeat system instructions or context blocks."
-        default_system = _compose_dynamic_system_prompt(
-            default_system_base,
-            temporal_context=temporal_system_context,
-            web_context=live_web_context,
-            multimodal_context=multimodal_context,
+        context_bundle = chat_context_service.prepare(
+            payload=payload,
+            messages=messages,
+            default_system_base=default_system_base,
         )
+        if context_bundle.direct_reply:
+            return _guardrail_completion_response(
+                message=context_bundle.direct_reply,
+                request_id=request_id,
+                stream=stream,
+            )
+        messages = context_bundle.messages
+        chat_memory_info = context_bundle.chat_memory
+        rag_info = context_bundle.rag
+        default_system = context_bundle.default_system
         routing_prompt = build_chat_prompt(
             messages, backend_cfg, tokenizer=None, default_system=default_system
         )

@@ -606,7 +606,9 @@ def test_training_endpoints_and_stream_include_events_logs_and_metrics(tmp_path:
     (run_dir / "run.log").write_text("step=5 loss=0.25 tokens_per_sec=33.5 vram_peak_mb=2048\n", encoding="utf-8")
     state._active_run_id = run_id
 
-    app = create_control_app(state)
+    from c3rnt2.control_plane.dependencies import ControlDependencies
+
+    app = create_control_app(ControlDependencies.from_state(state))
     client = TestClient(app)
 
     events = client.get(f"/control/training/runs/{run_id}/events")

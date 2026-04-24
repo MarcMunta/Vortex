@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from ..contracts import ChatSessionSyncRequest, ChatSessionsResponse, OperationalStatusResponse
 from ..dependencies import ApiDependencies
+from ..services import get_api_services
 
 
 def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDependencies) -> None:
@@ -27,7 +28,8 @@ def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDepend
 
     @app.get("/metrics")
     async def metrics():
-        text = getattr(app.state, "metrics", deps.metrics_factory()).render_prometheus()
+        services = get_api_services(app)
+        text = getattr(services, "metrics", deps.metrics_factory()).render_prometheus()
         sm = getattr(app.state, "skills_metrics", None)
         if sm is not None and hasattr(sm, "render_prometheus"):
             try:
@@ -38,7 +40,7 @@ def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDepend
 
     @app.get("/v1/chat/sessions", response_model=ChatSessionsResponse)
     async def list_chat_sessions(account_id: str):
-        store = getattr(app.state, "chat_sessions_store", None)
+        store = get_api_services(app).chat_sessions_store
         if store is None:
             return JSONResponse(content={"ok": True, "sessions": []})
         account = str(account_id or "").strip()
@@ -58,7 +60,7 @@ def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDepend
 
     @app.post("/v1/chat/sessions/sync", response_model=ChatSessionsResponse)
     async def sync_chat_sessions(request: Request):
-        store = getattr(app.state, "chat_sessions_store", None)
+        store = get_api_services(app).chat_sessions_store
         if store is None:
             raise HTTPException(
                 status_code=501,
@@ -89,7 +91,7 @@ def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDepend
 
     @app.delete("/v1/chat/sessions")
     async def delete_chat_sessions(account_id: str, session_id: str | None = None):
-        store = getattr(app.state, "chat_sessions_store", None)
+        store = get_api_services(app).chat_sessions_store
         if store is None:
             return JSONResponse(content={"ok": True})
         account = str(account_id or "").strip()
