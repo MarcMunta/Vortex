@@ -3,56 +3,53 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from ..dependencies import ControlDependencies
 from ..models import TrainingResetRequest, TrainingStartRequest
 
-if TYPE_CHECKING:
-    from ...control_server import ControlState
 
-
-def build_training_router(state: "ControlState") -> APIRouter:
+def build_training_router(deps: ControlDependencies) -> APIRouter:
     router = APIRouter()
 
     @router.post("/control/training/start")
-    async def control_training_start(payload: TrainingStartRequest) -> dict[str, Any]:
+    async def control_training_start(payload: TrainingStartRequest) -> dict[str, object]:
         return await asyncio.to_thread(
-            state.start_training,
+            deps.start_training,
             payload.mode,
             source=payload.source,
         )
 
     @router.post("/control/training/reset")
-    async def control_training_reset(payload: TrainingResetRequest) -> dict[str, Any]:
+    async def control_training_reset(payload: TrainingResetRequest) -> dict[str, object]:
         return await asyncio.to_thread(
-            state.reset_training_state,
+            deps.reset_training_state,
             clear_runs=bool(payload.clear_runs),
             clear_learning_queue=bool(payload.clear_learning_queue),
         )
 
     @router.get("/control/training/runs")
-    async def control_training_runs() -> dict[str, Any]:
-        runs = await asyncio.to_thread(state.list_runs, include_details=False, limit=120)
+    async def control_training_runs() -> dict[str, object]:
+        runs = await asyncio.to_thread(deps.list_runs, include_details=False, limit=120)
         return {"ok": True, "runs": runs}
 
     @router.get("/control/training/runs/{run_id}")
-    async def control_training_run(run_id: str) -> dict[str, Any]:
-        payload = await asyncio.to_thread(state.get_run, run_id)
+    async def control_training_run(run_id: str) -> dict[str, object]:
+        payload = await asyncio.to_thread(deps.get_run, run_id)
         if payload is None:
             raise HTTPException(status_code=404, detail="training_run_not_found")
         return {"ok": True, "run": payload}
 
     @router.get("/control/training/runs/{run_id}/events")
-    async def control_training_run_events(run_id: str) -> dict[str, Any]:
-        events = await asyncio.to_thread(state.get_run_events, run_id)
+    async def control_training_run_events(run_id: str) -> dict[str, object]:
+        events = await asyncio.to_thread(deps.get_run_events, run_id)
         return {"ok": True, "run_id": run_id, "events": events}
 
     @router.get("/control/training/runs/{run_id}/logs")
-    async def control_training_run_logs(run_id: str) -> dict[str, Any]:
-        logs = await asyncio.to_thread(state.get_run_logs, run_id)
+    async def control_training_run_logs(run_id: str) -> dict[str, object]:
+        logs = await asyncio.to_thread(deps.get_run_logs, run_id)
         return {"ok": True, "run_id": run_id, "logs": logs}
 
     @router.get("/control/training/stream")
@@ -60,7 +57,7 @@ def build_training_router(state: "ControlState") -> APIRouter:
         def _events():
             last = ""
             while True:
-                payload = state._build_training_stream_payload()
+                payload = deps.build_training_stream_payload()
                 raw = json.dumps(payload, ensure_ascii=True)
                 if raw != last:
                     yield f"data: {raw}\n\n"

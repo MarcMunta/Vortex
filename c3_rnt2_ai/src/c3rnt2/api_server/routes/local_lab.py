@@ -1,46 +1,45 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from ..dependencies import ApiDependencies
 
-def register_local_lab_routes(app: Any, settings: dict, base_dir: Path) -> None:
-    from ... import server as legacy
 
+def register_local_lab_routes(app: FastAPI, settings: dict, base_dir: Path, deps: ApiDependencies) -> None:
     @app.get("/v1/local-lab/status")
     async def local_lab_status():
-        return JSONResponse(content=legacy.collect_local_lab_status(settings, base_dir))
+        return JSONResponse(content=deps.collect_local_lab_status(settings, base_dir))
 
     @app.post("/v1/local-lab/init")
     async def local_lab_init():
-        return JSONResponse(content=legacy.ensure_host_layout(settings, base_dir))
+        return JSONResponse(content=deps.ensure_host_layout(settings, base_dir))
 
     @app.get("/v1/local-lab/modules")
     async def local_lab_modules():
-        return JSONResponse(content={"object": "list", "data": legacy.list_modules(settings, base_dir)})
+        return JSONResponse(content={"object": "list", "data": deps.list_modules(settings, base_dir)})
 
     @app.get("/v1/local-lab/progress")
     async def local_lab_progress():
-        return JSONResponse(content=legacy.load_progress(settings, base_dir))
+        return JSONResponse(content=deps.load_progress(settings, base_dir))
 
     @app.get("/v1/local-lab/next")
     async def local_lab_next():
-        return JSONResponse(content=legacy.next_module(settings, base_dir))
+        return JSONResponse(content=deps.next_module(settings, base_dir))
 
     @app.get("/v1/local-lab/roadmap")
     async def local_lab_roadmap():
-        return JSONResponse(content=legacy.write_roadmap(settings, base_dir))
+        return JSONResponse(content=deps.write_roadmap(settings, base_dir))
 
     @app.get("/v1/local-lab/bootstrap-plan")
     async def local_lab_bootstrap_plan():
-        return JSONResponse(content=legacy.write_bootstrap_plan(settings, base_dir))
+        return JSONResponse(content=deps.write_bootstrap_plan(settings, base_dir))
 
     @app.get("/v1/local-lab/rag-sources")
     async def local_lab_rag_sources():
-        return JSONResponse(content=legacy.write_rag_sources_manifest(settings, base_dir))
+        return JSONResponse(content=deps.write_rag_sources_manifest(settings, base_dir))
 
     @app.post("/v1/local-lab/lessons")
     async def local_lab_lessons(request: Request):
@@ -50,7 +49,7 @@ def register_local_lab_routes(app: Any, settings: dict, base_dir: Path) -> None:
         if not module_id:
             raise HTTPException(status_code=400, detail="module_id required")
         try:
-            result = legacy.create_lesson(
+            result = deps.create_lesson(
                 settings,
                 base_dir,
                 module_id=module_id,
@@ -67,7 +66,7 @@ def register_local_lab_routes(app: Any, settings: dict, base_dir: Path) -> None:
         if not workspace:
             raise HTTPException(status_code=400, detail="workspace required")
         try:
-            result = legacy.check_lesson(settings, base_dir, workspace=workspace)
+            result = deps.check_lesson(settings, base_dir, workspace=workspace)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse(content=result)

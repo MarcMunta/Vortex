@@ -7,6 +7,7 @@ import {
   TrainingRunSummary,
   TrainingStreamPayload,
 } from "../types";
+import { parseEventData, requestJson } from "./apiClient";
 
 const resolveBaseUrl = (): string => {
   const raw = (import.meta.env.VITE_CONTROL_BASE_URL || "").trim();
@@ -20,16 +21,7 @@ class ControlService {
   private readonly baseUrl = resolveBaseUrl();
 
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-      ...init,
-    });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      const detail = payload?.detail || payload?.error || `HTTP ${response.status}`;
-      throw new Error(String(detail));
-    }
-    return payload as T;
+    return requestJson<T>(`${this.baseUrl}${path}`, init);
   }
 
   async fetchStatus(): Promise<ControlStatus | null> {
@@ -154,7 +146,7 @@ class ControlService {
     const source = new EventSource(`${this.baseUrl}/control/training/stream`);
     source.onmessage = (event) => {
       try {
-        const payload = JSON.parse(event.data) as TrainingStreamPayload;
+        const payload = parseEventData<TrainingStreamPayload>(event.data, "training_stream_parse_failed");
         onMessage(payload);
       } catch (error) {
         onError?.(error instanceof Error ? error : new Error("training_stream_parse_failed"));
@@ -211,7 +203,7 @@ class ControlService {
     const source = new EventSource(`${this.baseUrl}/control/autonomy/stream`);
     source.onmessage = (event) => {
       try {
-        const payload = JSON.parse(event.data) as AutonomyStreamPayload;
+        const payload = parseEventData<AutonomyStreamPayload>(event.data, "autonomy_stream_parse_failed");
         onMessage(payload);
       } catch (error) {
         onError?.(error instanceof Error ? error : new Error("autonomy_stream_parse_failed"));
@@ -230,7 +222,7 @@ class ControlService {
     const source = new EventSource(`${this.baseUrl}/control/multimodal/stream`);
     source.onmessage = (event) => {
       try {
-        const payload = JSON.parse(event.data) as MultimodalStreamPayload;
+        const payload = parseEventData<MultimodalStreamPayload>(event.data, "multimodal_stream_parse_failed");
         onMessage(payload);
       } catch (error) {
         onError?.(error instanceof Error ? error : new Error("multimodal_stream_parse_failed"));

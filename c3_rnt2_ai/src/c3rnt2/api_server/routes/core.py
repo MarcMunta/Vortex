@@ -1,21 +1,20 @@
 from __future__ import annotations
 
-from typing import Any
-
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from ..contracts import ChatSessionSyncRequest, ChatSessionsResponse, OperationalStatusResponse
+from ..dependencies import ApiDependencies
 
-def register_core_routes(app: Any, settings: dict, base_dir) -> None:
-    from ... import server as legacy
 
+def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDependencies) -> None:
     @app.get("/healthz")
     async def healthz():
         return PlainTextResponse("ok")
 
-    @app.get("/readyz")
+    @app.get("/readyz", response_model=OperationalStatusResponse)
     async def readyz():
-        payload = legacy._build_operational_status(app.state, settings, base_dir)
+        payload = deps.build_operational_status(app.state, settings, base_dir)
         if not bool(payload.get("ok", False)):
             return JSONResponse(status_code=503, content=payload)
         return JSONResponse(content=payload)
@@ -28,7 +27,7 @@ def register_core_routes(app: Any, settings: dict, base_dir) -> None:
 
     @app.get("/metrics")
     async def metrics():
-        text = getattr(app.state, "metrics", legacy._MetricsState()).render_prometheus()
+        text = getattr(app.state, "metrics", deps.metrics_factory()).render_prometheus()
         sm = getattr(app.state, "skills_metrics", None)
         if sm is not None and hasattr(sm, "render_prometheus"):
             try:
@@ -37,7 +36,7 @@ def register_core_routes(app: Any, settings: dict, base_dir) -> None:
                 pass
         return PlainTextResponse(text, media_type="text/plain; version=0.0.4")
 
-    @app.get("/v1/chat/sessions")
+    @app.get("/v1/chat/sessions", response_model=ChatSessionsResponse)
     async def list_chat_sessions(account_id: str):
         store = getattr(app.state, "chat_sessions_store", None)
         if store is None:
@@ -46,7 +45,7 @@ def register_core_routes(app: Any, settings: dict, base_dir) -> None:
         if not account:
             raise HTTPException(
                 status_code=400,
-                detail=legacy._openai_error(
+                detail=deps.openai_error(
                     "account_id_required",
                     type="invalid_request_error",
                     code="account_id_required",
@@ -57,40 +56,30 @@ def register_core_routes(app: Any, settings: dict, base_dir) -> None:
             content={"ok": True, "sessions": store.list_sessions(account)}
         )
 
-    @app.post("/v1/chat/sessions/sync")
+    @app.post("/v1/chat/sessions/sync", response_model=ChatSessionsResponse)
     async def sync_chat_sessions(request: Request):
         store = getattr(app.state, "chat_sessions_store", None)
         if store is None:
             raise HTTPException(
                 status_code=501,
-                detail=legacy._openai_error(
+                detail=deps.openai_error(
                     "chat_sessions_not_available",
                     type="server_error",
                     code="not_implemented",
                 ),
             )
-        payload = await request.json()
-        account_id = str(payload.get("account_id") or "").strip()
-        sessions = payload.get("sessions")
-        replace = bool(payload.get("replace", True))
+        payload = ChatSessionSyncRequest.model_validate(await request.json())
+        account_id = str(payload.account_id or "").strip()
+        sessions = payload.sessions
+        replace = bool(payload.replace)
         if not account_id:
             raise HTTPException(
                 status_code=400,
-                detail=legacy._openai_error(
+                detail=deps.openai_error(
                     "account_id_required",
                     type="invalid_request_error",
                     code="account_id_required",
                     param="account_id",
-                ),
-            )
-        if not isinstance(sessions, list):
-            raise HTTPException(
-                status_code=400,
-                detail=legacy._openai_error(
-                    "sessions_required",
-                    type="invalid_request_error",
-                    code="sessions_required",
-                    param="sessions",
                 ),
             )
         synced = store.sync_sessions(account_id, sessions, replace=replace)
@@ -108,7 +97,7 @@ def register_core_routes(app: Any, settings: dict, base_dir) -> None:
         if not account:
             raise HTTPException(
                 status_code=400,
-                detail=legacy._openai_error(
+                detail=deps.openai_error(
                     "account_id_required",
                     type="invalid_request_error",
                     code="account_id_required",

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .dependencies import ControlDependencies
 from .routers.autonomy import build_autonomy_router
 from .routers.core import build_core_router
 from .routers.multimodal import build_multimodal_router
@@ -18,7 +17,8 @@ _CONTROL_CORS_ORIGINS = [
 ]
 
 
-def create_control_app(state: Any) -> FastAPI:
+def create_control_app(state: object | ControlDependencies) -> FastAPI:
+    deps = state if isinstance(state, ControlDependencies) else ControlDependencies.from_state(state)
     app = FastAPI(title="Vortex Control", version="1.0.0")
     app.add_middleware(
         CORSMiddleware,
@@ -26,8 +26,8 @@ def create_control_app(state: Any) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.include_router(build_core_router(state))
-    app.include_router(build_multimodal_router(state))
-    app.include_router(build_training_router(state))
-    app.include_router(build_autonomy_router(state))
+    app.include_router(build_core_router(deps))
+    app.include_router(build_multimodal_router(deps))
+    app.include_router(build_training_router(deps))
+    app.include_router(build_autonomy_router(deps))
     return app
