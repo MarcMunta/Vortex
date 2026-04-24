@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -37,11 +38,21 @@ class _StubState:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true", help="Fail if generated contract differs from committed file.")
+    args = parser.parse_args()
+
     root = Path(__file__).resolve().parents[1]
     output = root / "vortex-chat" / "public" / "contracts" / "control-openapi.json"
-    output.parent.mkdir(parents=True, exist_ok=True)
     app = create_control_app(ControlDependencies.from_state(_StubState()))
-    output.write_text(json.dumps(app.openapi(), ensure_ascii=True, indent=2), encoding="utf-8")
+    rendered = json.dumps(app.openapi(), ensure_ascii=True, indent=2) + "\n"
+    if args.check:
+        current = output.read_text(encoding="utf-8") if output.exists() else ""
+        if current != rendered:
+            raise SystemExit(f"contract drift: {output}")
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(rendered, encoding="utf-8")
 
 
 if __name__ == "__main__":

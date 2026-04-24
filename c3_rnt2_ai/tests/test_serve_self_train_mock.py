@@ -6,6 +6,18 @@ from pathlib import Path
 from c3rnt2 import __main__ as main_mod
 
 
+def test_ensure_runtime_app_state_populates_defaults() -> None:
+    app = SimpleNamespace()
+
+    state = main_mod._ensure_runtime_app_state(app)
+
+    assert state.model is None
+    assert state.models == {}
+    assert state.model_lock is None
+    assert state.training_active is False
+    assert state.maintenance_until == 0.0
+
+
 def test_serve_self_train_mock_loop(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
 

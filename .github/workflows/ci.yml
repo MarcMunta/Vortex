@@ -46,6 +46,9 @@ jobs:
           print("import smoke ok")
           PY
 
+      - name: Contract drift check
+        run: python scripts/export_contracts.py --check
+
       - name: Config and profile smoke
         run: |
           python -m pytest \
