@@ -12,7 +12,7 @@ import threading
 from types import SimpleNamespace
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, ContextManager, Protocol, cast
 
 try:
     import torch
@@ -124,6 +124,59 @@ def promote_quarantine_run(*args: Any, **kwargs: Any) -> Any:
     return _lazy_symbol(".continuous.promotion", "promote_quarantine_run")(
         *args, **kwargs
     )
+
+
+class _ModelLockProtocol(Protocol):
+    def read_lock(self) -> ContextManager[object]: ...
+
+    def write_lock(self) -> ContextManager[object]: ...
+
+
+class _RuntimeAppState(Protocol):
+    model_lock: _ModelLockProtocol | None
+    models: dict[str, object]
+    model: object | None
+    training_active: bool
+    maintenance_until: float
+
+
+class _TrainFn(Protocol):
+    def __call__(
+        self,
+        settings: dict,
+        base_dir: Path,
+        *,
+        reuse_dataset: bool = False,
+    ) -> object: ...
+
+
+class _ReloadFn(Protocol):
+    def __call__(
+        self,
+        app: object,
+        base_dir: Path,
+        settings: dict,
+        *,
+        force: bool = False,
+    ) -> dict: ...
+
+
+def _ensure_runtime_app_state(app: object) -> _RuntimeAppState:
+    state = getattr(app, "state", None)
+    if state is None:
+        state = SimpleNamespace()
+        setattr(app, "state", state)
+    if not hasattr(state, "model_lock"):
+        setattr(state, "model_lock", None)
+    if not hasattr(state, "models"):
+        setattr(state, "models", {})
+    if not hasattr(state, "model"):
+        setattr(state, "model", None)
+    if not hasattr(state, "training_active"):
+        setattr(state, "training_active", False)
+    if not hasattr(state, "maintenance_until"):
+        setattr(state, "maintenance_until", 0.0)
+    return cast(_RuntimeAppState, state)
 
 
 def _load_and_validate(profile: str | None, override: Callable[[dict], dict] | None = None) -> dict:
@@ -324,7 +377,7 @@ def _run_train_inprocess(
     reuse_dataset: bool,
     *,
     max_steps: int | None = None,
-    train_fn: Callable | None = None,
+    train_fn: _TrainFn | None = None,
 ) -> SimpleNamespace:
     if train_fn is not None:
         result = train_fn(settings, base_dir, reuse_dataset=reuse_dataset)
@@ -335,11 +388,9 @@ def _run_train_inprocess(
 
 def _unload_models_for_train(app: object) -> None:
     vram_before = get_vram_free_mb()
-    state = getattr(app, "state", None)
-    if state is None:
-        return
-    lock = getattr(state, "model_lock", None)
-    ctx = lock.write_lock() if lock and hasattr(lock, "write_lock") else nullcontext()
+    state = _ensure_runtime_app_state(app)
+    lock = state.model_lock
+    ctx = lock.write_lock() if lock is not None else nullcontext()
     with ctx:
         try:
             state.model = None
@@ -368,11 +419,9 @@ def _unload_models_for_train(app: object) -> None:
 
 
 def _reload_models_for_app(app: object, settings: dict) -> None:
-    state = getattr(app, "state", None)
-    if state is None:
-        return
-    lock = getattr(state, "model_lock", None)
-    ctx = lock.write_lock() if lock and hasattr(lock, "write_lock") else nullcontext()
+    state = _ensure_runtime_app_state(app)
+    lock = state.model_lock
+    ctx = lock.write_lock() if lock is not None else nullcontext()
     with ctx:
         model = load_inference_model(settings)
         backend = str(settings.get("core", {}).get("backend", "vortex")).lower()
@@ -935,7 +984,7 @@ def cmd_train_once(args: argparse.Namespace) -> None:
     if max_steps_val is not None:
         child_env["C3RNT2_TRAIN_MAX_STEPS"] = str(int(max_steps_val))
     allow_parallel_runtime = bool(getattr(args, "allow_parallel_runtime", False))
-    lock: Any = None
+    lock: FileLock | None = None
     if allow_parallel_runtime:
         lock_path = base_dir / "data" / "locks" / "train.lock"
         if is_lock_held(base_dir, "self_patch"):
@@ -1027,14 +1076,14 @@ def cmd_self_train(args: argparse.Namespace) -> None:
 
 
 def _run_self_train_tick(
-    app: Any,
+    app: object,
     settings: dict,
     base_dir: Path,
     *,
     reuse_dataset: bool,
     maintenance_window_s: float,
-    reload_fn: Callable | None = None,
-    train_fn: Callable | None = None,
+    reload_fn: _ReloadFn | None = None,
+    train_fn: _TrainFn | None = None,
 ) -> dict:
     allowlist = _resolve_allowlist(settings)
     cont_cfg = settings.get("continuous", {}) or {}
@@ -1104,8 +1153,7 @@ def _run_self_train_tick(
         did_unload = False
         skipped: str | None = None
         skip_info: dict[str, object] = {}
-        state = getattr(app, "state", SimpleNamespace())
-        setattr(app, "state", state)
+        state = _ensure_runtime_app_state(app)
         state.training_active = True
         if maintenance_window_s and maintenance_window_s > 0 and not block_during_training:
             state.maintenance_until = time.time() + float(maintenance_window_s)
@@ -1153,11 +1201,11 @@ def _run_self_train_tick(
         try:
             if reload_error:
                 # Keep the server blocked if we failed to restore the model.
-                app.state.training_active = True
+                state.training_active = True
             else:
-                app.state.training_active = False
+                state.training_active = False
             if maintenance_window_s and maintenance_window_s > 0:
-                app.state.maintenance_until = time.time() + float(maintenance_window_s)
+                state.maintenance_until = time.time() + float(maintenance_window_s)
         except Exception:
             pass
         if skipped:
@@ -1214,9 +1262,9 @@ def cmd_serve_self_train(args: argparse.Namespace) -> None:
     maintenance_window_s = float(args.maintenance_window_s or settings.get("server", {}).get("maintenance_window_s", 10))
     reuse_dataset = bool(args.reuse_dataset)
     once = bool(args.once)
-    reload_fn: Any = None
-    app: Any = None
-    train_fn: Any = None
+    reload_fn: _ReloadFn | None = None
+    app: object | None = None
+    train_fn: _TrainFn | None = None
 
     if args.mock:
         settings.setdefault("server", {})["train_strategy"] = "inprocess"
@@ -1269,6 +1317,9 @@ def cmd_serve_self_train(args: argparse.Namespace) -> None:
         thread = threading.Thread(target=_serve, daemon=True)
         thread.start()
 
+    if app is None:
+        return
+
     while True:
         result = _run_self_train_tick(
             app,
@@ -1299,8 +1350,7 @@ def _run_autopilot_train_with_server(
     block_during_training = bool(server_cfg.get("block_during_training", False))
     maintenance_window_s = float(server_cfg.get("maintenance_window_s", 10))
 
-    state = getattr(app, "state", SimpleNamespace())
-    setattr(app, "state", state)
+    state = _ensure_runtime_app_state(app)
 
     did_unload = False
     reload_error = None
@@ -1388,7 +1438,7 @@ def cmd_serve_autopilot(args: argparse.Namespace) -> None:
             def write_lock(self):
                 return nullcontext()
 
-        app: Any = SimpleNamespace(state=SimpleNamespace(model_lock=_DummyLock(), models={}, model=None, training_active=False, maintenance_until=0.0))
+        app = SimpleNamespace(state=SimpleNamespace(model_lock=_DummyLock(), models={}, model=None, training_active=False, maintenance_until=0.0))
     else:
         try:
             from .server import create_app

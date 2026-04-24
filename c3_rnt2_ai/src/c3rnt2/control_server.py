@@ -24,6 +24,7 @@ import uvicorn
 
 from .config import load_settings
 from .control_plane import create_control_app
+from .control_plane.storage import OperationalStore
 from .instructions import load_instruction_bundle
 from .model_init import DEFAULT_MODEL_ID, model_cache_status, resolve_cache_dir
 
@@ -113,40 +114,6 @@ def _load_json(path: Path, default: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
-
-
-def _write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=True, indent=2, default=_json_default),
-        encoding="utf-8",
-    )
-
-
-def _load_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    items: list[dict[str, Any]] = []
-    try:
-        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            raw = line.strip()
-            if not raw:
-                continue
-            try:
-                payload = json.loads(raw)
-            except Exception:
-                continue
-            if isinstance(payload, dict):
-                items.append(payload)
-    except Exception:
-        return []
-    return items
-
-
-def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=True, default=_json_default) + "\n")
 
 
 def _tail(path: Path, lines: int = 80) -> list[str]:
@@ -363,12 +330,14 @@ class ControlState:
         self.learning_queue_path = self.control_dir / "learning_queue.jsonl"
         self.learning_queue_state_path = self.control_dir / "learning_queue_state.json"
         self.runtime_state_path = self.control_dir / "runtime_state.json"
+        self.storage_path = self.control_dir / "operational_state.sqlite3"
         self.log_dir = self.base_dir.parent / "logs"
         self.fallback_profile = DEFAULT_FALLBACK_PROFILE
 
         self.control_dir.mkdir(parents=True, exist_ok=True)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.storage = OperationalStore(self.storage_path)
 
         self._lock = threading.RLock()
         self._bootstrap_thread: threading.Thread | None = None
@@ -376,6 +345,7 @@ class ControlState:
         self._autonomy_thread: threading.Thread | None = None
         self._autonomy_stop = threading.Event()
         self._active_run_id: str | None = None
+        self._migrate_legacy_storage()
 
         if not self.bootstrap_state_path.exists():
             self._set_bootstrap_state(
@@ -386,14 +356,13 @@ class ControlState:
                     "updated_at": _utc_ts(),
                 }
             )
-        if not self.internet_settings_path.exists():
-            _write_json(self.internet_settings_path, {"domains": []})
+        self.storage.put_state("internet", {"domains": self.get_allowlist(), "updated_at": _utc_ts()})
         if not self.autonomy_state_path.exists():
-            _write_json(self.autonomy_state_path, self._default_autonomy_state())
+            self._write_state_record("autonomy", self._default_autonomy_state(), self.autonomy_state_path)
         if not self.learning_queue_state_path.exists():
-            _write_json(self.learning_queue_state_path, self._default_learning_queue_state())
+            self._write_state_record("learning_queue", self._default_learning_queue_state(), self.learning_queue_state_path)
         if not self.runtime_state_path.exists():
-            _write_json(self.runtime_state_path, self._default_runtime_state())
+            self._write_state_record("runtime", self._default_runtime_state(), self.runtime_state_path)
 
         auto_start_autonomy = str(os.getenv("C3RNT2_CONTROL_AUTONOMY_AUTOSTART", "")).strip().lower() in {
             "1",
@@ -404,12 +373,30 @@ class ControlState:
         if auto_start_autonomy:
             self._ensure_autonomy_worker()
 
+    def _migrate_legacy_storage(self) -> None:
+        self.storage.import_state_file("bootstrap", self.bootstrap_state_path, {})
+        self.storage.import_state_file("runtime", self.runtime_state_path, self._default_runtime_state())
+        self.storage.import_state_file("autonomy", self.autonomy_state_path, self._default_autonomy_state())
+        self.storage.import_state_file("learning_queue", self.learning_queue_state_path, self._default_learning_queue_state())
+        self.storage.import_jsonl_events("autonomy", "global", self.autonomy_events_path)
+        self.storage.import_jsonl_events("learning_queue", "global", self.learning_queue_path)
+        self.storage.import_training_runs(self.runs_dir)
+
+    def _read_state_record(self, key: str, default: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+        legacy = _load_json(path, default) if path is not None and path.exists() else default
+        current = self.storage.get_state(key, legacy)
+        return current if isinstance(current, dict) else dict(default)
+
+    def _write_state_record(self, key: str, payload: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+        self.storage.put_state(key, payload)
+        return payload
+
     def _set_bootstrap_state(self, payload: dict[str, Any]) -> None:
         with self._lock:
-            current = _load_json(self.bootstrap_state_path, {})
+            current = self._read_state_record("bootstrap", {}, self.bootstrap_state_path)
             current.update(payload)
             current["updated_at"] = _utc_ts()
-            _write_json(self.bootstrap_state_path, current)
+            self._write_state_record("bootstrap", current, self.bootstrap_state_path)
 
     def _compose_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = dict(os.environ)
@@ -928,7 +915,7 @@ class ControlState:
         }
 
     def _load_runtime_state(self) -> dict[str, Any]:
-        current = _load_json(self.runtime_state_path, self._default_runtime_state())
+        current = self._read_state_record("runtime", self._default_runtime_state(), self.runtime_state_path)
         merged = self._default_runtime_state()
         if isinstance(current, dict):
             merged.update(current)
@@ -938,8 +925,7 @@ class ControlState:
         current = self._load_runtime_state()
         current.update(patch)
         current["updated_at"] = _utc_ts()
-        _write_json(self.runtime_state_path, current)
-        return current
+        return self._write_state_record("runtime", current, self.runtime_state_path)
 
     def _current_runtime_adapter_path(self, runtime: dict[str, Any] | None = None) -> str | None:
         current = runtime or self.runtime_status()
@@ -1172,7 +1158,7 @@ class ControlState:
         }
 
     def _load_learning_queue_state(self) -> dict[str, Any]:
-        current = _load_json(self.learning_queue_state_path, self._default_learning_queue_state())
+        current = self._read_state_record("learning_queue", self._default_learning_queue_state(), self.learning_queue_state_path)
         merged = self._default_learning_queue_state()
         if isinstance(current, dict):
             merged.update(current)
@@ -1189,11 +1175,11 @@ class ControlState:
             merged_items.update(patch["items"])
             current["items"] = merged_items
         current["updated_at"] = _utc_ts()
-        _write_json(self.learning_queue_state_path, current)
-        return current
+        return self._write_state_record("learning_queue", current, self.learning_queue_state_path)
 
     def _list_learning_queue(self, *, include_consumed: bool = True) -> list[dict[str, Any]]:
-        items = _load_jsonl(self.learning_queue_path)
+        stored = self.storage.list_events("learning_queue", reverse=False)
+        items = _dedupe_event_items(stored)
         state = self._load_learning_queue_state()
         statuses = state.get("items") if isinstance(state.get("items"), dict) else {}
         merged: list[dict[str, Any]] = []
@@ -1466,9 +1452,6 @@ class ControlState:
     def _run_dir(self, run_id: str) -> Path:
         return self.runs_dir / run_id
 
-    def _events_path(self, run_id: str) -> Path:
-        return self._run_dir(run_id) / "events.jsonl"
-
     def _append_run_event(
         self,
         run_id: str,
@@ -1491,7 +1474,7 @@ class ControlState:
             "progress_pct": progress_pct,
             "metadata": metadata or {},
         }
-        _append_jsonl(self._events_path(run_id), event)
+        self.storage.append_event("training_run", run_id, event)
         meta_patch: dict[str, Any] = {"latest_event": event}
         if latest_metrics:
             meta_patch["latest_metrics"] = latest_metrics
@@ -1501,8 +1484,8 @@ class ControlState:
         return event
 
     def _read_run_events(self, run_id: str, *, limit: int = 120) -> list[dict[str, Any]]:
-        items = _load_jsonl(self._events_path(run_id))
-        return items[-limit:]
+        stored = self.storage.list_events("training_run", run_id, limit=limit, reverse=False)
+        return _dedupe_event_items(stored)[-limit:]
 
     def _read_run_logs(self, run_id: str, *, lines: int = 80) -> dict[str, list[str]]:
         run_dir = self._run_dir(run_id)
@@ -1526,7 +1509,7 @@ class ControlState:
         meta.setdefault("execution_progress_pct", execution_progress)
         meta.setdefault("pipeline_progress_pct", pipeline_progress)
         meta.setdefault("progress_pct", execution_progress)
-        meta["events_path"] = str(self._events_path(run_id)) if run_id else None
+        meta["events_path"] = f"sqlite://training_run/{run_id}" if run_id else None
         events = self._read_run_events(run_id, limit=80) if (run_id and include_details) else []
         meta["events"] = events if include_details else []
         meta["latest_event"] = events[-1] if events else meta.get("latest_event")
@@ -2345,7 +2328,7 @@ class ControlState:
         }
 
     def get_allowlist(self) -> list[str]:
-        payload = _load_json(self.internet_settings_path, {"domains": []})
+        payload = self._read_state_record("internet", {"domains": []}, self.internet_settings_path)
         raw = payload.get("domains", []) if isinstance(payload, dict) else []
         items = []
         for item in raw if isinstance(raw, list) else []:
@@ -2362,7 +2345,7 @@ class ControlState:
                 if str(item or "").strip()
             }
         )
-        _write_json(self.internet_settings_path, {"domains": cleaned, "updated_at": _utc_ts()})
+        self._write_state_record("internet", {"domains": cleaned, "updated_at": _utc_ts()}, self.internet_settings_path)
         return cleaned
 
     def _default_autonomy_state(self) -> dict[str, Any]:
@@ -2430,7 +2413,7 @@ class ControlState:
         }
 
     def _load_autonomy_state(self) -> dict[str, Any]:
-        current = _load_json(self.autonomy_state_path, self._default_autonomy_state())
+        current = self._read_state_record("autonomy", self._default_autonomy_state(), self.autonomy_state_path)
         merged = self._default_autonomy_state()
         if isinstance(current, dict):
             merged.update(current)
@@ -2455,22 +2438,12 @@ class ControlState:
         if "latest_dialogue" in payload:
             state["latest_dialogue"] = payload["latest_dialogue"][:24]
         state["updated_at"] = _utc_ts()
-        _write_json(self.autonomy_state_path, state)
-        return state
+        return self._write_state_record("autonomy", state, self.autonomy_state_path)
 
     def _latest_autonomy_events(self, limit: int = 24) -> list[dict[str, Any]]:
-        if not self.autonomy_events_path.exists():
-            return []
-        try:
-            events = [
-                json.loads(line)
-                for line in self.autonomy_events_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-                if line.strip()
-            ]
-        except Exception:
-            return []
+        stored = self.storage.list_events("autonomy", "global", limit=limit, reverse=True)
         ordered = sorted(
-            [event for event in events if isinstance(event, dict)],
+            [event for event in stored if isinstance(event, dict)],
             key=lambda item: float(item.get("ts") or 0.0),
             reverse=True,
         )
@@ -2498,17 +2471,14 @@ class ControlState:
             "state": state_name,
             "metadata": metadata or {},
         }
-        self.autonomy_events_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.autonomy_events_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=True, default=_json_default) + "\n")
+        self.storage.append_event("autonomy", "global", payload)
         events = _dedupe_event_items([payload, *self._latest_autonomy_events(limit=23)], limit=24)
         self._write_autonomy_state({"latest_events": events})
         return payload
 
     def _next_training_sequence(self) -> int:
         highest = 0
-        for path in self.runs_dir.glob("*/meta.json"):
-            payload = _load_json(path, {})
+        for payload in self.storage.list_runs():
             if not isinstance(payload, dict):
                 continue
             try:
@@ -2867,39 +2837,40 @@ class ControlState:
                 raise HTTPException(status_code=409, detail="training_reset_blocked_active_run")
 
             removed_runs = 0
-            if clear_runs and self.runs_dir.exists():
-                for path in list(self.runs_dir.iterdir()):
-                    try:
-                        if path.is_dir():
-                            shutil.rmtree(path)
-                        else:
-                            path.unlink(missing_ok=True)
-                        removed_runs += 1
-                    except Exception:
-                        continue
+            if clear_runs:
+                removed_runs = len(self.storage.list_runs())
+                if self.runs_dir.exists():
+                    for path in list(self.runs_dir.iterdir()):
+                        try:
+                            if path.is_dir():
+                                shutil.rmtree(path)
+                            else:
+                                path.unlink(missing_ok=True)
+                            removed_runs += 1
+                        except Exception:
+                            continue
+                self.storage.delete_all_runs()
 
             if clear_learning_queue:
                 for path in (self.learning_queue_path, self.learning_queue_state_path):
                     if path.exists():
                         path.unlink(missing_ok=True)
-                _write_json(self.learning_queue_state_path, self._default_learning_queue_state())
+                self.storage.clear_events("learning_queue")
+                self._write_state_record("learning_queue", self._default_learning_queue_state(), self.learning_queue_state_path)
 
             if self.autonomy_events_path.exists():
                 self.autonomy_events_path.unlink(missing_ok=True)
+            self.storage.clear_events("autonomy")
 
             fresh_state = self._default_autonomy_state()
             fresh_state["enabled"] = True
             fresh_state["state"] = "waiting_resources"
             fresh_state["current_cycle"] = None
-            _write_json(self.autonomy_state_path, fresh_state)
-            _write_json(
+            self._write_state_record("autonomy", fresh_state, self.autonomy_state_path)
+            self._write_state_record(
+                "runtime",
+                {"mode": "primary", "fallback_active": False, "fallback_backend": None, "fallback_pid": None},
                 self.runtime_state_path,
-                {
-                    "mode": "primary",
-                    "fallback_active": False,
-                    "fallback_backend": None,
-                    "fallback_pid": None,
-                },
             )
             self._active_run_id = None
 
@@ -3423,19 +3394,12 @@ class ControlState:
                 time.sleep(5.0)
 
     def list_runs(self, *, include_details: bool = True, limit: int | None = None) -> list[dict[str, Any]]:
-        runs: list[dict[str, Any]] = []
-        run_dirs = [path for path in self.runs_dir.iterdir() if path.is_dir()]
-        run_dirs.sort(key=lambda path: path.name, reverse=True)
         wanted = max(1, int(limit)) if limit is not None else None
-        for run_dir in run_dirs:
-            path = run_dir / "meta.json"
-            if not path.exists():
+        runs: list[dict[str, Any]] = []
+        for payload in self.storage.list_runs(limit=limit):
+            if not isinstance(payload, dict):
                 continue
-            payload = _load_json(path, {})
-            if isinstance(payload, dict):
-                runs.append(self._enrich_run(payload, include_details=include_details))
-                if wanted is not None and len(runs) >= wanted:
-                    break
+            runs.append(self._enrich_run(payload, include_details=include_details))
         runs.sort(
             key=lambda item: float(item.get("updated_at") or item.get("created_at") or 0.0),
             reverse=True,
@@ -3445,10 +3409,7 @@ class ControlState:
         return runs
 
     def get_run(self, run_id: str, *, include_details: bool = True) -> dict[str, Any] | None:
-        meta_path = self.runs_dir / run_id / "meta.json"
-        if not meta_path.exists():
-            return None
-        payload = _load_json(meta_path, {})
+        payload = self.storage.get_run(run_id)
         return self._enrich_run(payload, include_details=include_details) if isinstance(payload, dict) else None
 
     def _recover_stale_runtime_if_needed(self, runtime: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -3599,7 +3560,7 @@ class ControlState:
         return recovery
 
     def status(self) -> dict[str, Any]:
-        bootstrap = _load_json(self.bootstrap_state_path, {})
+        bootstrap = self._read_state_record("bootstrap", {}, self.bootstrap_state_path)
         docker = self.docker_status()
         runtime = self.runtime_status()
         recovery = self._recover_stale_runtime_if_needed(runtime)
@@ -3628,7 +3589,7 @@ class ControlState:
                 "stage": "ready",
                 "message": "stack_ready",
             }
-            _write_json(self.bootstrap_state_path, bootstrap)
+            self._write_state_record("bootstrap", bootstrap, self.bootstrap_state_path)
 
         if runtime_model_ids and not bool(model.get("cached")):
             model = {
@@ -3694,7 +3655,7 @@ class ControlState:
             }
         with self._lock:
             if self._bootstrap_thread and self._bootstrap_thread.is_alive() and not force:
-                bootstrap = _load_json(self.bootstrap_state_path, {})
+                bootstrap = self._read_state_record("bootstrap", {}, self.bootstrap_state_path)
                 return {
                     "ok": True,
                     "started": False,
@@ -3893,8 +3854,7 @@ class ControlState:
             raise RuntimeError("runtime_not_ready_after_training")
 
     def _update_run_meta(self, run_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-        meta_path = self.runs_dir / run_id / "meta.json"
-        current = _load_json(meta_path, {})
+        current = self.storage.get_run(run_id) or {}
         previous_stage = str(current.get("stage") or "").strip().lower()
         previous_lifecycle = str(current.get("lifecycle_state") or "").strip().lower()
         current.update(patch)
@@ -3926,7 +3886,10 @@ class ControlState:
         if isinstance(current.get("live_metrics_series"), list):
             current["live_metrics_series"] = list(current.get("live_metrics_series") or [])[-160:]
         current["updated_at"] = _utc_ts()
-        _write_json(meta_path, current)
+        run_id_value = str(current.get("run_id") or run_id).strip()
+        if run_id_value:
+            current["run_id"] = run_id_value
+            self.storage.put_run(run_id_value, current)
         return current
 
     def _make_run_log_callback(

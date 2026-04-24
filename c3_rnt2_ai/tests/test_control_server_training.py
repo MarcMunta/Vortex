@@ -24,6 +24,12 @@ def _make_state(tmp_path: Path, monkeypatch):
     )
 
 
+def _force_run_updated_at(state, run_id: str, updated_at: float) -> None:
+    payload = state.storage.get_run(run_id) or {}
+    payload["updated_at"] = float(updated_at)
+    state.storage.put_run(run_id, payload)
+
+
 def test_quick_training_queues_when_primary_runtime_busy(tmp_path: Path, monkeypatch) -> None:
     from c3rnt2.utils.locks import acquire_exclusive_lock
 
@@ -622,9 +628,10 @@ def test_training_endpoints_and_stream_include_events_logs_and_metrics(tmp_path:
 
 def test_status_includes_learning_queue_summary_and_autonomy_events_are_deduped(tmp_path: Path, monkeypatch) -> None:
     state = _make_state(tmp_path, monkeypatch)
-    state.learning_queue_path.write_text(
-        '{"id":"item-1","request_id":"req-1","source_kind":"chat_feedback","score":1.0,"ts":1.0}\n',
-        encoding="utf-8",
+    state.storage.append_event(
+        "learning_queue",
+        "global",
+        {"id": "item-1", "request_id": "req-1", "source_kind": "chat_feedback", "score": 1.0, "ts": 1.0},
     )
     state._write_learning_queue_state({"items": {"item-1": {"status": "queued"}}})
 
@@ -669,11 +676,7 @@ def test_status_recovers_stale_runtime_when_previous_training_left_stack_drained
             "updated_at": 1.0,
         },
     )
-    meta_path = state.runs_dir / run_id / "meta.json"
-    payload = json.loads(meta_path.read_text(encoding="utf-8"))
-    payload["updated_at"] = 1.0
-    meta_path.write_text(json.dumps(payload), encoding="utf-8")
-
+    _force_run_updated_at(state, run_id, 1.0)
     payload = state.status()
 
     assert resumed
@@ -703,11 +706,7 @@ def test_status_marks_stale_run_interrupted_when_compose_actions_are_disabled(tm
             "updated_at": 1.0,
         },
     )
-    meta_path = state.runs_dir / run_id / "meta.json"
-    payload = json.loads(meta_path.read_text(encoding="utf-8"))
-    payload["updated_at"] = 1.0
-    meta_path.write_text(json.dumps(payload), encoding="utf-8")
-
+    _force_run_updated_at(state, run_id, 1.0)
     state.status()
 
     run = state.get_run(run_id)
@@ -740,11 +739,7 @@ def test_status_reprocesses_completed_manual_recovery_if_run_is_still_active(tmp
             },
         },
     )
-    meta_path = state.runs_dir / run_id / "meta.json"
-    payload = json.loads(meta_path.read_text(encoding="utf-8"))
-    payload["updated_at"] = 1.0
-    meta_path.write_text(json.dumps(payload), encoding="utf-8")
-
+    _force_run_updated_at(state, run_id, 1.0)
     state.status()
 
     run = state.get_run(run_id)
@@ -768,9 +763,10 @@ def test_reset_training_state_clears_legacy_runs_queue_and_restores_continuous_a
             "created_at": 1.0,
         },
     )
-    state.learning_queue_path.write_text(
-        '{"id":"item-legacy","request_id":"req-legacy","source_kind":"chat_feedback","score":1.0,"ts":1.0}\n',
-        encoding="utf-8",
+    state.storage.append_event(
+        "learning_queue",
+        "global",
+        {"id": "item-legacy", "request_id": "req-legacy", "source_kind": "chat_feedback", "score": 1.0, "ts": 1.0},
     )
     state._write_learning_queue_state({"items": {"item-legacy": {"status": "queued"}}})
     state._append_autonomy_event(

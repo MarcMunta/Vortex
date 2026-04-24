@@ -2,15 +2,14 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any
 
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from ..dependencies import ApiDependencies
 
-def register_utility_routes(app: Any, settings: dict, _base_dir: Path) -> None:
-    from ... import server as legacy
 
+def register_utility_routes(app: FastAPI, settings: dict, _base_dir: Path, deps: ApiDependencies) -> None:
     @app.get("/doctor")
     @app.post("/doctor")
     async def doctor():
@@ -19,12 +18,12 @@ def register_utility_routes(app: Any, settings: dict, _base_dir: Path) -> None:
             "profile": str(settings.get("_profile") or ""),
             "backends": list((getattr(app.state, "models", {}) or {}).keys()),
             "training_active": bool(getattr(app.state, "training_active", False)),
-            "torch": bool(legacy.torch is not None),
-            "cuda": bool(legacy.torch is not None and legacy.torch.cuda.is_available()),
+            "torch": bool(deps.torch is not None),
+            "cuda": bool(deps.torch is not None and deps.torch.cuda.is_available()),
         }
-        if legacy.torch is not None and legacy.torch.cuda.is_available():
+        if deps.torch is not None and deps.torch.cuda.is_available():
             try:
-                payload["cuda_device"] = legacy.torch.cuda.get_device_name(0)
+                payload["cuda_device"] = deps.torch.cuda.get_device_name(0)
             except Exception:
                 pass
         return JSONResponse(content=payload)
@@ -80,7 +79,7 @@ def register_utility_routes(app: Any, settings: dict, _base_dir: Path) -> None:
     async def embeddings():
         raise HTTPException(
             status_code=501,
-            detail=legacy._openai_error(
+            detail=deps.openai_error(
                 "Embeddings not implemented",
                 type="server_error",
                 code="not_implemented",
@@ -95,7 +94,7 @@ def register_utility_routes(app: Any, settings: dict, _base_dir: Path) -> None:
     async def create_file():
         raise HTTPException(
             status_code=501,
-            detail=legacy._openai_error(
+            detail=deps.openai_error(
                 "Files not implemented",
                 type="server_error",
                 code="not_implemented",

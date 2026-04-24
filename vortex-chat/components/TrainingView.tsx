@@ -119,10 +119,9 @@ const TrainingView: React.FC<TrainingViewProps> = ({ sessions, language, control
     try { setSelectedRun((await controlService.getTrainingRun(run.run_id)) || run); } finally { setReviewLoading(false); }
   };
 
-  const resetLegacyTraining = async () => {
+  const resetTrainingState = async () => {
     setSelectedRunId(null); setSelectedRun(null); setReviewLoading(false); setTrainingStream(null);
     await controlService.resetTrainingState({ clear_runs: true, clear_learning_queue: true });
-    await onStartAutonomy();
   };
 
   const latestNotebook = (activeRun?.notebook_sections || []).slice(-4).reverse();
@@ -147,7 +146,7 @@ const TrainingView: React.FC<TrainingViewProps> = ({ sessions, language, control
               <button type="button" onClick={() => { void runAction('pause', () => onStopAutonomy(), language === 'es' ? 'Autonomia pausada.' : 'Autonomy paused.'); }} className="rounded-full border border-border/60 bg-background px-4 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-foreground/80 transition-all hover:border-primary/20 hover:text-foreground"><span className="inline-flex items-center gap-2"><PauseCircle size={14} />{language === 'es' ? 'Pausar' : 'Pause'}</span></button>
               <button type="button" onClick={() => { void runAction('quick', () => onStartTraining('quick'), language === 'es' ? 'Run quick lanzado.' : 'Quick run started.'); }} className="rounded-full border border-border/60 bg-background px-4 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-foreground/80 transition-all hover:border-primary/20 hover:text-foreground"><span className="inline-flex items-center gap-2"><RefreshCw size={14} />Quick</span></button>
               <button type="button" onClick={() => { void runAction('full', () => onStartTraining('full'), language === 'es' ? 'Run full lanzado.' : 'Full run started.'); }} className="rounded-full border border-border/60 bg-background px-4 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-foreground/80 transition-all hover:border-primary/20 hover:text-foreground"><span className="inline-flex items-center gap-2"><FlaskConical size={14} />Full</span></button>
-              <button type="button" onClick={() => { void runAction('reset', () => resetLegacyTraining(), language === 'es' ? 'Historial legado limpiado.' : 'Legacy history cleared.'); }} className="rounded-full border border-border/60 bg-background px-4 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-foreground/80 transition-all hover:border-primary/20 hover:text-foreground"><span className="inline-flex items-center gap-2"><BrainCircuit size={14} />{language === 'es' ? 'Limpiar legado' : 'Reset legacy'}</span></button>
+              <button type="button" onClick={() => { void runAction('reset', () => resetTrainingState(), language === 'es' ? 'Estado de entrenamiento reiniciado.' : 'Training state reset.'); }} className="rounded-full border border-border/60 bg-background px-4 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-foreground/80 transition-all hover:border-primary/20 hover:text-foreground"><span className="inline-flex items-center gap-2"><BrainCircuit size={14} />{language === 'es' ? 'Reiniciar estado' : 'Reset state'}</span></button>
             </div>
             {busyAction && <p className="text-xs text-primary">{language === 'es' ? `Aplicando: ${busyAction}` : `Applying: ${busyAction}`}</p>}
           </div>

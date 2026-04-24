@@ -13,6 +13,7 @@ import {
   VoiceTranscriptionResult,
   WorkspacePermissions,
 } from "../types";
+import { parseJsonSafely, requestJson } from "./apiClient";
 
 type StreamChunk = {
   text: string;
@@ -383,12 +384,27 @@ export class VortexService {
     return `${this.baseUrl}${path}`;
   }
 
+  private async json<T>(path: string, init?: RequestInit): Promise<T> {
+    return requestJson<T>(this.url(path), init);
+  }
+
+  private responseError(payload: unknown, fallback: string): string {
+    if (payload && typeof payload === "object") {
+      const body = payload as { detail?: unknown; error?: unknown };
+      if (typeof body.detail === "string") return body.detail;
+      if (typeof body.error === "string") return body.error;
+      if (body.error && typeof body.error === "object" && typeof (body.error as { message?: unknown }).message === "string") {
+        return (body.error as { message: string }).message;
+      }
+    }
+    return fallback;
+  }
+
   async fetchOperationalStatus(): Promise<OperationalStatus | null> {
     try {
-      const resp = await fetch(this.url("/v1/status"));
-      const data = await resp.json();
+      const data = await this.json<OperationalStatus>("/v1/status");
       if (!data || typeof data !== "object") return null;
-      return data as OperationalStatus;
+      return data;
     } catch {
       return null;
     }
@@ -448,13 +464,8 @@ export class VortexService {
 
       if (!resp.ok || !resp.body) {
         const text = await resp.text().catch(() => "");
-        let detail = text;
-        try {
-          const parsed = JSON.parse(text);
-          detail = parsed?.error?.message || parsed?.detail || text;
-        } catch {
-          // ignore
-        }
+        const parsed = parseJsonSafely<{ error?: { message?: string }; detail?: string }>(text);
+        const detail = parsed?.error?.message || parsed?.detail || text;
         throw new Error(detail || `HTTP ${resp.status}`);
       }
 
@@ -501,12 +512,8 @@ export class VortexService {
               return;
             }
 
-            let parsed: any;
-            try {
-              parsed = JSON.parse(data);
-            } catch {
-              continue;
-            }
+            const parsed = parseJsonSafely<any>(data);
+            if (!parsed) continue;
 
             if (typeof parsed?.request_id === "string") {
               requestId = parsed.request_id;
@@ -568,22 +575,17 @@ export class VortexService {
   }
 
   async ingestOnce(): Promise<{ ok: boolean; newDocs?: number; error?: string }> {
-    const resp = await fetch(this.url("/v1/ingest"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({}),
-    });
-    const text = await resp.text().catch(() => "");
     try {
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok) {
+      const parsed = await this.json<{ ok?: boolean; new_docs?: number }>("/v1/ingest", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      if (parsed?.ok) {
         return { ok: true, newDocs: parsed?.new_docs };
       }
-      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
-    } catch {
-      return { ok: false, error: text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "ingest_failed") };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
   }
 
@@ -611,17 +613,26 @@ export class VortexService {
       rating: "up",
       ideal_response: idealResponse,
     };
-    const resp = await fetch(this.url("/v1/feedback"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    const text = await resp.text().catch(() => "");
     try {
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok) {
+      const parsed = await this.json<{
+        ok?: boolean;
+        training_event?: boolean;
+        learning_queue_item?: {
+          id?: string;
+          status?: string;
+          source_kind?: string;
+          score?: number;
+          queued_at?: number;
+        } | null;
+        learning_queue_depth?: number;
+        quick_train_scheduled?: boolean;
+        scheduled_run_id?: string | null;
+        queue_reason?: string | null;
+      }>("/v1/feedback", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      if (parsed?.ok) {
         return {
           ok: true,
           trainingEvent: Boolean(parsed?.training_event),
@@ -632,9 +643,9 @@ export class VortexService {
           queueReason: parsed?.queue_reason || null,
         };
       }
-      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
-    } catch {
-      return { ok: false, error: text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "feedback_failed") };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
   }
 
@@ -649,22 +660,17 @@ export class VortexService {
       summary,
       author: "frontend",
     };
-    const resp = await fetch(this.url("/v1/self-edits/proposals/from-diff"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    const text = await resp.text().catch(() => "");
     try {
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok) {
+      const parsed = await this.json<{ ok?: boolean; id?: string; status?: string }>("/v1/self-edits/proposals/from-diff", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      if (parsed?.ok) {
         return { ok: true, id: parsed?.id, status: parsed?.status };
       }
-      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
-    } catch {
-      return { ok: false, error: text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "proposal_failed") };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
   }
 
@@ -673,12 +679,10 @@ export class VortexService {
     language: "es" | "en" = "es"
   ): Promise<{ ok: boolean; title?: string }> {
     try {
-      const resp = await fetch(this.url("/v1/chat/title"), {
+      const data = await this.json<{ ok?: boolean; title?: string }>("/v1/chat/title", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, language }),
       });
-      const data = await resp.json();
       if (data?.ok && data?.title) {
         return { ok: true, title: data.title };
       }
@@ -690,13 +694,11 @@ export class VortexService {
 
   async getSpatialSession(): Promise<{ ok: boolean; session?: SpatialSessionState; error?: string }> {
     try {
-      const resp = await fetch(this.url("/v1/spatial/session"));
-      const text = await resp.text().catch(() => "");
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok && parsed?.session) {
+      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; error?: unknown }>("/v1/spatial/session");
+      if (parsed?.ok && parsed?.session) {
         return { ok: true, session: parsed.session as SpatialSessionState };
       }
-      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "spatial_session_failed") };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
@@ -704,17 +706,14 @@ export class VortexService {
 
   async updateSpatialSession(payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; error?: string }> {
     try {
-      const resp = await fetch(this.url("/v1/spatial/session"), {
+      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; error?: unknown }>("/v1/spatial/session", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const text = await resp.text().catch(() => "");
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok && parsed?.session) {
+      if (parsed?.ok && parsed?.session) {
         return { ok: true, session: parsed.session as SpatialSessionState };
       }
-      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "spatial_session_failed") };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
@@ -722,17 +721,14 @@ export class VortexService {
 
   async publishSpatialEvent(payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; error?: string }> {
     try {
-      const resp = await fetch(this.url("/v1/spatial/events"), {
+      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; error?: unknown }>("/v1/spatial/events", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const text = await resp.text().catch(() => "");
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok && parsed?.session) {
+      if (parsed?.ok && parsed?.session) {
         return { ok: true, session: parsed.session as SpatialSessionState };
       }
-      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "spatial_event_failed") };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
@@ -740,17 +736,14 @@ export class VortexService {
 
   async openSpatialPanel(payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: string }> {
     try {
-      const resp = await fetch(this.url("/v1/spatial/panels/open"), {
+      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: unknown }>("/v1/spatial/panels/open", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const text = await resp.text().catch(() => "");
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok) {
+      if (parsed?.ok) {
         return { ok: true, session: parsed.session as SpatialSessionState, panel: parsed.panel as Record<string, unknown> };
       }
-      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "spatial_panel_failed") };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
@@ -758,17 +751,14 @@ export class VortexService {
 
   async updateSpatialPanel(panelId: string, payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: string }> {
     try {
-      const resp = await fetch(this.url("/v1/spatial/panels/update"), {
+      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: unknown }>("/v1/spatial/panels/update", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ panel_id: panelId, ...payload }),
       });
-      const text = await resp.text().catch(() => "");
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok) {
+      if (parsed?.ok) {
         return { ok: true, session: parsed.session as SpatialSessionState, panel: parsed.panel as Record<string, unknown> };
       }
-      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "spatial_panel_failed") };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
@@ -776,17 +766,14 @@ export class VortexService {
 
   async navigateSpatialPanel(panelId: string, delta: number): Promise<{ ok: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: string }> {
     try {
-      const resp = await fetch(this.url("/v1/spatial/panels/navigate"), {
+      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: unknown }>("/v1/spatial/panels/navigate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ panel_id: panelId, delta }),
       });
-      const text = await resp.text().catch(() => "");
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok) {
+      if (parsed?.ok) {
         return { ok: true, session: parsed.session as SpatialSessionState, panel: parsed.panel as Record<string, unknown> };
       }
-      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "spatial_panel_failed") };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
@@ -794,10 +781,8 @@ export class VortexService {
 
   async fetchVoiceStatus(): Promise<VoiceStatus | null> {
     try {
-      const resp = await fetch(this.url("/v1/voice/status"));
-      const text = await resp.text().catch(() => "");
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok) {
+      const parsed = await this.json<VoiceStatus>("/v1/voice/status");
+      if (parsed?.ok) {
         return parsed as VoiceStatus;
       }
       return null;
@@ -823,11 +808,11 @@ export class VortexService {
       }
       const resp = await fetch(this.url("/v1/voice/transcribe"), init);
       const text = await resp.text().catch(() => "");
-      const parsed = JSON.parse(text);
+      const parsed = parseJsonSafely<VoiceTranscriptionResult & { error?: unknown }>(text);
       if (resp.ok && parsed?.ok) {
         return parsed as VoiceTranscriptionResult;
       }
-      return { ok: false, error: parsed?.error || text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, text || `HTTP ${resp.status}`) };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
@@ -835,17 +820,14 @@ export class VortexService {
 
   async speakText(text: string, language: "es" | "en" = "es"): Promise<{ ok: boolean; audio_url?: string; fallback_browser_tts?: boolean; text?: string; error?: string }> {
     try {
-      const resp = await fetch(this.url("/v1/voice/speak"), {
+      const parsed = await this.json<{ ok?: boolean; audio_url?: string; fallback_browser_tts?: boolean; text?: string; error?: unknown }>("/v1/voice/speak", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, language }),
       });
-      const raw = await resp.text().catch(() => "");
-      const parsed = JSON.parse(raw);
-      if (resp.ok && parsed?.ok) {
+      if (parsed?.ok) {
         return parsed as { ok: boolean; audio_url?: string; fallback_browser_tts?: boolean; text?: string };
       }
-      return { ok: false, error: parsed?.error || raw || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "voice_speak_failed") };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
@@ -853,10 +835,8 @@ export class VortexService {
 
   async fetchObsidianStatus(): Promise<ObsidianStatus | null> {
     try {
-      const resp = await fetch(this.url("/v1/obsidian/status"));
-      const text = await resp.text().catch(() => "");
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok) {
+      const parsed = await this.json<ObsidianStatus>("/v1/obsidian/status");
+      if (parsed?.ok) {
         return parsed as ObsidianStatus;
       }
       return null;
@@ -866,32 +846,26 @@ export class VortexService {
   }
 
   async configureObsidian(payload: { enabled?: boolean; vault_path?: string }) {
-    const resp = await fetch(this.url("/v1/obsidian/config"), {
+    return this.json("/v1/obsidian/config", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    return resp.json();
   }
 
   async saveObsidianNote(payload: { note_type?: string; title: string; content: string; tags?: string[]; metadata?: Record<string, unknown> }) {
-    const resp = await fetch(this.url("/v1/obsidian/save"), {
+    return this.json("/v1/obsidian/save", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    return resp.json();
   }
 
   async fetchChatSessions(accountId: string): Promise<{ ok: boolean; sessions?: ChatSession[]; error?: string }> {
     try {
-      const resp = await fetch(this.url(`/v1/chat/sessions?account_id=${encodeURIComponent(accountId)}`));
-      const text = await resp.text().catch(() => "");
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok && Array.isArray(parsed?.sessions)) {
+      const parsed = await this.json<{ ok?: boolean; sessions?: ChatSession[]; error?: unknown; detail?: unknown }>(`/v1/chat/sessions?account_id=${encodeURIComponent(accountId)}`);
+      if (parsed?.ok && Array.isArray(parsed?.sessions)) {
         return { ok: true, sessions: parsed.sessions as ChatSession[] };
       }
-      return { ok: false, error: parsed?.error?.message || parsed?.detail || text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "chat_sessions_failed") };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
@@ -899,21 +873,18 @@ export class VortexService {
 
   async syncChatSessions(accountId: string, sessions: ChatSession[]): Promise<{ ok: boolean; error?: string }> {
     try {
-      const resp = await fetch(this.url("/v1/chat/sessions/sync"), {
+      const parsed = await this.json<{ ok?: boolean; error?: unknown; detail?: unknown }>("/v1/chat/sessions/sync", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           account_id: accountId,
           replace: true,
           sessions,
         }),
       });
-      const text = await resp.text().catch(() => "");
-      const parsed = JSON.parse(text);
-      if (resp.ok && parsed?.ok) {
+      if (parsed?.ok) {
         return { ok: true };
       }
-      return { ok: false, error: parsed?.error?.message || parsed?.detail || text || `HTTP ${resp.status}` };
+      return { ok: false, error: this.responseError(parsed, "chat_sessions_sync_failed") };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }

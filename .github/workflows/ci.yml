@@ -46,6 +46,9 @@ jobs:
           print("import smoke ok")
           PY
 
+      - name: Contract drift check
+        run: python scripts/export_contracts.py --check
+
       - name: Config and profile smoke
         run: |
           python -m pytest \
@@ -115,6 +118,79 @@ jobs:
         with:
           name: playwright-artifacts
           path: |
+            vortex-chat/playwright-report
+            vortex-chat/test-results
+          if-no-files-found: ignore
+
+  fullstack-integration:
+    name: Full-stack Integration
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/c3_rnt2_ai/src
+      VITE_API_BASE_URL: http://127.0.0.1:8000
+      VITE_CONTROL_BASE_URL: http://127.0.0.1:8765
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: c3_rnt2_ai/pyproject.toml
+
+      - name: Install backend integration deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install fastapi uvicorn requests
+
+      - name: Start API and control stubs
+        run: |
+          python scripts/integration_stub.py --mode api --port 8000 > api-stub.log 2>&1 &
+          echo $! > api-stub.pid
+          python scripts/integration_stub.py --mode control --port 8765 > control-stub.log 2>&1 &
+          echo $! > control-stub.pid
+          python - <<'PY'
+          import time, urllib.request
+          for url in ("http://127.0.0.1:8000/healthz", "http://127.0.0.1:8765/healthz"):
+              for _ in range(60):
+                  try:
+                      urllib.request.urlopen(url, timeout=2).read()
+                      break
+                  except Exception:
+                      time.sleep(1)
+              else:
+                  raise SystemExit(f"not ready: {url}")
+          PY
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: vortex-chat/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: vortex-chat
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: vortex-chat
+        run: npx playwright install --with-deps chromium
+
+      - name: Integration Playwright
+        working-directory: vortex-chat
+        run: npm run test:integration
+
+      - name: Upload integration artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fullstack-integration-artifacts
+          path: |
+            api-stub.log
+            control-stub.log
             vortex-chat/playwright-report
             vortex-chat/test-results
           if-no-files-found: ignore

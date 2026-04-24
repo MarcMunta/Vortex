@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
-
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
+from ..dependencies import ApiDependencies
 
-def register_multimodal_routes(app: Any) -> None:
-    from ... import server as legacy
 
+def register_multimodal_routes(app: FastAPI, deps: ApiDependencies) -> None:
     @app.get("/v1/voice/status")
     async def voice_status():
         return JSONResponse(content=app.state.voice_service.status())
@@ -23,7 +21,7 @@ def register_multimodal_routes(app: Any) -> None:
         if target is None:
             raise HTTPException(
                 status_code=404,
-                detail=legacy._openai_error("voice_audio_not_found", code="not_found"),
+                detail=deps.openai_error("voice_audio_not_found", code="not_found"),
             )
         return FileResponse(target)
 
@@ -48,7 +46,7 @@ def register_multimodal_routes(app: Any) -> None:
         )
         if not result.get("ok"):
             return JSONResponse(status_code=400, content=result)
-        action_result = legacy._apply_voice_intent(result.get("intent"))
+        action_result = deps.apply_voice_intent(result.get("intent"))
         if action_result is not None:
             result["action_result"] = action_result
         if result.get("transcript"):
@@ -99,7 +97,7 @@ def register_multimodal_routes(app: Any) -> None:
         if not panel_id:
             raise HTTPException(
                 status_code=400,
-                detail=legacy._openai_error("panel_id_required", code="invalid_request"),
+                detail=deps.openai_error("panel_id_required", code="invalid_request"),
             )
         patch = dict(payload)
         patch.pop("panel_id", None)
@@ -114,7 +112,7 @@ def register_multimodal_routes(app: Any) -> None:
         if not panel_id:
             raise HTTPException(
                 status_code=400,
-                detail=legacy._openai_error("panel_id_required", code="invalid_request"),
+                detail=deps.openai_error("panel_id_required", code="invalid_request"),
             )
         delta = int(payload.get("delta") or 0)
         index = payload.get("index")

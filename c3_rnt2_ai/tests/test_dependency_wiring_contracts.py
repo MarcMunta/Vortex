@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+
+def _imports(path: Path) -> list[ast.Import | ast.ImportFrom]:
+    return [
+        node
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+    ]
+
+
+def test_new_api_routes_do_not_import_legacy_server_module() -> None:
+    route_dir = Path("c3_rnt2_ai/src/c3rnt2/api_server/routes")
+    offenders: list[str] = []
+    for path in route_dir.glob("*.py"):
+        for node in _imports(path):
+            module = getattr(node, "module", "") or ""
+            names = [alias.name for alias in getattr(node, "names", [])]
+            if module.endswith("server") or "server" in names:
+                offenders.append(str(path))
+    assert offenders == []
+
+
+def test_control_app_accepts_explicit_typed_dependencies() -> None:
+    from fastapi.testclient import TestClient
+
+    from c3rnt2.control_plane.app import create_control_app
+    from c3rnt2.control_plane.dependencies import ControlDependencies
+
+    class State:
+        api_url = "http://127.0.0.1:8000"
+        _active_run_id = None
+
+        def status(self): return {"ok": True}
+        def start_bootstrap(self, **_kwargs): return {"ok": True}
+        def restart_runtime(self): return {"ok": True}
+        def get_allowlist(self): return []
+        def set_allowlist(self, domains): return domains
+        def start_training(self, *_args, **_kwargs): return {"ok": True}
+        def reset_training_state(self, **_kwargs): return {"ok": True}
+        def list_runs(self, **_kwargs): return []
+        def get_run(self, *_args, **_kwargs): return None
+        def get_run_events(self, *_args, **_kwargs): return []
+        def get_run_logs(self, *_args, **_kwargs): return {}
+        def _build_training_stream_payload(self): return {"ts": 0.0}
+        def runtime_status(self): return {"ok": True}
+        def autonomy_status(self, **_kwargs): return {"enabled": False, "boot_mode": "manual", "state": "idle", "active_agents": []}
+        def start_autonomy(self): return {"ok": True}
+        def stop_autonomy(self): return {"ok": True}
+        def configure_autonomy(self, _payload): return {"ok": True}
+        def _latest_autonomy_events(self, **_kwargs): return []
+        def voice_status(self): return {"ok": True}
+        def restart_voice(self): return {"ok": True}
+        def obsidian_status(self): return {"ok": True}
+        def configure_obsidian(self, _payload): return {"ok": True}
+        def multimodal_status(self): return {"ok": True}
+
+    deps = ControlDependencies.from_state(State())
+    client = TestClient(create_control_app(deps))
+
+    assert client.get("/healthz").status_code == 200
+    assert client.get("/control/status").json()["ok"] is True

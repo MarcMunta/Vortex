@@ -2784,6 +2784,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         register_multimodal_routes,
         register_utility_routes,
     )
+    from .api_server.dependencies import ApiDependencies
 
     app = FastAPI()
     app.state.metrics = _MetricsState()
@@ -3230,7 +3231,26 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             boot_fallback,
         )
 
-    register_core_routes(app, settings, base_dir)
+    api_deps = ApiDependencies(
+        build_operational_status=_build_operational_status,
+        models_list_payload=_models_list_payload,
+        openai_error=_openai_error,
+        metrics_factory=_MetricsState,
+        apply_voice_intent=_apply_voice_intent,
+        collect_local_lab_status=collect_local_lab_status,
+        ensure_host_layout=ensure_host_layout,
+        list_modules=list_modules,
+        load_progress=load_progress,
+        next_module=next_module,
+        write_roadmap=write_roadmap,
+        write_bootstrap_plan=write_bootstrap_plan,
+        write_rag_sources_manifest=write_rag_sources_manifest,
+        create_lesson=create_lesson,
+        check_lesson=check_lesson,
+        torch=torch,
+    )
+
+    register_core_routes(app, settings, base_dir, api_deps)
 
     @app.get("/v1/skills")
     async def list_skills():
@@ -3487,8 +3507,8 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             pass
         return JSONResponse(content=created)
 
-    register_utility_routes(app, settings, base_dir)
-    register_multimodal_routes(app)
+    register_utility_routes(app, settings, base_dir, api_deps)
+    register_multimodal_routes(app, api_deps)
 
     @app.post("/v1/ingest")
     async def ingest_once():
@@ -4890,7 +4910,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             }
         )
 
-    register_local_lab_routes(app, settings, base_dir)
+    register_local_lab_routes(app, settings, base_dir, api_deps)
 
     _start_adapter_watcher(app, base_dir, settings)
     _start_reload_request_watcher(app, base_dir, settings)
