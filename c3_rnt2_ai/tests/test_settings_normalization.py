@@ -157,7 +157,19 @@ def test_programming_profiles_are_local_and_offline() -> None:
         "data/registry/hf_train/programming_eval.jsonl",
         "config/datasets/flutter_dart_seed.jsonl",
         "config/datasets/flutter_dart_eval.jsonl",
+        "config/datasets/flutter_official_docs_sft.jsonl",
+        "config/datasets/flutter_official_docs_code_sft.jsonl",
+        "config/datasets/flutter_official_docs_debugging_sft.jsonl",
+        "config/datasets/flutter_official_docs_architecture_sft.jsonl",
     ]
+    assert train["hf_train"]["use_weighted_sampling"] is True
+    assert train["hf_train"]["source_kind_weights"]["flutter_official_docs_debugging_sft"] == 5.0
+    assert train["hf_train"]["source_kind_weights"]["web"] == 0.0
+    assert train["hf_train"]["max_steps"] == 80
+    assert train["hf_train"]["max_seq_len"] == 1024
+    assert train["autolearn"]["enabled"] is False
+    assert train["autolearn"]["web_ingest"] is False
+    assert train["tools"]["web"]["enabled"] is False
     assert train["profile_contract"]["require_docker"] is True
     assert train["profile_contract"]["disable_fallbacks"] is True
     assert train["profile_contract"]["require_wsl_training"] is False

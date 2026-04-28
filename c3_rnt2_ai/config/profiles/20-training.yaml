@@ -305,20 +305,33 @@ profiles:
         - "data/registry/hf_train/programming_eval.jsonl"
         - "config/datasets/flutter_dart_seed.jsonl"
         - "config/datasets/flutter_dart_eval.jsonl"
+        - "config/datasets/flutter_official_docs_sft.jsonl"
+        - "config/datasets/flutter_official_docs_code_sft.jsonl"
+        - "config/datasets/flutter_official_docs_debugging_sft.jsonl"
+        - "config/datasets/flutter_official_docs_architecture_sft.jsonl"
+      use_weighted_sampling: true
       source_kind_weights:
-        flutter_dart_seed: 2.5
-        flutter_dart_eval: 2.0
-        episode: 1.5
-        web: 0.8
-        memory: 1.0
-        logs: 0.5
+        flutter_dart_seed: 4.0
+        flutter_dart_eval: 3.0
+        flutter_official_docs_sft: 4.0
+        flutter_official_docs_code_sft: 4.5
+        flutter_official_docs_debugging_sft: 5.0
+        flutter_official_docs_architecture_sft: 4.5
+        episode: 1.2
+        chat_feedback: 1.5
+        chat_feedback_soft: 0.6
+        memory: 0.8
+        logs: 0.3
+        web: 0.0
       load_in_4bit: true
-      max_seq_len: 768
+      max_seq_len: 1024
       micro_batch_size: 1
       grad_accum_steps: 8
-      max_steps: 12
+      max_steps: 80
       gradient_checkpointing: true
       lora_rank: 8
+      lora_alpha: 16
+      lora_dropout: 0.05
       target_module_scopes:
         - "language_model.layers."
         - "model.layers."
