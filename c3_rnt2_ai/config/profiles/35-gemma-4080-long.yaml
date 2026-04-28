@@ -1,0 +1,27 @@
+profiles:
+  rtx4080_16gb_gemma_hf_long:
+    base_profile: rtx4080_16gb_safe_windows_core
+
+    core:
+      backend: hf
+      hf_model: "google/gemma-2-9b-it"
+      hf_device: cuda
+      dtype: bf16
+      hf_load_in_4bit: true
+      hf_load_in_8bit: false
+      hf_device_map: auto
+      hf_attn_auto: true
+      vram_threshold_mb: 1800
+      vram_floor_tokens: 256
+      vram_ceil_tokens: 2048
+      vram_safety_margin_mb: 1200
+
+    server:
+      ctx_max_tokens: 8192
+      ctx_overflow_policy: tail_keep_last_n
+
+    agent:
+      max_iters: 50
+      action_max_new_tokens: 768
+      final_summary_max_new_tokens: 2048
+      max_wall_time_s: 1800

@@ -96,7 +96,7 @@ def _build_prompt(task: str, tool_calls: List[dict], *, max_chars: int = 2400, m
 
 def _summary_needs_fallback(summary: str) -> bool:
     normalized = str(summary or "").strip().lower()
-    return normalized in {"", "agent_finished", "done", "empty", "finished", "invalid_json", "stopped_by_wall_time_limit"}
+    return normalized in {"", "agent_finished", "empty", "finished", "invalid_json", "stopped_by_wall_time_limit"}
 
 
 def _dedupe_browser_actions(actions: List[dict[str, object]]) -> List[dict[str, object]]:

@@ -3,4 +3,5 @@ imports:
   - profiles/10-lab.yaml
   - profiles/20-training.yaml
   - profiles/30-performance.yaml
+  - profiles/35-gemma-4080-long.yaml
   - profiles/40-vortex-core.yaml
