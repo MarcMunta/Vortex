@@ -23,7 +23,7 @@ class Action:
     args: dict
 
 
-def _parse_action(text: str) -> Action:
+def _parse_action(text: str) -> tuple[Action, bool]:
     text = text.strip()
     if not text:
         return Action(type="finish", args={"summary": "empty"}), False
@@ -38,6 +38,22 @@ def _parse_action(text: str) -> Action:
     action_type = str(payload.get("type", "finish"))
     args = payload.get("args", {}) or {}
     return Action(type=action_type, args=args), True
+
+
+def _cfg_int(cfg: dict, key: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        value = int(cfg.get(key, default))
+    except Exception:
+        value = default
+    return max(minimum, value)
+
+
+def _cfg_float(cfg: dict, key: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        value = float(cfg.get(key, default))
+    except Exception:
+        value = default
+    return max(minimum, value)
 
 
 def _resolve_queue_dir(workspace_dir: Path, settings: dict) -> Path:
@@ -80,7 +96,7 @@ def _build_prompt(task: str, tool_calls: List[dict], *, max_chars: int = 2400, m
 
 def _summary_needs_fallback(summary: str) -> bool:
     normalized = str(summary or "").strip().lower()
-    return normalized in {"", "agent_finished", "done", "empty", "finished", "invalid_json"}
+    return normalized in {"", "agent_finished", "done", "empty", "finished", "invalid_json", "stopped_by_wall_time_limit"}
 
 
 def _dedupe_browser_actions(actions: List[dict[str, object]]) -> List[dict[str, object]]:
@@ -103,6 +119,8 @@ def _generate_final_summary(
     settings: dict,
     current_model: object | None,
     model_lock: Callable[[], Any] | None,
+    *,
+    max_new_tokens: int = 160,
 ) -> str:
     if not tool_calls:
         return ""
@@ -147,7 +165,7 @@ def _generate_final_summary(
         with (model_lock() if model_lock is not None else nullcontext()):
             text = current_model.generate(
                 prompt,
-                max_new_tokens=160,
+                max_new_tokens=max_new_tokens,
                 temperature=0.0,
             )
         return str(text or "").strip() or fallback_output
@@ -195,7 +213,7 @@ def run_agent(
     settings: dict,
     base_dir: Path,
     *,
-    max_iters: int = 5,
+    max_iters: int | None = None,
     action_provider: Callable[[List[dict]], Action] | None = None,
     model: object | None = None,
     model_lock: Callable[[], Any] | None = None,
@@ -218,6 +236,14 @@ def run_agent(
         "summarize_diff",
     ]
     agent_cfg = settings.get("agent", {}) or {}
+    if max_iters is None:
+        max_iters = _cfg_int(agent_cfg, "max_iters", 5)
+    else:
+        max_iters = max(1, int(max_iters))
+    action_max_new_tokens = _cfg_int(agent_cfg, "action_max_new_tokens", 256)
+    final_summary_max_new_tokens = _cfg_int(agent_cfg, "final_summary_max_new_tokens", 160)
+    max_wall_time_s = _cfg_float(agent_cfg, "max_wall_time_s", 0.0)
+
     tools_enabled = agent_cfg.get("tools_enabled")
     if tools_enabled is None:
         allowed_tools = set(supported_tools)
@@ -316,18 +342,22 @@ def run_agent(
     tools_ok = False
     summary = ""
     browser_actions: List[dict[str, object]] = []
+    start_ts = time.monotonic()
 
     for _ in range(max_iters):
+        if max_wall_time_s > 0 and (time.monotonic() - start_ts) >= max_wall_time_s:
+            summary = "stopped_by_wall_time_limit"
+            break
         if action_provider is None and current_model is not None:
             prompt = build_chat_prompt(messages, backend=str(settings.get("core", {}).get("backend", "vortex")), tokenizer=getattr(current_model, "tokenizer", None), default_system=None)
             with (model_lock() if model_lock is not None else nullcontext()):
-                output = current_model.generate(prompt, max_new_tokens=256, temperature=0.0)
+                output = current_model.generate(prompt, max_new_tokens=action_max_new_tokens, temperature=0.0)
             action, ok = _parse_action(output)
             if not ok:
                 messages.append({"role": "system", "content": "JSON ONLY. No markdown."})
                 prompt = build_chat_prompt(messages, backend=str(settings.get("core", {}).get("backend", "vortex")), tokenizer=getattr(current_model, "tokenizer", None), default_system=None)
                 with (model_lock() if model_lock is not None else nullcontext()):
-                    output = current_model.generate(prompt, max_new_tokens=256, temperature=0.0)
+                    output = current_model.generate(prompt, max_new_tokens=action_max_new_tokens, temperature=0.0)
                 action, ok = _parse_action(output)
                 if not ok:
                     action = Action(type="finish", args={"summary": "invalid_json"})
@@ -437,6 +467,7 @@ def run_agent(
             settings,
             current_model,
             model_lock,
+            max_new_tokens=final_summary_max_new_tokens,
         ) or summary
     if patch_id and not patch_text:
         patch_text = _load_patch_from_queue(workspace_dir, settings, patch_id)
@@ -455,6 +486,10 @@ def run_agent(
         "tools_ok": tools_ok,
         "summary": summary,
         "tool_calls": tool_calls,
+        "max_iters": max_iters,
+        "action_max_new_tokens": action_max_new_tokens,
+        "final_summary_max_new_tokens": final_summary_max_new_tokens,
+        "max_wall_time_s": max_wall_time_s,
     }
     backend = settings.get("core", {}).get("backend")
     if backend:
