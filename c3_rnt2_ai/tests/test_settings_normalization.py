@@ -69,7 +69,7 @@ def test_settings_manifest_loads_fragmented_profiles() -> None:
     assert "rtx4080_16gb_programming_train_docker" in document["profiles"]
     assert "ethical_security_lab_4080_offensive_lab" in document["profiles"]
     assert sources[-1].name == "settings.yaml"
-    assert len(sources) == 6
+    assert len(sources) == 7
 
 
 def _assert_security_lab_profile_is_local_and_safe(profile: str) -> None:
