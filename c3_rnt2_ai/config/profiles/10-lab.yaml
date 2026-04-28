@@ -67,10 +67,6 @@ profiles:
       domain_policy_path: "config/instructions/domain_policy.md"
     agent:
       web_allowlist: []
-      max_iters: 50
-      action_max_new_tokens: 768
-      final_summary_max_new_tokens: 2048
-      max_wall_time_s: 1800
     tools:
       web:
         enabled: false
@@ -260,6 +256,10 @@ profiles:
       lazy_model_load: true
     agent:
       web_allowlist: []
+      max_iters: 50
+      action_max_new_tokens: 768
+      final_summary_max_new_tokens: 2048
+      max_wall_time_s: 1800
     tools:
       web:
         enabled: false
