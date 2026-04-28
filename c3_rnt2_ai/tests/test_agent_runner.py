@@ -102,6 +102,60 @@ def test_agent_runner_uses_fresh_model_lock_context_per_generation(tmp_path: Pat
     assert lock_calls["count"] == 2
 
 
+def test_agent_runner_reads_generation_limits_from_settings(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "max_iters": 3,
+            "action_max_new_tokens": 777,
+            "final_summary_max_new_tokens": 888,
+        },
+    }
+
+    class DummyModel:
+        def __init__(self):
+            self.tokenizer = None
+            self.kwargs = []
+
+        def generate(self, _prompt: str, **kwargs):
+            self.kwargs.append(dict(kwargs))
+            if len(self.kwargs) == 1:
+                return json.dumps({"type": "read_file", "args": {"path": "missing.txt"}})
+            return json.dumps({"type": "finish", "args": {"summary": "done"}})
+
+    model = DummyModel()
+    report = run_agent("Use configured limits", settings, tmp_path, model=model)
+
+    assert report["ok"] is True
+    assert report["summary"] == "done"
+    assert len(report["tool_calls"]) == 1
+    assert [item["max_new_tokens"] for item in model.kwargs] == [777, 777]
+
+    episode_path = tmp_path / "data" / "episodes" / "agent.jsonl"
+    episode = json.loads(episode_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert episode["max_iters"] == 3
+    assert episode["action_max_new_tokens"] == 777
+    assert episode["final_summary_max_new_tokens"] == 888
+
+
+def test_agent_runner_stops_on_wall_time_limit(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {"web_allowlist": [], "max_iters": 5, "max_wall_time_s": 0.001},
+    }
+
+    def provider(_messages):
+        return Action(type="read_file", args={"path": "missing.txt"})
+
+    report = run_agent("Stop by time", settings, tmp_path, action_provider=provider)
+
+    assert report["ok"] is True
+    assert len(report["tool_calls"]) < 5
+
+
 def test_agent_tools_safe_mode_blocks_commands_and_writes(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("hola", encoding="utf-8")
     permissions = AgentPermissions.from_payload(
