@@ -35,7 +35,7 @@ DEFAULT_CONTROL_PORT = 8765
 DEFAULT_FRONTEND_PORT = 4173
 DEFAULT_API_PORT = 8000
 DEFAULT_RUNTIME_PORT = 30000
-DEFAULT_API_PROFILE = "rtx4080_16gb_programming_runtime_docker"
+DEFAULT_API_PROFILE = "rtx4080_16gb_programming_gemma4_local"
 DEFAULT_TRAINING_PROFILE = "rtx4080_16gb_programming_train_docker"
 DEFAULT_FALLBACK_PROFILE = "rtx4080_16gb_safe_windows_hf"
 DEFAULT_QUICK_QUEUE_THRESHOLD = 3
@@ -2198,8 +2198,20 @@ class ControlState:
             args.append("--no-build")
         if force_recreate:
             args.append("--force-recreate")
-        args.extend(["sglang-runtime", "vortex-api"])
+        args.extend(self._runtime_compose_services())
         return self._run_compose(args, log_path=log_path)
+
+    def _runtime_compose_services(self) -> list[str]:
+        settings = self._load_profile_settings(self.api_profile)
+        docker_cfg = settings.get("docker", {}) if isinstance(settings, dict) else {}
+        runtime_service = str(docker_cfg.get("runtime_service") or "").strip()
+        api_service = str(docker_cfg.get("api_service") or "vortex-api").strip() or "vortex-api"
+        services: list[str] = []
+        if runtime_service:
+            services.append(runtime_service)
+        if api_service not in services:
+            services.append(api_service)
+        return services
 
     def _compose_local_images_available(self) -> bool:
         for service in ("model-init", "vortex-api", "trainer", "eval"):
@@ -3647,18 +3659,21 @@ class ControlState:
             )
             return
 
-        code, _ = self._run_compose(["pull", "sglang-runtime"], log_path=log_path)
-        if code != 0:
-            self._set_bootstrap_state(
-                {
-                    "running": False,
-                    "stage": "failed",
-                    "message": "image_pull_failed",
-                    "mode": mode,
-                    "tail": _tail(log_path),
-                }
-            )
-            return
+        runtime_services = self._runtime_compose_services()
+        services_to_pull = [svc for svc in runtime_services if svc != "vortex-api"]
+        if services_to_pull:
+            code, _ = self._run_compose(["pull", *services_to_pull], log_path=log_path)
+            if code != 0:
+                self._set_bootstrap_state(
+                    {
+                        "running": False,
+                        "stage": "failed",
+                        "message": "image_pull_failed",
+                        "mode": mode,
+                        "tail": _tail(log_path),
+                    }
+                )
+                return
 
         if mode == "ensure":
             self._set_bootstrap_state({"stage": "runtime", "message": "starting_runtime_no_build", "mode": mode})
@@ -3765,7 +3780,7 @@ class ControlState:
     def _stop_runtime_stack(self, *, log_path: Path) -> None:
         if not self.compose_actions_enabled:
             raise RuntimeError("compose_actions_disabled")
-        code, _ = self._run_compose(["stop", "vortex-api", "sglang-runtime"], log_path=log_path)
+        code, _ = self._run_compose(["stop", *self._runtime_compose_services()], log_path=log_path)
         if code != 0:
             raise RuntimeError("runtime_stop_failed")
 
@@ -3777,7 +3792,7 @@ class ControlState:
         args = ["up", "-d"]
         if force_recreate:
             args.append("--force-recreate")
-        args.extend(["sglang-runtime", "vortex-api"])
+        args.extend(self._runtime_compose_services())
         code, _ = self._run_compose(args, log_path=log_path)
         if code != 0:
             raise RuntimeError("runtime_resume_failed")

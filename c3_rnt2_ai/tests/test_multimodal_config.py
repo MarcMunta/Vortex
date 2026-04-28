@@ -4,10 +4,11 @@ from c3rnt2.config import load_settings
 
 
 def test_multimodal_blocks_present_in_programming_profiles() -> None:
+    gemma = load_settings("rtx4080_16gb_programming_gemma4_local")
     local = load_settings("rtx4080_16gb_programming_local")
     runtime = load_settings("rtx4080_16gb_programming_runtime_docker")
 
-    for settings in (local, runtime):
+    for settings in (gemma, local, runtime):
         assert settings["voice"]["enabled"] is True
         assert settings["voice"]["push_to_talk"] is True
         assert settings["camera"]["enabled"] is True
@@ -23,7 +24,7 @@ def test_multimodal_blocks_present_in_programming_profiles() -> None:
 
 
 def test_multimodal_obsidian_folder_map_normalized() -> None:
-    settings = load_settings("rtx4080_16gb_programming_local")
+    settings = load_settings("rtx4080_16gb_programming_gemma4_local")
     folder_map = settings["obsidian"]["folder_map"]
 
     assert folder_map["architecture"] == "Projects/Vortex/Architecture"

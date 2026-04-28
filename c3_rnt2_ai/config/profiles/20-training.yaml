@@ -203,7 +203,7 @@ profiles:
     docker:
       enabled: true
       compose_path: "docker-compose.yml"
-      runtime_service: "sglang-runtime"
+      runtime_service:
       api_service: "vortex-api"
       trainer_service: "trainer"
       eval_service: "eval"

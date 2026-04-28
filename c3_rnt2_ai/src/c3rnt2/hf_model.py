@@ -1055,6 +1055,13 @@ def load_hf_model(settings: dict) -> HFModel:
     local_snapshot = _prepare_local_hf_snapshot(cache_dir, str(model_name))
     cache_status = model_cache_status(str(model_name), cache_dir)
     repo_cached = bool(local_snapshot) or bool(cache_status.get("cached"))
+    if offline_forced and not repo_cached:
+        raise RuntimeError(
+            "hf model cache missing for offline load: "
+            f"{model_name} in {cache_dir}. "
+            "Run explicitly: python -m c3rnt2.model_init "
+            f"--model {model_name} --cache-dir {cache_dir} --download"
+        )
     model_source = str(local_snapshot) if local_snapshot is not None else str(model_name)
     use_cache_lookup = local_snapshot is None
     base_repo_kwargs: dict[str, Any] = {}
@@ -1233,6 +1240,13 @@ def load_hf_model(settings: dict) -> HFModel:
     adapter_path = core.get("hf_adapter_path")
     use_latest = bool(core.get("hf_use_latest_adapter", False))
     merge_adapter = bool(core.get("hf_merge_adapter", False))
+    adapter_event: dict[str, Any] = {
+        "event": "hf_adapter_autoload",
+        "model": str(model_name),
+        "use_latest": bool(use_latest),
+        "registry_dir": str((settings.get("hf_train", {}) or {}).get("registry_dir") or "data/registry/hf_train"),
+        "loaded": False,
+    }
     if adapter_path is None and use_latest:
         try:
             from .training.hf_qlora import resolve_latest_adapter
@@ -1260,6 +1274,14 @@ def load_hf_model(settings: dict) -> HFModel:
                 pass
             if merge_adapter and hasattr(model.model, "merge_and_unload"):
                 model.model = model.model.merge_and_unload()
+        adapter_event.update({"loaded": True, "adapter_path": adapter_path})
+    elif use_latest:
+        adapter_event.update({"warning": "latest_adapter_not_found"})
+    if use_latest:
+        try:
+            _log_infer_stats(Path("."), adapter_event)
+        except Exception:
+            pass
     used_quant = False
     if hasattr(model, "cfg"):
         used_quant = bool(model.cfg.load_kwargs.get("load_in_4bit") or model.cfg.load_kwargs.get("load_in_8bit"))

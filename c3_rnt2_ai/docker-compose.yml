@@ -1,6 +1,7 @@
 services:
   sglang-runtime:
     image: lmsysorg/sglang:v0.4.2-cu121
+    profiles: ["manual", "qwen-sglang"]
     restart: unless-stopped
     gpus: all
     shm_size: "32g"
@@ -41,12 +42,15 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    profiles: ["manual", "qwen-sglang"]
+    profiles: ["manual"]
     working_dir: /workspace
     environment:
       PYTHONPATH: /workspace/src
       HF_TOKEN: ${HF_TOKEN:-}
       HF_HOME: /root/.cache/huggingface
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
     volumes:
       - .:/workspace
       - ./data/models/hf-cache:/root/.cache/huggingface
@@ -55,9 +59,10 @@ services:
       - -m
       - c3rnt2.model_init
       - --model
-      - Qwen/Qwen2.5-Coder-14B-Instruct-AWQ
+      - google/gemma-4-E4B-it
       - --cache-dir
       - /root/.cache/huggingface
+      - --status-only
 
   vortex-api:
     build:
@@ -68,9 +73,6 @@ services:
     gpus: all
     ipc: host
     shm_size: "32g"
-    depends_on:
-      sglang-runtime:
-        condition: service_healthy
     working_dir: /workspace
     environment:
       PYTHONPATH: /workspace/src
@@ -94,7 +96,7 @@ services:
       - c3rnt2
       - serve
       - --profile
-      - ${VORTEX_API_PROFILE:-rtx4080_16gb_programming_runtime_docker}
+      - ${VORTEX_API_PROFILE:-rtx4080_16gb_programming_gemma4_local}
       - --host
       - 0.0.0.0
       - --port
@@ -161,8 +163,6 @@ services:
     depends_on:
       vortex-api:
         condition: service_healthy
-      sglang-runtime:
-        condition: service_healthy
     working_dir: /workspace
     environment:
       PYTHONPATH: /workspace/src
@@ -190,13 +190,13 @@ services:
       - --port
       - "8765"
       - --api-profile
-      - ${VORTEX_API_PROFILE:-rtx4080_16gb_programming_runtime_docker}
+      - ${VORTEX_API_PROFILE:-rtx4080_16gb_programming_gemma4_local}
       - --training-profile
       - ${VORTEX_TRAINING_PROFILE:-rtx4080_16gb_programming_train_docker}
       - --api-url
       - http://vortex-api:8000
       - --runtime-url
-      - http://sglang-runtime:30000
+      - http://vortex-api:8000
       - --frontend-url
       - http://vortex-frontend:4173
       - --assume-docker-ready
@@ -266,11 +266,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    profiles: ["manual", "qwen-sglang"]
+    profiles: ["manual"]
     init: true
-    network_mode: "service:sglang-runtime"
-    depends_on:
-      - sglang-runtime
     working_dir: /workspace
     environment:
       PYTHONPATH: /workspace/src
@@ -288,7 +285,7 @@ services:
       - c3rnt2
       - bench
       - --profile
-      - rtx4080_16gb_programming_local
+      - rtx4080_16gb_programming_gemma4_local
       - --scenario
       - default
       - --mock

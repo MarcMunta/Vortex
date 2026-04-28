@@ -21,3 +21,5 @@ c3_rnt2_ai/skills/_staging/*
 !c3_rnt2_ai/skills/_staging/.gitkeep
 c3_rnt2_ai/skills/_proposals/*
 !c3_rnt2_ai/skills/_proposals/.gitkeep
+.aider*
+.env

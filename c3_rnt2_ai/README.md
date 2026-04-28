@@ -12,11 +12,12 @@ Nota de rol:
 - **Vortex-Tok** es para los backends Vortex/C3 (no se usa para HF). Bench: `python scripts/bench_tokenizer.py --profile dev_small`.
 
 ## Ruta recomendada (RTX 4080 16GB)
-La ruta principal soportada es ahora **Docker-first + SGLang + Qwen2.5-Coder-14B**.
+La ruta principal soportada es ahora **Docker-first + HF local + Gemma 4 E4B**.
 
 Perfiles principales:
-- `rtx4080_16gb_programming_local`: serving local con `SGLang` en Docker y `Qwen/Qwen2.5-Coder-14B-Instruct-AWQ`.
+- `rtx4080_16gb_programming_gemma4_local`: serving diario local con HF y `google/gemma-4-E4B-it`.
 - `rtx4080_16gb_programming_train_docker`: training manual en contenedor separado con `google/gemma-4-E4B-it` + LoRA 4-bit.
+- `rtx4080_16gb_programming_local`: perfil legacy/manual para comparativas con `SGLang` + `Qwen/Qwen2.5-Coder-14B-Instruct-AWQ`.
 
 Los perfiles `120B-like`, `local_lab`, `security-lab` y variantes WSL quedan como secundarios o de compatibilidad. La identidad principal de Vortex sale de:
 - `config/instructions/vortex_system.md`
@@ -27,11 +28,20 @@ Los perfiles `120B-like`, `local_lab`, `security-lab` y variantes WSL quedan com
 Levanta runtime + API local:
 
 ```bash
-docker compose up -d sglang-runtime vortex-api
-python -m c3rnt2 prepare-model --profile rtx4080_16gb_programming_local
-python -m c3rnt2 doctor --deep --mock --profile rtx4080_16gb_programming_local
-python -m c3rnt2 bench --profile rtx4080_16gb_programming_local --max-new-tokens 64 --json-out data/bench/programming_local.json
+python -m c3rnt2.model_init --model google/gemma-4-E4B-it --cache-dir data/models/hf-cache --status-only
+docker compose up -d vortex-api
+python -m c3rnt2 prepare-model --profile rtx4080_16gb_programming_gemma4_local
+python -m c3rnt2 doctor --deep --mock --profile rtx4080_16gb_programming_gemma4_local
+python -m c3rnt2 bench --profile rtx4080_16gb_programming_gemma4_local --max-new-tokens 64 --json-out data/bench/programming_gemma4_local.json
 ```
+
+Si faltan pesos locales, descarga solo con paso manual explicito:
+
+```bash
+python -m c3rnt2.model_init --model google/gemma-4-E4B-it --cache-dir data/models/hf-cache --download
+```
+
+Despues, runtime normal queda offline (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`).
 
 Stack local completo con frontend + control:
 
@@ -42,7 +52,7 @@ Stack local completo con frontend + control:
 TambiÃ©n puedes arrancarlo directamente con Docker:
 
 ```bash
-docker compose up -d vortex-api
+docker compose up -d vortex-api vortex-control vortex-frontend
 ```
 
 Ese comando ahora levanta ademÃ¡s:
@@ -56,7 +66,7 @@ Training manual separado:
 ```bash
 docker compose run --rm trainer python -m c3rnt2 doctor --deep --mock --profile rtx4080_16gb_programming_train_docker
 docker compose run --rm trainer python -m c3rnt2 train-once --profile rtx4080_16gb_programming_train_docker
-docker compose run --rm eval python -m c3rnt2 bench --profile rtx4080_16gb_programming_local --scenario default
+docker compose run --rm eval python -m c3rnt2 bench --profile rtx4080_16gb_programming_gemma4_local --scenario default
 ```
 
 Windows one-command local-lab bootstrap:
@@ -65,18 +75,21 @@ Windows one-command local-lab bootstrap:
 powershell -ExecutionPolicy Bypass -File ..\scripts\local_lab_init.ps1
 ```
 
-Ese wrapper levanta `c3rnt2.control_server`, asegura `model-init` si faltan pesos locales, arranca `sglang-runtime` + `vortex-api` y abre `vortex-chat` en `http://127.0.0.1:4173`.
+Ese wrapper levanta `c3rnt2.control_server`, verifica pesos locales de Gemma 4, arranca `vortex-api` y abre `vortex-chat` en `http://127.0.0.1:4173`.
 
 Notas:
-- El runtime OpenAI-compatible queda expuesto en `http://127.0.0.1:30000`.
+- El runtime diario es HF dentro de `vortex-api`; no requiere `sglang-runtime`.
+- `sglang-runtime` queda solo como perfil manual legacy: `docker compose --profile qwen-sglang up -d sglang-runtime vortex-api-sglang`.
 - La API de Vortex queda expuesta en `http://127.0.0.1:8000`.
 - El control plane local queda expuesto en `http://127.0.0.1:8765`.
-- No hay fallback silencioso en los perfiles principales Docker-first.
+- No hay fallback silencioso a Qwen ni a modelo remoto en el perfil Gemma diario.
 - `ingest_web`, `autolearn.web_ingest` y `autolearn.url_discovery` quedan desactivados en el path principal.
 - El modo internet del frontend es por prompt y usa allowlist editable desde la UI/control service.
 - Los runs de entrenamiento rápido/completo quedan en `data/control/training_runs/`.
 - El corpus local vive en `data/corpora/programming/{python,fastapi,react_ts,pytorch,git_linux,repo_notes}` y puedes ampliar la parte defensiva en `data/corpora/cybersecurity/`.
 - Los adapters HF quedan en cuarentena manual; el training genera `meta.json`, eval y bench, pero no promociona a producción automaticamente.
+
+Adapter Gemma: `data/registry/hf_train/gemma4_e4b`. Runtime carga ultimo adapter aprobado/local si existe; si no existe, arranca base Gemma y deja log.
 
 ## RTX 4080 16GB Quickstart (Windows, perfil safe)
 Comandos recomendados (core backend, sin descargas, web deny-by-default):

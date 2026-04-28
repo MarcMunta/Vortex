@@ -2,7 +2,7 @@ param(
   [switch]$Build,
   [switch]$NoBrowser,
   [switch]$Logs,
-  [string]$ApiProfile = "rtx4080_16gb_programming_runtime_docker"
+  [string]$ApiProfile = "rtx4080_16gb_programming_gemma4_local"
 )
 
 $ErrorActionPreference = "Stop"

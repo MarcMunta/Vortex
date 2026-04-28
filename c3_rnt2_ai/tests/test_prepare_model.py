@@ -162,6 +162,38 @@ def test_prepare_model_state_fails_when_sglang_model_missing(tmp_path: Path, mon
     assert out["model_reason"] == "sglang_model_missing"
 
 
+def test_prepare_model_state_fails_when_gemma_cache_missing(tmp_path: Path) -> None:
+    settings = {
+        "_profile": "rtx4080_16gb_programming_gemma4_local",
+        "core": {
+            "backend": "hf",
+            "hf_model": "google/gemma-4-E4B-it",
+            "hf_cache_dir": str(tmp_path / "hf-cache"),
+            "hf_local_files_only": True,
+            "backend_fallback": None,
+            "hf_fallback": None,
+            "allow_implicit_hf_fallback": False,
+        },
+        "docker": {"enabled": False},
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "security": {"web": {"strict": True, "allowlist_domains": []}},
+        "continuous": {"ingest_web": False},
+        "autolearn": {"web_ingest": False, "url_discovery": False},
+        "profile_contract": {
+            "offline_required": True,
+            "require_web_disabled": True,
+            "disable_fallbacks": True,
+        },
+    }
+    out = prepare_model_state(settings, base_dir=tmp_path)
+    assert out["ok"] is False
+    assert out["offline_ready"] is False
+    assert out["model_ready"] is False
+    assert out["model_reason"] == "hf_model_cache_missing"
+    assert "hf_model_cache_missing" in str(out["errors"])
+    assert "--download" in "\n".join(out["next_steps"] or [])
+
+
 def test_docker_ready_status_can_be_assumed_inside_container(tmp_path: Path, monkeypatch) -> None:
     compose_path = tmp_path / "docker-compose.yml"
     compose_path.write_text("services: {}\n", encoding="utf-8")

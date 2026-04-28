@@ -78,18 +78,31 @@ def ensure_model(model_id: str, *, cache_dir: Path) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Ensure the local Hugging Face model cache is populated.")
+    parser = argparse.ArgumentParser(description="Check or explicitly populate the local Hugging Face model cache.")
     parser.add_argument("--model", default=DEFAULT_MODEL_ID)
     parser.add_argument("--cache-dir", default=None)
     parser.add_argument("--status-only", action="store_true")
+    parser.add_argument("--download", action="store_true", help="Explicitly download the model into the local cache.")
     args = parser.parse_args(argv)
 
     cache_dir = resolve_cache_dir(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    if bool(args.status_only):
-        payload = {"ok": True, "ts": time.time(), **model_cache_status(str(args.model), cache_dir)}
-    else:
+    if bool(args.download):
         payload = ensure_model(str(args.model), cache_dir=cache_dir)
+    else:
+        status = model_cache_status(str(args.model), cache_dir)
+        payload = {
+            "ok": bool(status.get("cached", False)),
+            "downloaded": False,
+            "ts": time.time(),
+            **status,
+        }
+        if not bool(payload.get("ok")):
+            payload["error"] = "model_not_cached"
+            payload["next_step"] = (
+                "Run explicitly: python -m c3rnt2.model_init "
+                f"--model {args.model} --cache-dir {cache_dir} --download"
+            )
     print(json.dumps(payload, ensure_ascii=True))
     return 0 if bool(payload.get("ok")) else 1
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from c3rnt2.config import (
     load_settings,
     load_settings_document,
@@ -45,6 +47,7 @@ def test_settings_normalization_profiles() -> None:
     _assert_profile("rtx4080_16gb_gemma3_12b_hf")
     _assert_profile("rtx4080_16gb_vortexx_next")
     _assert_profile("safe_selftrain_4080")
+    _assert_profile("rtx4080_16gb_programming_gemma4_local")
     _assert_profile("rtx4080_16gb_programming_local")
     _assert_profile("rtx4080_16gb_programming_train_docker")
     _assert_profile("rtx4080_16gb_programming_train_wsl")
@@ -107,27 +110,38 @@ def test_legacy_offensive_profile_name_removed() -> None:
 
 
 def test_programming_profiles_are_local_and_offline() -> None:
-    daily = load_settings("rtx4080_16gb_programming_local")
+    daily = load_settings("rtx4080_16gb_programming_gemma4_local")
+    legacy = load_settings("rtx4080_16gb_programming_local")
     train = load_settings("rtx4080_16gb_programming_train_docker")
     train_wsl = load_settings("rtx4080_16gb_programming_train_wsl")
 
-    assert daily["core"]["backend"] == "external"
-    assert daily["core"]["external_engine"] == "sglang"
-    assert daily["core"]["external_base_url"] == "http://127.0.0.1:30000"
-    assert daily["core"]["external_model"] == "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
+    assert daily["core"]["backend"] == "hf"
+    assert daily["core"]["hf_model"] == "google/gemma-4-E4B-it"
+    assert daily["core"]["hf_model_loader"] == "image_text_to_text"
+    assert daily["core"]["hf_local_files_only"] is True
+    assert daily["core"]["hf_use_latest_adapter"] is True
     assert daily["core"]["backend_fallback"] is None
     assert daily["core"]["hf_fallback"] is None
     assert daily["core"]["allow_implicit_hf_fallback"] is False
     assert daily["docker"]["enabled"] is True
+    assert daily["docker"]["runtime_service"] is None
     assert daily["tools"]["web"]["enabled"] is False
     assert daily["continuous"]["ingest_web"] is False
+    assert daily["continuous"]["web_discovery"]["enabled"] is False
     assert daily["autolearn"]["web_ingest"] is False
     assert daily["autolearn"]["url_discovery"] is False
-    assert daily["profile_contract"]["require_external_engine"] == "sglang"
+    assert daily["profile_contract"]["require_external_engine"] is None
     assert daily["profile_contract"]["require_docker"] is True
     assert daily["profile_contract"]["disable_fallbacks"] is True
     assert daily["continuous"]["local_sources"]["include_repo"] is True
+    assert daily["continuous"]["local_sources"]["include_local_corpus"] is True
     assert daily["hf_train"]["enabled"] is False
+    assert daily["hf_train"]["registry_dir"] == "data/registry/hf_train/gemma4_e4b"
+
+    assert legacy["core"]["backend"] == "external"
+    assert legacy["core"]["external_engine"] == "sglang"
+    assert legacy["core"]["external_model"] == "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
+    assert legacy["core"]["backend_fallback"] is None
 
     assert train["core"]["backend"] == "hf"
     assert train["core"]["hf_model"] == "google/gemma-4-E4B-it"
@@ -152,3 +166,24 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert train_wsl["server"]["train_strategy"] == "wsl_subprocess_unload"
     assert train_wsl["server"]["wsl_workdir"] == "/mnt/d/Vortex/c3_rnt2_ai"
     assert train_wsl["profile_contract"]["require_wsl_training"] is True
+
+
+def test_docker_compose_defaults_to_gemma_without_qwen_sglang_dependency() -> None:
+    from c3rnt2 import control_server
+
+    compose = yaml.safe_load((BASE_DIR / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    api = services["vortex-api"]
+    control = services["vortex-control"]
+    sglang = services["sglang-runtime"]
+
+    assert control_server.DEFAULT_API_PROFILE == "rtx4080_16gb_programming_gemma4_local"
+    assert "depends_on" not in api or "sglang-runtime" not in (api.get("depends_on") or {})
+    assert "sglang-runtime" not in (control.get("depends_on") or {})
+    assert "rtx4080_16gb_programming_gemma4_local" in " ".join(api["command"])
+    assert "rtx4080_16gb_programming_gemma4_local" in " ".join(control["command"])
+    assert "manual" in sglang.get("profiles", [])
+    assert "qwen-sglang" in sglang.get("profiles", [])
+    assert api["environment"]["HF_HUB_OFFLINE"] == "1"
+    assert api["environment"]["TRANSFORMERS_OFFLINE"] == "1"
+    assert api["environment"]["HF_DATASETS_OFFLINE"] == "1"

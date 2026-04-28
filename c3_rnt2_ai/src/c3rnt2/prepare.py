@@ -310,6 +310,9 @@ def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict
     hf_quant = _hf_quant_status(core)
     hf_offload = _hf_offload_status(core, base_dir=base_dir)
     hf_device = str(core.get("hf_device") or "").strip().lower() or None
+    hf_model = str(core.get("hf_model") or "").strip()
+    hf_cache_dir = resolve_cache_dir(core.get("hf_cache_dir") or (base_dir / "data" / "models" / "hf-cache"))
+    hf_cache = model_cache_status(hf_model or DEFAULT_MODEL_ID, hf_cache_dir)
 
     warnings: list[str] = []
     errors: list[str] = []
@@ -410,7 +413,10 @@ def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict
         model_ready = bool(llama.get("ok", False) and active_model)
         model_reason = "model_ready" if model_ready else str(llama.get("error") or "llama_cpp_not_ready")
     elif backend_resolved == "hf":
-        model_reason = "model_ready" if model_ready else "hf_model_missing"
+        model_ready = bool(active_model and hf_cache.get("cached", False))
+        model_reason = "model_ready" if model_ready else (
+            "hf_model_cache_missing" if active_model else "hf_model_missing"
+        )
 
     offline_ready = bool(web_disabled)
     offline_reason = web_reason
@@ -427,6 +433,9 @@ def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict
     elif backend_resolved == "hf" and is_windows and is_120b_like and not hf_safe:
         offline_ready = False
         offline_reason = "unsafe_hf_config_windows_120b_like"
+    elif backend_resolved == "hf" and not bool(hf_cache.get("cached", False)):
+        offline_ready = False
+        offline_reason = "hf_model_cache_missing"
 
     if backend_requested == "external" and not external_ready:
         errors.append(external_reason)
@@ -455,6 +464,11 @@ def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict
         next_steps.append("Install and initialize WSL2, then set server.wsl_workdir to the repo mounted under /mnt/.")
     if bool(contract.get("require_docker", False)) and not docker_ready:
         next_steps.append("Start Docker Desktop and verify `docker info` succeeds.")
+    if backend_resolved == "hf" and not bool(hf_cache.get("cached", False)):
+        next_steps.append(
+            "Populate Gemma explicitly: python -m c3rnt2.model_init "
+            f"--model {active_model or DEFAULT_MODEL_ID} --cache-dir {hf_cache_dir} --download"
+        )
     next_steps.append(f"Re-run: python -m vortex prepare-model --profile {profile}")
 
     degraded_reason = None
@@ -483,6 +497,7 @@ def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict
             "device": hf_device,
             "quant": hf_quant,
             "offload": hf_offload,
+            "cache": hf_cache,
             "safe": bool(hf_safe),
         },
         "llama_cpp": {
