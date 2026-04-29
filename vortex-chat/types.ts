@@ -177,6 +177,7 @@ export interface Message {
   content: string;
   thought?: string;
   requestId?: string;
+  finishReason?: string | null;
   trainingEvent?: boolean;
   learningStatus?: 'queued' | 'scheduled' | 'consumed' | 'skipped' | string;
   learningQueueId?: string;

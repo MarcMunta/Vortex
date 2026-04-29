@@ -587,6 +587,7 @@ def _run_doctor_checks(settings: dict, base_dir: Path) -> dict:
             "web_reason": prepare_state.get("web_reason"),
             "training_reason": prepare_state.get("training_reason"),
             "degraded_reason": prepare_state.get("degraded_reason"),
+            "next_steps": prepare_state.get("next_steps"),
         }
         if not bool(prepare_state.get("ok", False)):
             for err in prepare_state.get("errors") or []:

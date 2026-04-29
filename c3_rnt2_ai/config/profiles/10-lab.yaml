@@ -205,6 +205,115 @@ profiles:
       default_width: 360
       default_height: 220
       default_kinds: ["note", "presentation", "browser", "image", "obsidian", "sketch"]
+  rtx4080_16gb_programming_qwen_coder_sglang:
+    # Manual/opt-in inference path only. Do not use AWQ for LoRA/QLoRA training.
+    base_profile: rtx4080_16gb_programming_local
+  rtx4080_16gb_programming_qwen_coder_local:
+    # Canonical daily-use profile: fully-local Qwen Coder HF runtime.
+    # No Gemma fallback, no SGLang dependency, no web discovery.
+    base_profile: rtx4080_16gb_programming_local
+    core:
+      backend: hf
+      external_engine:
+      external_base_url:
+      external_model:
+      hf_model: "Qwen/Qwen2.5-Coder-7B-Instruct"
+      hf_model_loader: causal_lm
+      hf_enable_thinking: false
+      hf_cache_dir: "data/models/hf-cache"
+      hf_local_files_only: true
+      hf_device_map: auto
+      hf_max_memory:
+        0: "12GiB"
+        cpu: "48GiB"
+      hf_offload_folder: "data/hf_offload"
+      hf_use_safetensors: true
+      hf_load_in_4bit: true
+      hf_load_in_8bit: false
+      hf_device: cuda
+      hf_attn_implementation: sdpa
+      hf_system_prompt: "You are Vortex, a fully local Qwen Coder programming assistant for code, Flutter, Dart, and robust app architecture."
+      hf_use_latest_adapter: true
+      hf_adapter_path:
+      hf_merge_adapter: false
+      dtype: bf16
+      backend_fallback:
+      hf_fallback:
+      allow_implicit_hf_fallback: false
+      vram_threshold_mb: 1600
+      vram_floor_tokens: 256
+      vram_ceil_tokens: 4096
+      vram_safety_margin_mb: 768
+    docker:
+      enabled: true
+      compose_path: "docker-compose.yml"
+      runtime_service:
+      api_service: "vortex-api"
+      trainer_service: "trainer"
+      eval_service: "eval"
+    server:
+      auto_reload_adapter: true
+      reload_interval_s: 15
+      allow_parallel_runtime_training: false
+      lazy_model_load: true
+    agent:
+      web_allowlist: []
+      max_iters: 50
+      action_max_new_tokens: 768
+      final_summary_max_new_tokens: 2048
+      max_wall_time_s: 1800
+    tools:
+      web:
+        enabled: false
+        allow_domains: []
+    security:
+      web:
+        strict: true
+        allowlist_domains: []
+    continuous:
+      ingest_web: false
+      ingest_urls: []
+      web_discovery:
+        enabled: false
+        seed_queries: []
+        max_urls_per_tick: 0
+        max_queue: 0
+      local_sources:
+        enabled: true
+        include_repo: true
+        include_local_corpus: true
+        include_lessons: true
+        include_logs: false
+        include_memory: false
+    autolearn:
+      enabled: false
+      web_ingest: false
+      url_discovery: false
+      allow_domains: []
+    hf_train:
+      enabled: false
+      model_name: "Qwen/Qwen2.5-Coder-7B-Instruct"
+      registry_dir: "data/registry/hf_train/qwen_coder_flutter"
+      manual_promotion_only: true
+    profile_contract:
+      offline_required: true
+      require_web_disabled: true
+      require_ollama: false
+      require_external_engine:
+      require_local_base_url: false
+      require_docker: true
+      disable_fallbacks: true
+      approved_training_sources_only: false
+      min_host_ram_free_mb: 4096
+    decode:
+      max_new_tokens: 2048
+      default_code_max_new_tokens: 3072
+      hard_max_new_tokens: 4096
+    generation:
+      default_max_tokens: 2048
+      code_max_tokens: 3072
+      hard_max_tokens: 4096
+      allow_long_code_outputs: true
   rtx4080_16gb_programming_gemma4_local:
     # Canonical daily-use profile: fully-local Gemma 4 E4B HF runtime.
     # No Qwen/SGLang fallback, no web discovery, adapters loaded from local registry.
@@ -222,11 +331,11 @@ profiles:
       hf_local_files_only: true
       hf_device_map: auto
       hf_max_memory:
-        0: "14GiB"
+        0: "15GiB"
         cpu: "48GiB"
       hf_offload_folder: "data/hf_offload"
       hf_use_safetensors: true
-      hf_load_in_4bit: false
+      hf_load_in_4bit: true
       hf_load_in_8bit: false
       hf_device: cuda
       hf_attn_implementation: sdpa
@@ -239,8 +348,8 @@ profiles:
       hf_fallback:
       allow_implicit_hf_fallback: false
       vram_threshold_mb: 1600
-      vram_floor_tokens: 32
-      vram_ceil_tokens: 512
+      vram_floor_tokens: 256
+      vram_ceil_tokens: 4096
       vram_safety_margin_mb: 768
     docker:
       enabled: true
@@ -303,10 +412,17 @@ profiles:
       approved_training_sources_only: false
       min_host_ram_free_mb: 4096
     decode:
-      max_new_tokens: 192
+      max_new_tokens: 2048
+      default_code_max_new_tokens: 3072
+      hard_max_new_tokens: 4096
+    generation:
+      default_max_tokens: 2048
+      code_max_tokens: 3072
+      hard_max_tokens: 4096
+      allow_long_code_outputs: true
   rtx4080_16gb_programming_runtime_docker:
     # Compatibility alias for the current Docker default.
-    base_profile: rtx4080_16gb_programming_gemma4_local
+    base_profile: rtx4080_16gb_programming_qwen_coder_local
     core:
       hf_cache_dir: "data/models/hf-cache"
     agent:

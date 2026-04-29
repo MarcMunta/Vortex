@@ -1,7 +1,7 @@
 param(
     [string]$Profile = "local_learning_lab_4080",
-    [string]$ApiProfile = "rtx4080_16gb_gemma4_26b_a4b_hf",
-    [string]$TrainingProfile = "rtx4080_16gb_programming_train_docker",
+    [string]$ApiProfile = "rtx4080_16gb_programming_qwen_coder_local",
+    [string]$TrainingProfile = "rtx4080_16gb_programming_qwen_coder_train_docker",
     [int]$FrontendPort = 4173,
     [int]$ApiPort = 8000,
     [int]$ControlPort = 8765,

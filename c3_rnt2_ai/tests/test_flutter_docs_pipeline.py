@@ -7,7 +7,7 @@ from c3rnt2.config import load_settings
 from c3rnt2.flutter_docs.classifier import classify_text
 from c3rnt2.flutter_docs.cleaner import clean_page
 from c3rnt2.flutter_docs.coverage import build_coverage_report
-from c3rnt2.flutter_docs.crawler import normalize_url
+from c3rnt2.flutter_docs.crawler import CURATED_PRIORITY_URLS, DEFAULT_SOURCES, OPTIONAL_SOURCES, normalize_url
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -16,12 +16,24 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def test_crawler_rejects_urls_outside_allowed_domains() -> None:
-    allowed = {"docs.flutter.dev", "api.flutter.dev"}
+    allowed = {"docs.flutter.dev", "api.flutter.dev", "dart.dev"}
 
     assert normalize_url("https://docs.flutter.dev/ui/layout", allowed) == "https://docs.flutter.dev/ui/layout"
+    assert normalize_url("https://api.flutter.dev/flutter/widgets/ListView-class.html", allowed) == "https://api.flutter.dev/flutter/widgets/ListView-class.html"
+    assert normalize_url("https://dart.dev/language/async", allowed) == "https://dart.dev/language/async"
     assert normalize_url("https://evil.example/ui/layout", allowed) is None
+    assert normalize_url("https://pub.dev/packages/provider", allowed) is None
+    assert normalize_url("https://github.com/flutter/flutter/issues/1", allowed) is None
     assert normalize_url("https://docs.flutter.dev/assets/logo.png", allowed) is None
     assert normalize_url("http://docs.flutter.dev/ui/layout", allowed) is None
+
+
+def test_flutter_ingest_sources_are_official_only() -> None:
+    approved = {"docs.flutter.dev", "api.flutter.dev", "dart.dev"}
+    assert set(DEFAULT_SOURCES) == {"docs.flutter.dev", "api.flutter.dev"}
+    assert set(OPTIONAL_SOURCES) == {"dart.dev"}
+    for url in CURATED_PRIORITY_URLS:
+        assert normalize_url(url, approved) == url.rstrip("/")
 
 
 def test_cleaner_removes_navigation_and_preserves_code(tmp_path: Path) -> None:
@@ -97,9 +109,10 @@ def test_coverage_report_detects_low_coverage_topics(tmp_path: Path) -> None:
 
 
 def test_training_profile_keeps_general_web_disabled() -> None:
-    settings = load_settings("rtx4080_16gb_programming_train_docker")
+    settings = load_settings("rtx4080_16gb_programming_qwen_coder_train_docker")
 
     assert settings["tools"]["web"]["enabled"] is False
     assert settings["continuous"]["ingest_web"] is False
     assert settings["autolearn"]["enabled"] is False
     assert settings["hf_train"]["use_weighted_sampling"] is True
+    assert settings["hf_train"]["source_kind_weights"]["flutter_official_docs_debugging_sft"] > settings["hf_train"]["source_kind_weights"]["episode"]

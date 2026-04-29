@@ -23,20 +23,120 @@ type StreamChunk = {
   fileChanges?: { path: string; diff: string }[];
   browserActions?: BrowserAction[];
   requestId?: string;
+  finishReason?: string | null;
   done: boolean;
 };
 
+export type PromptIntent = {
+  wantsCode: boolean;
+  wantsCompleteCode: boolean;
+  isFlutter: boolean;
+  isDart: boolean;
+  isDebugging: boolean;
+  isExplanationOnly: boolean;
+};
+
+export const DEFAULT_CHAT_MAX_TOKENS = 2048;
+export const CODE_CHAT_MAX_TOKENS = 3072;
+export const COMPLETE_CODE_MAX_TOKENS = 4096;
+
 const resolveApiBaseUrl = (): string => {
-  const raw = (import.meta.env.VITE_API_BASE_URL || "").trim();
+  const env = ((import.meta as any).env || {}) as Record<string, string | undefined>;
+  const raw = (env.VITE_API_BASE_URL || "").trim();
   if (raw) return raw.replace(/\/+$/, "");
   const port = (
-    import.meta.env.VITE_BACKEND_PORT
-    || import.meta.env.VITE_API_PORT
+    env.VITE_BACKEND_PORT
+    || env.VITE_API_PORT
     || "8000"
   ).trim() || "8000";
   const host = typeof window !== "undefined" ? (window.location.hostname || "127.0.0.1") : "127.0.0.1";
   return `http://${host}:${port}`;
 };
+
+export function classifyPromptIntent(prompt: string): PromptIntent {
+  const text = String(prompt || "");
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  const has = (pattern: RegExp) => pattern.test(normalized);
+  const isFlutter = has(/\bflutter\b|widget|scaffold|materialapp|textformfield|renderbox|renderflex|overflow|layout/);
+  const isDart = isFlutter || has(/\bdart\b|void\s+main|statelesswidget|statefulwidget/);
+  const wantsCompleteCode = has(/completo|funcional|sin\s+cortar|archivo\s+completo|full\s+code|complete\s+code|compilable|cerrado/);
+  const isDebugging = has(/debug|error|bug|renderbox|renderflex|overflow|layout|exception|stacktrace|fall[ao]|arregla|corrige/);
+  const isExplanationOnly = has(/solo\s+explica|solo\s+explicacion|sin\s+codigo|no\s+codigo|explain\s+only|no\s+code/);
+  const wantsCode = !isExplanationOnly && (
+    wantsCompleteCode
+    || isFlutter
+    || isDart
+    || has(/codigo|code|implementa|crea|formulario|login|pantalla|clase|funcion|function|component|archivo|snippet|ejemplo/)
+  );
+  return {
+    wantsCode,
+    wantsCompleteCode,
+    isFlutter,
+    isDart,
+    isDebugging,
+    isExplanationOnly,
+  };
+}
+
+export function shouldUseSources(prompt: string, useInternet: boolean, intent: PromptIntent): boolean {
+  if (intent.wantsCode && !/fuente|documentaci[oó]n|docs|buscar|internet|oficial/i.test(prompt)) {
+    return false;
+  }
+  return Boolean(useInternet);
+}
+
+const stripCodeFencesForBalance = (text: string): string => {
+  return String(text || "")
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/^```[^\n]*\n?/, "").replace(/```$/, ""));
+};
+
+const balanceOf = (text: string, open: string, close: string): number => {
+  let balance = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  for (const ch of text) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === open) balance++;
+    if (ch === close) balance--;
+  }
+  return balance;
+};
+
+export function isLikelyTruncatedCode(text: string): boolean {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const fenceCount = (value.match(/```/g) || []).length;
+  if (fenceCount % 2 === 1) return true;
+  const hasCodeSignal = /```|class\s+\w+|void\s+main\(|Widget\s+build\(|State<|Scaffold\(|MaterialApp\(|TextFormField\(|=>|;\s*$/m.test(value);
+  if (!hasCodeSignal) return false;
+  const code = stripCodeFencesForBalance(value);
+  if (balanceOf(code, "{", "}") > 0) return true;
+  if (balanceOf(code, "(", ")") > 0) return true;
+  if (balanceOf(code, "[", "]") > 0) return true;
+  const tail = value.split("\n").filter((line) => line.trim()).slice(-1)[0]?.trim() || "";
+  if (/^(controller|child|children|onPressed|validator|return)\s*:?\s*$/.test(tail)) return true;
+  if (/(:\s*_[A-Za-z0-9_]*|=>|\.|,)$/.test(tail)) return true;
+  if (/\b(class|Widget build|State<|Scaffold|MaterialApp)\b[\s\S]*$/.test(code) && balanceOf(code, "{", "}") !== 0) return true;
+  return false;
+}
 
 const repairMojibakeText = (value: string): string => {
   if (!/[ÃÂ]/.test(value)) return value;
@@ -163,22 +263,29 @@ const buildPromptEnvelope = (
   mode: AppMode,
   useThinking: boolean,
   language: "es" | "en" = "es",
-  permissions?: WorkspacePermissions
+  permissions?: WorkspacePermissions,
+  intent: PromptIntent = classifyPromptIntent(prompt)
 ) => {
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
   const selectedHistory = selectHistoryWindow(history);
   const lang = language === "es" ? "Responde en espanol." : "Reply in English.";
-  const tempo = useThinking
+  const tempo = intent.wantsCode
     ? (
         language === "es"
-          ? "Piensa antes de responder, pero entrega solo la respuesta util."
-          : "Think before answering, but return only the useful answer."
+          ? "El usuario esta pidiendo codigo. Devuelve codigo completo, compilable y cerrado. No cortes bloques de codigo. No respondas solo con explicacion. Si el codigo es largo, separalo por archivos. Incluye imports, clases completas y pasos de validacion."
+          : "The user is asking for code. Return complete, compilable, closed code. Do not cut code blocks. Do not answer only with explanation. If the code is long, split it by files. Include imports, complete classes, and validation steps."
       )
-    : (
-        language === "es"
-          ? "Responde de forma directa y corta."
-          : "Answer directly and briefly."
-      );
+    : useThinking
+      ? (
+          language === "es"
+            ? "Piensa antes de responder, pero entrega solo la respuesta util."
+            : "Think before answering, but return only the useful answer."
+        )
+      : (
+          language === "es"
+            ? "Responde de forma directa."
+            : "Answer directly."
+        );
   const behavior = mode === "agent"
     ? (
         language === "es"
@@ -191,13 +298,23 @@ const buildPromptEnvelope = (
           : "Act as a local technical assistant. Give clear, grounded answers without filler."
       );
   const codeFormat = language === "es"
-    ? "Si incluyes codigo multilinea, devuelvelo SIEMPRE dentro de bloques Markdown con triple backtick y lenguaje, por ejemplo ```dart``` o ```ts```. No dejes codigo suelto fuera del bloque."
+    ? "Si incluyes codigo multilinea, devuelvelo SIEMPRE dentro de bloques Markdown con triple backtick y lenguaje, por ejemplo ```dart``` o ```ts```. No dejes codigo suelto fuera del bloque. Si el usuario pide codigo, empieza directamente por el bloque de codigo, sin intro."
     : "If you include multiline code, ALWAYS return it inside Markdown triple-backtick code blocks with a language, for example ```dart``` or ```ts```. Do not leave raw code outside the block.";
+  const flutterDartInstruction = intent.isFlutter || intent.isDart
+    ? (
+        language === "es"
+          ? "Para Flutter/Dart: empieza inmediatamente con ```dart, usa bloques ```dart```, incluye imports, usa widgets completos, cierra clases/metodos/llaves/parentesis, usa Form, GlobalKey<FormState>, TextFormField, validadores y dispose() cuando aplique, no hagas print(password), no entregues codigo inseguro, y anade flutter analyze y flutter test como validacion."
+          : "For Flutter/Dart: use ```dart``` fences, include imports, use complete widgets, close classes/methods/braces/parentheses, use Form, GlobalKey<FormState>, TextFormField, validators, and dispose() when applicable, do not print(password), do not provide insecure code, and add flutter analyze and flutter test as validation."
+      )
+    : "";
+  const noApology = language === "es"
+    ? "No empieces con 'Mis disculpas' salvo que estes corrigiendo un error real previo."
+    : "Do not start with 'My apologies' unless you are correcting a real prior error.";
   const permissionsInstruction = buildPermissionsInstruction(permissions, language);
 
   messages.push({
     role: "system",
-    content: `Eres Vortex. ${lang} ${tempo} ${behavior} ${codeFormat} ${permissionsInstruction}`,
+    content: `Eres Vortex. ${lang} ${tempo} ${behavior} ${codeFormat} ${flutterDartInstruction} ${noApology} ${permissionsInstruction}`,
   });
 
   for (const msg of selectedHistory) {
@@ -424,18 +541,31 @@ export class VortexService {
     const abortController = new AbortController();
 
     try {
-      const promptEnvelope = buildPromptEnvelope(history, prompt, mode, useThinking, language, permissions);
+      const intent = classifyPromptIntent(prompt);
+      const promptEnvelope = buildPromptEnvelope(history, prompt, mode, useThinking, language, permissions, intent);
+      const maxTokens = intent.wantsCompleteCode || intent.isFlutter || intent.isDart
+        ? COMPLETE_CODE_MAX_TOKENS
+        : intent.wantsCode
+          ? CODE_CHAT_MAX_TOKENS
+          : DEFAULT_CHAT_MAX_TOKENS;
+      const includeSources = shouldUseSources(prompt, useInternet, intent);
       const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
       const clientNowIso = new Date().toISOString();
       const payload = {
         model: this.model,
         stream: true,
         agent_mode: mode === "agent",
-        include_sources: true,
+        include_sources: includeSources,
         include_perf: mode === "agent",
-        web_ingest: useInternet,
+        web_ingest: includeSources && useInternet,
         web_allowlist: webAllowlist,
-        temperature: useThinking ? 0.7 : 0.2,
+        rag_mode: includeSources ? "auto" : "off",
+        grounding: includeSources,
+        max_tokens: maxTokens,
+        response_mode: intent.wantsCode ? "code" : "chat",
+        code_language: intent.isFlutter || intent.isDart ? "dart" : undefined,
+        require_complete_code: intent.wantsCompleteCode || intent.isFlutter || intent.isDart,
+        temperature: intent.wantsCode ? 0.2 : (useThinking ? 0.7 : 0.2),
         messages: promptEnvelope.messages,
         client_timezone: clientTimezone,
         client_now_iso: clientNowIso,
@@ -477,6 +607,7 @@ export class VortexService {
       let fullText = "";
       let thought = "";
       let requestId: string | undefined;
+      let finishReason: string | null | undefined;
       let sources: Source[] = [];
       let browserActions: BrowserAction[] = [];
 
@@ -502,11 +633,12 @@ export class VortexService {
               yield {
                 text: fullText,
                 thought,
-                sources,
+                sources: includeSources ? sources : [],
                 groundingSupports: [],
                 fileChanges: extractFileChanges(fullText),
                 browserActions,
                 requestId,
+                finishReason,
                 done: true,
               };
               return;
@@ -519,11 +651,15 @@ export class VortexService {
               requestId = parsed.request_id;
             }
 
-            if (parsed?.sources) {
+            if (includeSources && parsed?.sources) {
               sources = toSources(parsed.sources);
             }
             if (parsed?.perf?.browser_actions) {
               browserActions = toBrowserActions(parsed.perf.browser_actions);
+            }
+            const parsedFinishReason = parsed?.choices?.[0]?.finish_reason;
+            if (typeof parsedFinishReason === "string") {
+              finishReason = parsedFinishReason;
             }
 
             const delta = parsed?.choices?.[0]?.delta?.content;
@@ -542,11 +678,12 @@ export class VortexService {
               yield {
                 text: fullText,
                 thought,
-                sources,
+                sources: includeSources ? sources : [],
                 groundingSupports: [],
                 fileChanges: extractFileChanges(fullText),
                 browserActions,
                 requestId,
+                finishReason,
                 done: false,
               };
             }
@@ -562,11 +699,12 @@ export class VortexService {
       yield {
         text: fullText,
         thought,
-        sources,
+        sources: includeSources ? sources : [],
         groundingSupports: [],
         fileChanges: extractFileChanges(fullText),
         browserActions,
         requestId,
+        finishReason,
         done: true,
       };
     } finally {

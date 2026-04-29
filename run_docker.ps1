@@ -2,7 +2,7 @@ param(
   [switch]$Build,
   [switch]$NoBrowser,
   [switch]$Logs,
-  [string]$ApiProfile = "rtx4080_16gb_programming_gemma4_local"
+  [string]$ApiProfile = "rtx4080_16gb_programming_qwen_coder_local"
 )
 
 $ErrorActionPreference = "Stop"

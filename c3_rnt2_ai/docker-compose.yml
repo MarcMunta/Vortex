@@ -59,7 +59,7 @@ services:
       - -m
       - c3rnt2.model_init
       - --model
-      - google/gemma-4-E4B-it
+      - Qwen/Qwen2.5-Coder-7B-Instruct
       - --cache-dir
       - /root/.cache/huggingface
       - --status-only
@@ -96,7 +96,7 @@ services:
       - c3rnt2
       - serve
       - --profile
-      - ${VORTEX_API_PROFILE:-rtx4080_16gb_programming_gemma4_local}
+      - ${VORTEX_API_PROFILE:-rtx4080_16gb_programming_qwen_coder_local}
       - --host
       - 0.0.0.0
       - --port
@@ -190,9 +190,9 @@ services:
       - --port
       - "8765"
       - --api-profile
-      - ${VORTEX_API_PROFILE:-rtx4080_16gb_programming_gemma4_local}
+      - ${VORTEX_API_PROFILE:-rtx4080_16gb_programming_qwen_coder_local}
       - --training-profile
-      - ${VORTEX_TRAINING_PROFILE:-rtx4080_16gb_programming_train_docker}
+      - ${VORTEX_TRAINING_PROFILE:-rtx4080_16gb_programming_qwen_coder_train_docker}
       - --api-url
       - http://vortex-api:8000
       - --runtime-url
@@ -259,7 +259,7 @@ services:
       - c3rnt2
       - doctor
       - --profile
-      - rtx4080_16gb_programming_train_docker
+      - rtx4080_16gb_programming_qwen_coder_train_docker
       - --mock
 
   eval:
@@ -285,7 +285,7 @@ services:
       - c3rnt2
       - bench
       - --profile
-      - rtx4080_16gb_programming_gemma4_local
+      - rtx4080_16gb_programming_qwen_coder_local
       - --scenario
       - default
       - --mock

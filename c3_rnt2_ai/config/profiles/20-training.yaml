@@ -184,12 +184,19 @@ profiles:
       max_regression_pct: 15
       max_vram_peak_mb: 15500
       min_tokens_per_sec: 0
-  rtx4080_16gb_programming_train_docker:
-    # Continuous training profile aligned with the live Gemma 4 E4B Docker runtime.
-    base_profile: rtx4080_16gb_gemma4_e4b_hf_docker
+  rtx4080_16gb_programming_qwen_coder_train_docker:
+    # Controlled QLoRA training profile aligned with Qwen Coder HF runtime.
+    base_profile: rtx4080_16gb_programming_qwen_coder_local
     core:
       backend: hf
-      hf_model: "google/gemma-4-E4B-it"
+      hf_model: "Qwen/Qwen2.5-Coder-7B-Instruct"
+      hf_model_loader: causal_lm
+      hf_cache_dir: "data/models/hf-cache"
+      hf_local_files_only: true
+      hf_device_map: auto
+      hf_max_memory:
+        0: "12GiB"
+        cpu: "48GiB"
       hf_device: cuda
       hf_load_in_4bit: true
       hf_attn_implementation: sdpa
@@ -296,10 +303,10 @@ profiles:
       allow_domains: []
     hf_train:
       enabled: true
-      model_name: "google/gemma-4-E4B-it"
-      registry_dir: "data/registry/hf_train/gemma4_e4b"
-      dataset_path: "data/registry/hf_train/gemma4_e4b_sft_samples.jsonl"
-      state_path: "data/registry/hf_train/gemma4_e4b_state.json"
+      model_name: "Qwen/Qwen2.5-Coder-7B-Instruct"
+      registry_dir: "data/registry/hf_train/qwen_coder_flutter"
+      dataset_path: "data/registry/hf_train/qwen_coder_flutter_sft_samples.jsonl"
+      state_path: "data/registry/hf_train/qwen_coder_flutter_state.json"
       extra_training_paths:
         - "data/registry/hf_train/sft_samples.jsonl"
         - "data/registry/hf_train/programming_eval.jsonl"
@@ -332,8 +339,8 @@ profiles:
       lora_rank: 8
       lora_alpha: 16
       lora_dropout: 0.05
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
       target_module_scopes:
-        - "language_model.layers."
         - "model.layers."
       manual_promotion_only: false
     profile_contract:
@@ -347,6 +354,9 @@ profiles:
       require_wsl_training: false
       approved_training_sources_only: true
       min_host_ram_free_mb: 8192
+  rtx4080_16gb_programming_train_docker:
+    # Compatibility alias. Current training path is Qwen Coder, not Gemma.
+    base_profile: rtx4080_16gb_programming_qwen_coder_train_docker
   rtx4080_16gb_programming_train_wsl:
     # Legacy compatibility alias. Prefer rtx4080_16gb_programming_train_docker.
     base_profile: rtx4080_16gb_programming_train_docker

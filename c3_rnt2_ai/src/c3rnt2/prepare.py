@@ -466,7 +466,7 @@ def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict
         next_steps.append("Start Docker Desktop and verify `docker info` succeeds.")
     if backend_resolved == "hf" and not bool(hf_cache.get("cached", False)):
         next_steps.append(
-            "Populate Gemma explicitly: python -m c3rnt2.model_init "
+            "Populate the configured HF model explicitly: python -m c3rnt2.model_init "
             f"--model {active_model or DEFAULT_MODEL_ID} --cache-dir {hf_cache_dir} --download"
         )
     next_steps.append(f"Re-run: python -m vortex prepare-model --profile {profile}")

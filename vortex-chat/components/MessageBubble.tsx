@@ -10,6 +10,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from 'framer-motion';
 import { Message, Role, Source, FontSize, Language } from '../types';
+import { isLikelyTruncatedCode } from '../services/vortexService';
 
 interface MessageBubbleProps {
   message: Message;
@@ -18,6 +19,7 @@ interface MessageBubbleProps {
   onShowReasoning?: (messageId: string) => void;
   onOpenModificationExplorer: (fileChanges: { path: string, diff: string }[]) => void;
   onSuggestPatch?: (messageId: string) => void;
+  onContinueResponse?: (messageId: string) => void;
   isStreaming?: boolean;
   language: Language;
 }
@@ -552,7 +554,7 @@ const PatchOverview: React.FC<{
   );
 };
 
-const MessageBubble: React.FC<MessageBubbleProps> = ({ message, fontSize = 'medium', codeTheme = 'dark', onShowReasoning, onOpenModificationExplorer, onSuggestPatch, isStreaming = false, language }) => {
+const MessageBubble: React.FC<MessageBubbleProps> = ({ message, fontSize = 'medium', codeTheme = 'dark', onShowReasoning, onOpenModificationExplorer, onSuggestPatch, onContinueResponse, isStreaming = false, language }) => {
   const isUser = message.role === Role.USER;
   const [collapsedPaths, setCollapsedPaths] = useState<Record<string, boolean>>({});
   const [msgCopied, setMsgCopied] = useState(false);
@@ -596,6 +598,9 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, fontSize = 'medi
   }), [collapsedPaths, togglePath, codeTheme, isUser, language]);
 
   const isThinking = isStreaming && !message.content && !!message.thought;
+  const showTruncatedCodeWarning = !isUser && !isStreaming && Boolean(message.content) && (
+    message.finishReason === 'length' || isLikelyTruncatedCode(message.content)
+  );
   const processingLabel = language === 'es' ? 'Procesando...' : 'Processing...';
   const hasDiffBlock = useMemo(() => /```(?:diff|patch)\n[\s\S]*?```/i.test(renderedContent || ''), [renderedContent]);
   const wrapperClass = isUser
@@ -648,6 +653,20 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, fontSize = 'medi
               </div>
             )}
             {!isUser && message.sources && message.sources.length > 0 && <div className="mt-4 pt-3 border-t border-border/20 flex flex-wrap gap-2 relative z-[20]">{message.sources.map((src, i) => <GroundingPill key={i} source={src} index={i} />)}</div>}
+            {showTruncatedCodeWarning && (
+              <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-amber-500">
+                <span className="text-xs font-bold">
+                  {language === 'es' ? 'La respuesta parece cortada.' : 'Response looks truncated.'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onContinueResponse?.(message.id)}
+                  className="rounded-lg border border-amber-500/30 bg-background/70 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] text-amber-500 hover:bg-background"
+                >
+                  {language === 'es' ? 'Continuar respuesta' : 'Continue response'}
+                </button>
+              </div>
+            )}
           </div>
           <div className={`flex gap-3 ${timestampClass} px-1 opacity-0 group-hover:opacity-100 transition-all duration-300 items-center w-full`}>
             {!isUser && (

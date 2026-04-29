@@ -79,13 +79,17 @@ def render_report(rows: list[dict], profile: str, base_url: str) -> str:
         f"Rubric pass: {passed}/{len(rows)}",
         "",
         "## Criteria",
-        "- Technical accuracy: manual review required.",
-        "- Concrete fixes: check for code/actionable steps.",
-        "- Generic advice avoidance: fail answers with vague summaries only.",
-        "- Constraints/layout understanding: inspect RenderBox/RenderFlex prompts.",
-        "- Flutter code compilability: manual or `flutter analyze` in target repo.",
-        "- Mobile/web/desktop distinction: inspect adaptive prompts.",
-        "- Codex prompt quality: must name files/tests/constraints.",
+        "- Technical accuracy: manual review required against official Flutter/Dart docs.",
+        "- Flutter/Dart code compilability: manual or `flutter analyze` in target repo.",
+        "- Layouts/constraints: inspect RenderBox/RenderFlex, bounded scrollables, responsive widths.",
+        "- Navigation: guards, redirects, deep links, route state.",
+        "- State: loading/error/data, separation from HTTP/data layer.",
+        "- Async: Future/Stream choice, cancellation, idempotent submit.",
+        "- Testing: unit/widget/integration/golden validation.",
+        "- Performance: jank, rebuilds, lists, images, DevTools/profile mode.",
+        "- Accessibility: labels, focus, tap targets, semantics.",
+        "- Mobile/web/desktop distinctions: platform and viewport-specific risks.",
+        "- Codex usefulness: concrete files/tests/commands, not vague summaries.",
         "",
         "## Results",
     ]
@@ -136,7 +140,7 @@ def run_eval(eval_path: Path, out_jsonl: Path, out_md: Path, *, profile: str, ba
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate Flutter adapter via local Vortex OpenAI-compatible runtime.")
-    parser.add_argument("--profile", default="rtx4080_16gb_programming_gemma4_local")
+    parser.add_argument("--profile", default="rtx4080_16gb_programming_qwen_coder_local")
     parser.add_argument("--eval", default="config/datasets/flutter_official_hard_eval.jsonl")
     parser.add_argument("--base-url", default=os.getenv("VORTEX_API_BASE_URL", "http://127.0.0.1:8000"))
     parser.add_argument("--model", default=None)

@@ -26,6 +26,18 @@ interface TopBarStackStatusProps {
   onStopAutonomy?: () => Promise<unknown> | unknown;
 }
 
+const isExternalRuntime = (kind?: string | null): boolean => {
+  const normalized = String(kind || '').trim().toLowerCase();
+  return normalized === 'external' || normalized === 'sglang' || normalized === 'vllm' || normalized === 'ollama';
+};
+
+const runtimeDisplayLabel = (status: OperationalStatus | null, runtimeReady: boolean, fallback: string): string => {
+  const kind = String(status?.engine_kind || status?.active_backend || '').trim().toLowerCase();
+  if ((kind === 'hf' || status?.active_backend === 'hf') && runtimeReady) return 'HF LOCAL';
+  if (runtimeReady && isExternalRuntime(kind) && status?.engine_base_url) return status.engine_base_url;
+  return runtimeReady ? 'LOCAL' : fallback;
+};
+
 const TopBarStackStatus: React.FC<TopBarStackStatusProps> = ({
   status,
   controlStatus,
@@ -79,9 +91,8 @@ const TopBarStackStatus: React.FC<TopBarStackStatusProps> = ({
     || controlStatus?.runtime?.runtime_ready
   );
   const ready = Boolean(stackReady && runtimeReady && modelReady);
-  const runtimeUrl = status?.engine_base_url || 'http://127.0.0.1:30000';
-  const engineLabel = (status?.engine_kind || 'sglang').toUpperCase();
-  const modelLabel = status?.active_model || controlStatus?.model?.model_id || 'Qwen/Qwen2.5-Coder-14B-Instruct-AWQ';
+  const engineLabel = (status?.engine_kind || status?.active_backend || 'local').toUpperCase();
+  const modelLabel = status?.active_model || controlStatus?.model?.model_id || 'local model';
   const reason = status?.chat_block_reason
     || status?.degraded_reason
     || controlStatus?.bootstrap?.message
@@ -235,7 +246,7 @@ const TopBarStackStatus: React.FC<TopBarStackStatusProps> = ({
           <p className="mt-1 max-w-[200px] truncate text-xs text-foreground/70 dark:text-white/70">
             {fallbackActive
               ? `${engineLabel} -> ${String(fallbackBackend || 'hf').toUpperCase()}`
-              : `${engineLabel} - ${runtimeReady ? runtimeUrl : reason}`}
+              : `${engineLabel} - ${runtimeDisplayLabel(status, runtimeReady, reason)}`}
           </p>
         </div>
         <ChevronDown

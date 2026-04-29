@@ -80,12 +80,20 @@ class ChatContextService:
                 except Exception:
                     live_web_context, live_web_refs = "", []
 
-        messages, _prompt_override, rag = self.inject_rag_context(
-            self.base_dir,
-            self.settings,
-            messages,
-            None,
+        rag_disabled = (
+            str(payload.get("rag_mode") or "").strip().lower() in {"off", "false", "none", "disabled"}
+            or payload.get("grounding") is False
+            or payload.get("include_sources") is False
         )
+        if rag_disabled:
+            rag = {"enabled": False, "refs": [], "disabled_by_request": True}
+        else:
+            messages, _prompt_override, rag = self.inject_rag_context(
+                self.base_dir,
+                self.settings,
+                messages,
+                None,
+            )
         if live_web_refs:
             rag["refs"] = live_web_refs
         refs = multimodal.get("refs")

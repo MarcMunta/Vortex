@@ -16,4 +16,4 @@ COPY . /workspace
 RUN pip install --upgrade pip \
     && pip install -e .[api,hf,train,multimodal]
 
-CMD ["python", "-m", "c3rnt2", "doctor", "--profile", "rtx4080_16gb_programming_local", "--mock"]
+CMD ["python", "-m", "c3rnt2", "doctor", "--profile", "rtx4080_16gb_programming_qwen_coder_local", "--mock"]

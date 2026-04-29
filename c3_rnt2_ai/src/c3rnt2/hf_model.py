@@ -390,6 +390,7 @@ class HFModel:
         messages: list[dict] | None = None,
         system: str | None = None,
         max_new_tokens: int = 64,
+        preserve_max_new_tokens: bool = False,
         temperature: float = 1.0,
         top_p: float = 1.0,
         repetition_penalty: float = 1.0,
@@ -399,7 +400,7 @@ class HFModel:
         start = time.time()
         model_inputs, prompt_len = self._encode(prompt=prompt, messages=messages, system=system)
         do_sample = temperature > 0
-        max_new = self._adjust_max_new_tokens(max_new_tokens)
+        max_new = max(1, int(max_new_tokens)) if preserve_max_new_tokens else self._adjust_max_new_tokens(max_new_tokens)
         for attempt in range(2):
             try:
                 kwargs = dict(model_inputs)
@@ -452,17 +453,30 @@ class HFModel:
         messages: list[dict] | None = None,
         system: str | None = None,
         max_new_tokens: int = 64,
+        preserve_max_new_tokens: bool = False,
         temperature: float = 1.0,
         top_p: float = 1.0,
         repetition_penalty: float = 1.0,
         no_repeat_ngram: int = 0,
     ) -> Iterable[str]:
-        if self.processor is not None:
+        try:
+            from transformers import TextIteratorStreamer  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(f"transformers streamer not available: {exc}")
+
+        model_inputs, _prompt_len = self._encode(prompt=prompt, messages=messages, system=system)
+        do_sample = temperature > 0
+        max_new = max(1, int(max_new_tokens)) if preserve_max_new_tokens else self._adjust_max_new_tokens(max_new_tokens)
+        start = time.time()
+        chunks: list[str] = []
+        streamer_tokenizer = self.tokenizer or self.processor
+        if streamer_tokenizer is None:
             text = self.generate(
                 prompt=prompt,
                 messages=messages,
                 system=system,
                 max_new_tokens=max_new_tokens,
+                preserve_max_new_tokens=preserve_max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
                 repetition_penalty=repetition_penalty,
@@ -471,19 +485,18 @@ class HFModel:
             if text:
                 yield text
             return
-
-        try:
-            from transformers import TextIteratorStreamer  # type: ignore
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError(f"transformers streamer not available: {exc}")
-
-        model_inputs, _prompt_len = self._encode(prompt=prompt, messages=messages, system=system)
-        do_sample = temperature > 0
-        max_new = self._adjust_max_new_tokens(max_new_tokens)
-        start = time.time()
-        chunks: list[str] = []
         for attempt in range(2):
-            streamer = TextIteratorStreamer(self.tokenizer, skip_special_tokens=True)
+            try:
+                streamer = TextIteratorStreamer(
+                    streamer_tokenizer,
+                    skip_prompt=True,
+                    skip_special_tokens=True,
+                )
+            except TypeError:
+                streamer = TextIteratorStreamer(
+                    streamer_tokenizer,
+                    skip_special_tokens=True,
+                )
             error: list[Exception] = []
 
             def _run():

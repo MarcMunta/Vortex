@@ -43,12 +43,16 @@ Abrir UI:
 ### Docker local
 Arranque unificado en Docker:
 
+Ruta actual: `rtx4080_16gb_programming_qwen_coder_local` (HF Qwen Coder). `sglang-runtime` queda manual con perfil `qwen-sglang`.
+
 ```powershell
 .\run_docker.ps1
 ```
 
+Comando equivalente: `docker compose -f .\c3_rnt2_ai\docker-compose.yml up -d vortex-api vortex-control vortex-frontend`.
+
 Ese wrapper ejecuta `docker compose -f .\c3_rnt2_ai\docker-compose.yml up -d vortex-api`, y al levantar `vortex-api` arrastra tambiÃ©n:
-- `sglang-runtime`
+- `sglang-runtime` solo con perfil manual `qwen-sglang`
 - `vortex-control`
 - `vortex-frontend`
 
@@ -64,6 +68,8 @@ Parar stack Docker:
 ```
 
 ### Doctor / Bench (opcional)
+Perfil recomendado actual: `C3RNT2_PROFILE=rtx4080_16gb_programming_qwen_coder_local`.
+
 Perfil recomendado (4080 safe): `C3RNT2_PROFILE=rtx4080_16gb_safe`.
 
 ```powershell

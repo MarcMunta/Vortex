@@ -47,6 +47,9 @@ def test_settings_normalization_profiles() -> None:
     _assert_profile("rtx4080_16gb_gemma3_12b_hf")
     _assert_profile("rtx4080_16gb_vortexx_next")
     _assert_profile("safe_selftrain_4080")
+    _assert_profile("rtx4080_16gb_programming_qwen_coder_local")
+    _assert_profile("rtx4080_16gb_programming_qwen_coder_sglang")
+    _assert_profile("rtx4080_16gb_programming_qwen_coder_train_docker")
     _assert_profile("rtx4080_16gb_programming_gemma4_local")
     _assert_profile("rtx4080_16gb_programming_local")
     _assert_profile("rtx4080_16gb_programming_train_docker")
@@ -66,7 +69,7 @@ def test_settings_manifest_loads_fragmented_profiles() -> None:
     sources = resolve_settings_sources()
 
     assert "dev_small" in document["profiles"]
-    assert "rtx4080_16gb_programming_train_docker" in document["profiles"]
+    assert "rtx4080_16gb_programming_qwen_coder_train_docker" in document["profiles"]
     assert "ethical_security_lab_4080_offensive_lab" in document["profiles"]
     assert sources[-1].name == "settings.yaml"
     assert len(sources) == 7
@@ -110,15 +113,22 @@ def test_legacy_offensive_profile_name_removed() -> None:
 
 
 def test_programming_profiles_are_local_and_offline() -> None:
-    daily = load_settings("rtx4080_16gb_programming_gemma4_local")
+    daily = load_settings("rtx4080_16gb_programming_qwen_coder_local")
+    gemma_legacy = load_settings("rtx4080_16gb_programming_gemma4_local")
     legacy = load_settings("rtx4080_16gb_programming_local")
-    train = load_settings("rtx4080_16gb_programming_train_docker")
+    sglang = load_settings("rtx4080_16gb_programming_qwen_coder_sglang")
+    train = load_settings("rtx4080_16gb_programming_qwen_coder_train_docker")
+    train_alias = load_settings("rtx4080_16gb_programming_train_docker")
     train_wsl = load_settings("rtx4080_16gb_programming_train_wsl")
 
     assert daily["core"]["backend"] == "hf"
-    assert daily["core"]["hf_model"] == "google/gemma-4-E4B-it"
-    assert daily["core"]["hf_model_loader"] == "image_text_to_text"
+    assert daily["core"]["hf_model"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
+    assert "gemma" not in daily["core"]["hf_model"].lower()
+    assert daily["core"]["hf_model_loader"] == "causal_lm"
     assert daily["core"]["hf_local_files_only"] is True
+    assert daily["core"]["hf_load_in_4bit"] is True
+    assert daily["core"]["hf_max_memory"][0] == "12GiB"
+    assert daily["core"]["hf_max_memory"]["cpu"] == "48GiB"
     assert daily["core"]["hf_use_latest_adapter"] is True
     assert daily["core"]["backend_fallback"] is None
     assert daily["core"]["hf_fallback"] is None
@@ -136,21 +146,36 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert daily["continuous"]["local_sources"]["include_repo"] is True
     assert daily["continuous"]["local_sources"]["include_local_corpus"] is True
     assert daily["hf_train"]["enabled"] is False
-    assert daily["hf_train"]["registry_dir"] == "data/registry/hf_train/gemma4_e4b"
+    assert daily["hf_train"]["model_name"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
+    assert daily["hf_train"]["registry_dir"] == "data/registry/hf_train/qwen_coder_flutter"
+    assert daily["decode"]["max_new_tokens"] >= 2048
+    assert daily["decode"]["default_code_max_new_tokens"] >= 3072
+    assert daily["decode"]["hard_max_new_tokens"] >= 4096
+    assert daily["generation"]["default_max_tokens"] >= 2048
+    assert daily["generation"]["code_max_tokens"] >= 3072
+    assert daily["generation"]["hard_max_tokens"] >= 4096
+    assert daily["core"]["vram_floor_tokens"] >= 256
+    assert daily["core"]["vram_ceil_tokens"] >= 4096
 
     assert legacy["core"]["backend"] == "external"
     assert legacy["core"]["external_engine"] == "sglang"
     assert legacy["core"]["external_model"] == "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
     assert legacy["core"]["backend_fallback"] is None
+    assert sglang["core"]["external_model"] == "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
+    assert sglang["hf_train"]["enabled"] is False
+    assert gemma_legacy["core"]["hf_model"] == "google/gemma-4-E4B-it"
 
     assert train["core"]["backend"] == "hf"
-    assert train["core"]["hf_model"] == "google/gemma-4-E4B-it"
+    assert train["core"]["hf_model"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
+    assert "gemma" not in train["core"]["hf_model"].lower()
     assert train["core"]["backend_fallback"] is None
     assert train["core"].get("hf_fallback") is None
     assert train["core"]["allow_implicit_hf_fallback"] is False
     assert train["server"]["train_strategy"] == "inprocess"
     assert train["hf_train"]["enabled"] is True
-    assert train["hf_train"]["model_name"] == "google/gemma-4-E4B-it"
+    assert train["hf_train"]["model_name"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
+    assert "awq" not in train["hf_train"]["model_name"].lower()
+    assert train["hf_train"]["registry_dir"] == "data/registry/hf_train/qwen_coder_flutter"
     assert train["hf_train"]["manual_promotion_only"] is False
     assert train["hf_train"]["extra_training_paths"] == [
         "data/registry/hf_train/sft_samples.jsonl",
@@ -163,6 +188,7 @@ def test_programming_profiles_are_local_and_offline() -> None:
         "config/datasets/flutter_official_docs_architecture_sft.jsonl",
     ]
     assert train["hf_train"]["use_weighted_sampling"] is True
+    assert train["hf_train"]["source_kind_weights"]["flutter_official_docs_sft"] > train["hf_train"]["source_kind_weights"]["episode"]
     assert train["hf_train"]["source_kind_weights"]["flutter_official_docs_debugging_sft"] == 5.0
     assert train["hf_train"]["source_kind_weights"]["web"] == 0.0
     assert train["hf_train"]["max_steps"] == 80
@@ -174,13 +200,15 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert train["profile_contract"]["disable_fallbacks"] is True
     assert train["profile_contract"]["require_wsl_training"] is False
     assert train["profile_contract"]["approved_training_sources_only"] is True
+    assert train_alias["hf_train"]["model_name"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
+    assert train_alias["hf_train"]["registry_dir"] == "data/registry/hf_train/qwen_coder_flutter"
 
     assert train_wsl["server"]["train_strategy"] == "wsl_subprocess_unload"
     assert train_wsl["server"]["wsl_workdir"] == "/mnt/d/Vortex/c3_rnt2_ai"
     assert train_wsl["profile_contract"]["require_wsl_training"] is True
 
 
-def test_docker_compose_defaults_to_gemma_without_qwen_sglang_dependency() -> None:
+def test_docker_compose_defaults_to_qwen_without_sglang_dependency() -> None:
     from c3rnt2 import control_server
 
     compose = yaml.safe_load((BASE_DIR / "docker-compose.yml").read_text(encoding="utf-8"))
@@ -189,13 +217,26 @@ def test_docker_compose_defaults_to_gemma_without_qwen_sglang_dependency() -> No
     control = services["vortex-control"]
     sglang = services["sglang-runtime"]
 
-    assert control_server.DEFAULT_API_PROFILE == "rtx4080_16gb_programming_gemma4_local"
+    assert control_server.DEFAULT_API_PROFILE == "rtx4080_16gb_programming_qwen_coder_local"
+    assert control_server.DEFAULT_TRAINING_PROFILE == "rtx4080_16gb_programming_qwen_coder_train_docker"
     assert "depends_on" not in api or "sglang-runtime" not in (api.get("depends_on") or {})
     assert "sglang-runtime" not in (control.get("depends_on") or {})
-    assert "rtx4080_16gb_programming_gemma4_local" in " ".join(api["command"])
-    assert "rtx4080_16gb_programming_gemma4_local" in " ".join(control["command"])
+    assert "rtx4080_16gb_programming_qwen_coder_local" in " ".join(api["command"])
+    assert "rtx4080_16gb_programming_qwen_coder_local" in " ".join(control["command"])
+    assert "rtx4080_16gb_programming_qwen_coder_train_docker" in " ".join(control["command"])
     assert "manual" in sglang.get("profiles", [])
     assert "qwen-sglang" in sglang.get("profiles", [])
     assert api["environment"]["HF_HUB_OFFLINE"] == "1"
     assert api["environment"]["TRANSFORMERS_OFFLINE"] == "1"
     assert api["environment"]["HF_DATASETS_OFFLINE"] == "1"
+
+
+def test_qwen_commands_are_documented_for_doctor_bench_eval() -> None:
+    readme = (BASE_DIR / "README.md").read_text(encoding="utf-8")
+    doc = (BASE_DIR / "docs/QWEN_CODER_FLUTTER_OFFICIAL_DOCS_TRAINING.md").read_text(encoding="utf-8")
+    text = readme + "\n" + doc
+
+    assert "doctor --deep --mock --profile rtx4080_16gb_programming_qwen_coder_local" in text
+    assert "bench --profile rtx4080_16gb_programming_qwen_coder_local" in text
+    assert "eval_flutter_adapter.py `" in text
+    assert "--profile rtx4080_16gb_programming_qwen_coder_local" in doc

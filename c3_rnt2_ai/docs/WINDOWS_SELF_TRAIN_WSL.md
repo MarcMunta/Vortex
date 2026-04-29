@@ -3,8 +3,8 @@
 Este repo sigue soportando entrenar LoRA/QLoRA (HF/PEFT) desde Windows usando **WSL2** para evitar picos de VRAM y problemas de compatibilidad.
 
 Ruta principal actual:
-- serving diario: `docker compose up -d sglang-runtime vortex-api`
-- training principal: `rtx4080_16gb_programming_train_docker`
+- serving diario: `docker compose up -d vortex-api vortex-control vortex-frontend`
+- training principal: `rtx4080_16gb_programming_qwen_coder_train_docker`
 
 Usa este documento solo si necesitas mantener el flujo legado `rtx4080_16gb_programming_train_wsl`.
 
@@ -52,11 +52,11 @@ Tambien puedes reutilizar `rtx4080_16gb_120b_like`, pero la ruta soportada para 
 - `server.train_strategy: wsl_subprocess_unload`
 - `server.wsl_python: python`
 - `server.wsl_workdir: "/mnt/d/Vortex/c3_rnt2_ai"`
-- `hf_train.model_name: "google/gemma-4-E4B-it"`
-- `hf_train.max_seq_len: 768`
+- `hf_train.model_name: "Qwen/Qwen2.5-Coder-7B-Instruct"`
+- `hf_train.max_seq_len: 1024`
 - `hf_train.micro_batch_size: 1`
 - `hf_train.grad_accum_steps: 8`
-- `hf_train.max_steps: 12`
+- `hf_train.max_steps: 80`
 
 Para que el subprocess en WSL ejecute el repo correcto, configura `server.wsl_workdir` a la ruta WSL del repo:
 

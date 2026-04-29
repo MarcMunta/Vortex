@@ -1,4 +1,6 @@
-# Gemma 4 Flutter Official Docs Training
+# Gemma 4 Flutter Official Docs Training (Legacy)
+
+Legacy note: primary Flutter/Dart path moved to `QWEN_CODER_FLUTTER_OFFICIAL_DOCS_TRAINING.md` with `Qwen/Qwen2.5-Coder-7B-Instruct`. Keep this document only for old Gemma adapter reference.
 
 Goal: build a reproducible, auditable Flutter/Dart knowledge pipeline for `google/gemma-4-E4B-it` adapters. This prepares data and eval. It does not train or promote by itself.
 

@@ -1004,6 +1004,10 @@ def _resolve_requested_backend(
     if normalized != lowered:
         return normalized, False
     core = settings.get("core", {}) or {}
+    hf_model = str(core.get("hf_model") or "").strip().lower()
+    hf_aliases = {hf_model, hf_model.split("/")[-1] if "/" in hf_model else hf_model}
+    if hf_model and lowered in hf_aliases:
+        return "hf", False
     external_runtime_configured = bool(
         core.get("external_base_url")
         or core.get("external_url")
@@ -1116,6 +1120,17 @@ def _build_operational_status(app_state, settings: dict, base_dir: Path) -> dict
         prepare_state["model_reason"] = (
             "model_ready" if external_model else prepare_state.get("model_reason")
         )
+    if active_backend == "hf":
+        raw_engine_url = _safe_str(prepare_state.get("engine_base_url"))
+        if raw_engine_url and ":30000" in raw_engine_url:
+            raw_engine_url = None
+        prepare_state["engine_kind"] = "hf"
+        prepare_state["engine_base_url"] = raw_engine_url or "http://127.0.0.1:8000"
+        prepare_state["engine_ready"] = True
+        prepare_state["active_model"] = _active_model_name(settings, backend="hf")
+        if model_loaded:
+            prepare_state["model_ready"] = True
+            prepare_state["model_reason"] = "model_ready"
     offline_ready = bool(prepare_state.get("offline_ready", False))
     engine_ready = bool(prepare_state.get("engine_ready", False))
     model_ready = bool(prepare_state.get("model_ready", False))
@@ -1174,6 +1189,7 @@ def _build_operational_status(app_state, settings: dict, base_dir: Path) -> dict
         "ollama_reason": prepare_state.get("ollama_reason"),
         "active_profile": str(getattr(app_state, "active_profile", "") or settings.get("_profile") or "").strip() or None,
         "boot_fallback": getattr(app_state, "boot_fallback", None),
+        "status_source": "runtime_real" if model_loaded else "api_status",
     }
     instructions = getattr(app_state, "instructions", None)
     if isinstance(instructions, dict):
@@ -1365,17 +1381,54 @@ def _stream_generate(
 
 def _resolve_decode_args(settings: dict, payload: dict) -> dict[str, Any]:
     decode_cfg = settings.get("decode", {}) or {}
+    generation_cfg = settings.get("generation", {}) or {}
     bad_cfg = settings.get("bad", {}) or {}
-    max_tokens = (
-        payload.get("max_tokens")
-        or payload.get("max_new_tokens")
-        or decode_cfg.get("max_new_tokens", 64)
+    hard_max = int(
+        generation_cfg.get(
+            "hard_max_tokens",
+            decode_cfg.get("hard_max_new_tokens", decode_cfg.get("hard_max_tokens", 4096)),
+        )
+        or 4096
+    )
+    default_max = int(
+        generation_cfg.get(
+            "default_max_tokens",
+            decode_cfg.get("max_new_tokens", 2048),
+        )
+        or 2048
+    )
+    code_max = int(
+        generation_cfg.get(
+            "code_max_tokens",
+            decode_cfg.get("default_code_max_new_tokens", 3072),
+        )
+        or 3072
+    )
+    request_mode = str(payload.get("response_mode") or "").strip().lower()
+    wants_code = request_mode == "code" or bool(payload.get("require_complete_code"))
+    requested_raw = payload.get("max_tokens")
+    if requested_raw is None:
+        requested_raw = payload.get("max_new_tokens")
+    if requested_raw is None:
+        max_tokens = code_max if wants_code else default_max
+    else:
+        max_tokens = int(requested_raw)
+    effective_max = max(1, min(int(max_tokens), max(1, int(hard_max))))
+    temperature = float(
+        payload.get(
+            "temperature",
+            0.2 if wants_code else decode_cfg.get("temperature", 1.0),
+        )
     )
     return {
-        "max_new_tokens": int(max_tokens),
-        "temperature": float(
-            payload.get("temperature", decode_cfg.get("temperature", 1.0))
+        "max_new_tokens": effective_max,
+        "max_tokens_requested": int(max_tokens),
+        "max_tokens_effective": effective_max,
+        "hard_max_tokens": int(hard_max),
+        "preserve_max_new_tokens": bool(
+            wants_code and generation_cfg.get("allow_long_code_outputs", True)
         ),
+        "temperature": temperature,
         "top_p": float(payload.get("top_p", decode_cfg.get("top_p", 1.0))),
         "repetition_penalty": float(
             payload.get("repetition_penalty", decode_cfg.get("repetition_penalty", 1.0))
@@ -1394,16 +1447,61 @@ def _resolve_decode_args(settings: dict, payload: dict) -> dict[str, Any]:
 def _stream_decode_args_for_model(
     model: object, decode_args: dict[str, Any]
 ) -> dict[str, Any]:
+    allowed_common = {
+        "max_new_tokens",
+        "temperature",
+        "top_p",
+        "repetition_penalty",
+        "no_repeat_ngram",
+        "penalty_window",
+        "top_p_min_k",
+        "top_p_max_k",
+    }
     if bool(getattr(model, "is_hf", False)):
         allowed = {
             "max_new_tokens",
+            "preserve_max_new_tokens",
             "temperature",
             "top_p",
             "repetition_penalty",
             "no_repeat_ngram",
         }
         return {k: decode_args[k] for k in allowed if k in decode_args}
-    return decode_args
+    return {k: decode_args[k] for k in allowed_common if k in decode_args}
+
+
+def _code_generation_system_instruction(payload: dict[str, Any]) -> str | None:
+    response_mode = str(payload.get("response_mode") or "").strip().lower()
+    wants_code = response_mode == "code" or bool(payload.get("require_complete_code"))
+    if not wants_code:
+        return None
+    language = str(payload.get("code_language") or "").strip().lower()
+    fence = "dart" if language in {"dart", "flutter"} else (language or "text")
+    lines = [
+        "CODE GENERATION MODE.",
+        "The user is asking for code. Do not answer with a high-level explanation.",
+        f"Start immediately with a Markdown code fence: ```{fence}",
+        "Return complete, compilable, closed code. Do not cut code blocks.",
+        "Close all classes, methods, braces, parentheses, brackets and code fences.",
+        "If multiple files are needed, label each file clearly and include complete contents.",
+        "Do not start with apologies or filler.",
+    ]
+    if fence == "dart":
+        lines.extend(
+            [
+                "For Flutter/Dart include imports, complete widgets, main(), MaterialApp and Scaffold when applicable.",
+                "For forms use Form, GlobalKey<FormState>, TextFormField, validators, controllers and dispose().",
+                "Do not print passwords. Use safe placeholder auth flow.",
+                "After the code, include validation commands: flutter analyze and flutter test.",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _prepend_system_message(messages: list[dict], content: str | None) -> list[dict]:
+    if not content:
+        return messages
+    return [{"role": "system", "content": str(content)}] + list(messages)
 
 
 def _chat_kwargs_for_model(
@@ -1449,6 +1547,25 @@ def _estimate_tokens(text: str, model: object | None = None) -> int:
         except Exception:
             pass
     return len(text.split())
+
+
+def _finish_reason_for_output(tokens_out: int, max_new_tokens: int) -> str:
+    try:
+        if int(max_new_tokens) > 0 and int(tokens_out) >= int(max_new_tokens):
+            return "length"
+    except Exception:
+        pass
+    return "stop"
+
+
+def _decode_metadata(decode_args: dict[str, Any], *, backend: str, model: str | None) -> dict[str, Any]:
+    return {
+        "max_tokens_requested": int(decode_args.get("max_tokens_requested") or decode_args.get("max_new_tokens") or 0),
+        "max_tokens_effective": int(decode_args.get("max_new_tokens") or 0),
+        "finish_max_tokens": int(decode_args.get("max_new_tokens") or 0),
+        "backend": str(backend),
+        "model": model,
+    }
 
 
 def _resolve_ctx_max_tokens(settings: dict) -> int | None:
@@ -3688,9 +3805,12 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 top_k=int(router_cfg.get("stream_topk_k", 64)),
             )
         device, dtype = _resolve_device_dtype(selected_model, settings)
-        decode_args["max_new_tokens"] = decide_max_new_tokens(
-            decode_args["max_new_tokens"], device, dtype, settings
-        )
+        if not bool(decode_args.get("preserve_max_new_tokens", False)):
+            if not bool(decode_args.get("preserve_max_new_tokens", False)):
+                decode_args["max_new_tokens"] = decide_max_new_tokens(
+                    decode_args["max_new_tokens"], device, dtype, settings
+                )
+        decode_args["max_tokens_effective"] = int(decode_args["max_new_tokens"])
         agent_mode = bool(payload.get("agent_mode", False))
         agent_permissions = (
             permissions_from_request(payload, base_dir) if agent_mode else None
@@ -4003,6 +4123,9 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         except Exception:
             pass
 
+        messages = _prepend_system_message(
+            messages, _code_generation_system_instruction(payload)
+        )
         prompt = build_chat_prompt(
             messages,
             backend_cfg,
@@ -4117,6 +4240,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                     },
                 )
 
+        decode_args["max_tokens_effective"] = int(decode_args.get("max_new_tokens") or 0)
         adapter_sel: dict | None = None
         adapter_active: str | None = None
         adapter_reason: str | None = None
@@ -4177,6 +4301,9 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                         "repetition_penalty"
                                     ],
                                     no_repeat_ngram=decode_args["no_repeat_ngram"],
+                                    preserve_max_new_tokens=bool(
+                                        decode_args.get("preserve_max_new_tokens", False)
+                                    ),
                                     **_chat_kwargs_for_model(
                                         selected_model, engine_messages, default_system
                                     ),
@@ -4192,6 +4319,9 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                         "repetition_penalty"
                                     ],
                                     no_repeat_ngram=decode_args["no_repeat_ngram"],
+                                    preserve_max_new_tokens=bool(
+                                        decode_args.get("preserve_max_new_tokens", False)
+                                    ),
                                     **_chat_kwargs_for_model(
                                         selected_model, engine_messages, default_system
                                     ),
@@ -4234,6 +4364,11 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                                 no_repeat_ngram=decode_args[
                                                     "no_repeat_ngram"
                                                 ],
+                                                preserve_max_new_tokens=bool(
+                                                    decode_args.get(
+                                                        "preserve_max_new_tokens", False
+                                                    )
+                                                ),
                                                 **_chat_kwargs_for_model(
                                                     selected_model,
                                                     engine_messages,
@@ -4255,6 +4390,11 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                                 no_repeat_ngram=decode_args[
                                                     "no_repeat_ngram"
                                                 ],
+                                                preserve_max_new_tokens=bool(
+                                                    decode_args.get(
+                                                        "preserve_max_new_tokens", False
+                                                    )
+                                                ),
                                                 **_chat_kwargs_for_model(
                                                     selected_model,
                                                     engine_messages,
@@ -4318,12 +4458,21 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 )
             tokens_out = _estimate_tokens(text, selected_model)
             prompt_tokens = _estimate_tokens(prompt, selected_model)
+            finish_reason = _finish_reason_for_output(
+                int(tokens_out), int(decode_args.get("max_new_tokens") or 0)
+            )
+            decode_meta = _decode_metadata(
+                decode_args,
+                backend=str(chosen_backend),
+                model=_active_model_name(settings, backend=str(chosen_backend)),
+            )
             perf = {
                 "latency_ms": float(elapsed * 1000.0),
                 "tokens_out_est": int(tokens_out),
                 "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
                 "vram_peak_mb": vram_peak,
                 "adapter": adapter_active,
+                **decode_meta,
             }
             if hasattr(selected_model, "runtime_stats"):
                 try:
@@ -4372,14 +4521,19 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 "object": "chat.completion",
                 "created": created,
                 "model": str(chosen_backend),
+                "backend": str(chosen_backend),
+                "active_model": decode_meta.get("model"),
                 "request_id": request_id,
                 "choices": [
                     {
                         "index": 0,
                         "message": {"role": "assistant", "content": text},
-                        "finish_reason": "stop",
+                        "finish_reason": finish_reason,
                     }
                 ],
+                "max_tokens_requested": decode_meta["max_tokens_requested"],
+                "max_tokens_effective": decode_meta["max_tokens_effective"],
+                "finish_reason": finish_reason,
                 "usage": {
                     "prompt_tokens": int(prompt_tokens),
                     "completion_tokens": int(tokens_out),
@@ -4463,7 +4617,9 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                             gen = current_model.stream_generate(prompt, **stream_args)
                         else:
                             gen = _stream_generate(
-                                current_model, prompt, **decode_args
+                                current_model,
+                                prompt,
+                                **_stream_decode_args_for_model(current_model, decode_args),
                             )
                         first = next(gen)
                     except StopIteration:
@@ -4503,7 +4659,9 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                         )
                                     else:
                                         gen = _stream_generate(
-                                            current_model, prompt, **decode_args
+                                            current_model,
+                                            prompt,
+                                            **_stream_decode_args_for_model(current_model, decode_args),
                                         )
                                     try:
                                         first = next(gen)
@@ -4575,12 +4733,21 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             full_text = "".join(chunks)
             tokens_out = _estimate_tokens(full_text, current_model)
             prompt_tokens = _estimate_tokens(prompt, current_model)
+            finish_reason = _finish_reason_for_output(
+                int(tokens_out), int(decode_args.get("max_new_tokens") or 0)
+            )
+            decode_meta = _decode_metadata(
+                decode_args,
+                backend=str(current_backend),
+                model=_active_model_name(settings, backend=str(current_backend)),
+            )
             perf = {
                 "latency_ms": float(elapsed * 1000.0),
                 "tokens_out_est": int(tokens_out),
                 "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
                 "vram_peak_mb": vram_peak,
                 "adapter": current_adapter,
+                **decode_meta,
             }
             if first_token_ms is not None:
                 perf["first_token_ms"] = float(first_token_ms)
@@ -4664,8 +4831,13 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": str(current_backend),
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "backend": str(current_backend),
+                "active_model": decode_meta.get("model"),
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                 "request_id": request_id,
+                "max_tokens_requested": decode_meta["max_tokens_requested"],
+                "max_tokens_effective": decode_meta["max_tokens_effective"],
+                "finish_reason": finish_reason,
             }
             if payload.get("include_sources"):
                 done["sources"] = rag_info.get("refs", [])
@@ -5129,9 +5301,17 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                     except Exception:
                         pass
 
-            messages, _prompt_override, rag_info = _inject_rag_context(
-                base_dir, settings, messages, None
+            rag_disabled = (
+                str(payload.get("rag_mode") or "").strip().lower() in {"off", "false", "none", "disabled"}
+                or payload.get("grounding") is False
+                or payload.get("include_sources") is False
             )
+            if rag_disabled:
+                rag_info = {"enabled": False, "refs": [], "disabled_by_request": True}
+            else:
+                messages, _prompt_override, rag_info = _inject_rag_context(
+                    base_dir, settings, messages, None
+                )
             if live_web_refs:
                 rag_info["refs"] = live_web_refs
             backend = settings.get("core", {}).get("backend", "vortex")
@@ -5146,6 +5326,9 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                 temporal_context=temporal_system_context,
                 web_context=live_web_context,
             )
+            messages = _prepend_system_message(
+                messages, _code_generation_system_instruction(payload)
+            )
             prompt = build_chat_prompt(
                 messages,
                 backend,
@@ -5158,6 +5341,7 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
             decode_args["max_new_tokens"] = decide_max_new_tokens(
                 decode_args["max_new_tokens"], device, dtype, settings
             )
+            decode_args["max_tokens_effective"] = int(decode_args["max_new_tokens"])
             created = int(time.time())
             request_id = _new_request_id(payload.get("request_id"))
             resp_id = f"chatcmpl-{request_id}"
@@ -5213,6 +5397,9 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                             top_p=decode_args["top_p"],
                             repetition_penalty=decode_args["repetition_penalty"],
                             no_repeat_ngram=decode_args["no_repeat_ngram"],
+                            preserve_max_new_tokens=bool(
+                                decode_args.get("preserve_max_new_tokens", False)
+                            ),
                             **_chat_kwargs_for_model(model, messages, default_system),
                         )
                     except Exception as exc:
@@ -5235,6 +5422,9 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                                 top_p=decode_args["top_p"],
                                 repetition_penalty=decode_args["repetition_penalty"],
                                 no_repeat_ngram=decode_args["no_repeat_ngram"],
+                                preserve_max_new_tokens=bool(
+                                    decode_args.get("preserve_max_new_tokens", False)
+                                ),
                                 **_chat_kwargs_for_model(
                                     fallback_model, messages, default_system
                                 ),
@@ -5373,7 +5563,11 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                         )
                         self.wfile.flush()
                 else:
-                    for delta in _stream_generate(model, prompt, **decode_args):
+                    for delta in _stream_generate(
+                        model,
+                        prompt,
+                        **_stream_decode_args_for_model(model, decode_args),
+                    ):
                         chunk = {
                             "id": resp_id,
                             "object": "chat.completion.chunk",

@@ -6,7 +6,7 @@ import ChatInput from "./components/ChatInput";
 import type { SettingsTab } from "./components/SettingsModal";
 import VirtualizedMessageList from "./components/VirtualizedMessageList";
 import { BrowserAction, ChatSession, Message, Role, ViewType, LogEntry, AppMode, Source } from "./types";
-import { vortexService } from "./services/vortexService";
+import { isLikelyTruncatedCode, vortexService } from "./services/vortexService";
 import { controlService } from "./services/controlService";
 import { translations } from "./translations";
 import { AppHeader } from "./app/AppHeader";
@@ -638,6 +638,7 @@ const VORTEX_CONFIG = {
                         content: chunk.text,
                         thought: chunk.thought || message.thought,
                         requestId: chunk.requestId || message.requestId,
+                        finishReason: chunk.finishReason ?? message.finishReason,
                         sources: chunk.sources.length > 0 ? chunk.sources : message.sources,
                         fileChanges: chunk.fileChanges || message.fileChanges,
                       }
@@ -710,6 +711,21 @@ const VORTEX_CONFIG = {
       resetInactivityTimer();
     }
   };
+
+  const handleContinueResponse = useCallback((messageId: string) => {
+    const session = currentSession;
+    const message = session?.messages.find((item) => item.id === messageId);
+    if (!message || message.role !== Role.AI) return;
+    if (message.finishReason !== "length" && !isLikelyTruncatedCode(message.content)) return;
+    void handleSendMessageLocalFirst(
+      "Continua exactamente desde donde lo dejaste. No repitas el codigo anterior. Cierra cualquier bloque de codigo abierto.",
+      false,
+      mode,
+      true,
+      false,
+      { preserveView: true },
+    );
+  }, [currentSession, handleSendMessageLocalFirst, mode]);
 
   const handleOpenModificationExplorer = useCallback((files: { path: string; diff: string }[]) => {
     setActiveModificationFiles(files);
@@ -859,6 +875,7 @@ const VORTEX_CONFIG = {
                         onSuggestPatch={(messageId) => {
                           void suggestPatchFromMessage(messageId, "manual");
                         }}
+                        onContinueResponse={handleContinueResponse}
                         isLoading={isLoading}
                         language={settings.language}
                         containerRef={mainScrollRef}

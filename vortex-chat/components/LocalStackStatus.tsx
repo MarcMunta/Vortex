@@ -21,6 +21,18 @@ interface LocalStackStatusProps {
   onStartTraining?: () => Promise<unknown> | unknown;
 }
 
+const isExternalRuntime = (kind?: string | null): boolean => {
+  const normalized = String(kind || '').trim().toLowerCase();
+  return normalized === 'external' || normalized === 'sglang' || normalized === 'vllm' || normalized === 'ollama';
+};
+
+const runtimeDisplayLabel = (status: OperationalStatus | null, ready: boolean): string => {
+  const kind = String(status?.engine_kind || status?.active_backend || '').trim().toLowerCase();
+  if ((kind === 'hf' || status?.active_backend === 'hf') && ready) return 'HF LOCAL';
+  if (ready && isExternalRuntime(kind) && status?.engine_base_url) return status.engine_base_url;
+  return ready ? 'LOCAL' : 'Pendiente';
+};
+
 const LocalStackStatus: React.FC<LocalStackStatusProps> = ({
   status,
   controlStatus,
@@ -34,9 +46,9 @@ const LocalStackStatus: React.FC<LocalStackStatusProps> = ({
   const modelCached = Boolean(controlStatus?.model?.cached);
   const dockerReady = Boolean(controlStatus?.docker?.ready);
   const bootstrapRunning = Boolean(controlStatus?.bootstrap?.running);
-  const runtimeUrl = status?.engine_base_url || 'http://127.0.0.1:30000';
-  const modelLabel = status?.active_model || controlStatus?.model?.model_id || 'Qwen/Qwen2.5-Coder-14B-Instruct-AWQ';
-  const engineLabel = (status?.engine_kind || 'sglang').toUpperCase();
+  const runtimeUrl = runtimeDisplayLabel(status, ready);
+  const modelLabel = status?.active_model || controlStatus?.model?.model_id || 'local model';
+  const engineLabel = (status?.engine_kind || status?.active_backend || 'local').toUpperCase();
   const reason = ready
     ? (language === 'es' ? 'Stack local listo para responder y entrenar.' : 'Local stack is ready to answer and train.')
     : status?.degraded_reason

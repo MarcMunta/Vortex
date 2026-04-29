@@ -8,16 +8,17 @@ Este repo implementa un prototipo modular para una “IA 120B-like” local comb
 - **Agente**: herramientas, memoria persistente, auto-entrenamiento y auto-mejora segura.
 
 Nota de rol:
-- El backend **HF** (Qwen2.5-8B-Instruct) usa el *tokenizer de HuggingFace*.
+- El backend **HF** (Qwen2.5-Coder-7B-Instruct en ruta principal) usa el *tokenizer de HuggingFace*.
 - **Vortex-Tok** es para los backends Vortex/C3 (no se usa para HF). Bench: `python scripts/bench_tokenizer.py --profile dev_small`.
 
 ## Ruta recomendada (RTX 4080 16GB)
-La ruta principal soportada es ahora **Docker-first + HF local + Gemma 4 E4B**.
+La ruta principal soportada es ahora **Docker-first + HF local + Qwen Coder 7B**.
 
 Perfiles principales:
-- `rtx4080_16gb_programming_gemma4_local`: serving diario local con HF y `google/gemma-4-E4B-it`.
-- `rtx4080_16gb_programming_train_docker`: training manual en contenedor separado con `google/gemma-4-E4B-it` + LoRA 4-bit.
-- `rtx4080_16gb_programming_local`: perfil legacy/manual para comparativas con `SGLang` + `Qwen/Qwen2.5-Coder-14B-Instruct-AWQ`.
+- `rtx4080_16gb_programming_qwen_coder_local`: serving diario local con HF y `Qwen/Qwen2.5-Coder-7B-Instruct`.
+- `rtx4080_16gb_programming_qwen_coder_train_docker`: training manual en contenedor separado con `Qwen/Qwen2.5-Coder-7B-Instruct` + QLoRA 4-bit.
+- `rtx4080_16gb_programming_qwen_coder_sglang`: perfil manual para inferencia SGLang con `Qwen/Qwen2.5-Coder-14B-Instruct-AWQ`.
+- `rtx4080_16gb_programming_gemma4_local`: legacy/experimental Gemma 4.
 
 Los perfiles `120B-like`, `local_lab`, `security-lab` y variantes WSL quedan como secundarios o de compatibilidad. La identidad principal de Vortex sale de:
 - `config/instructions/vortex_system.md`
@@ -28,17 +29,17 @@ Los perfiles `120B-like`, `local_lab`, `security-lab` y variantes WSL quedan com
 Levanta runtime + API local:
 
 ```bash
-python -m c3rnt2.model_init --model google/gemma-4-E4B-it --cache-dir data/models/hf-cache --status-only
-docker compose up -d vortex-api
-python -m c3rnt2 prepare-model --profile rtx4080_16gb_programming_gemma4_local
-python -m c3rnt2 doctor --deep --mock --profile rtx4080_16gb_programming_gemma4_local
-python -m c3rnt2 bench --profile rtx4080_16gb_programming_gemma4_local --max-new-tokens 64 --json-out data/bench/programming_gemma4_local.json
+python -m c3rnt2.model_init --model Qwen/Qwen2.5-Coder-7B-Instruct --cache-dir data/models/hf-cache --status-only
+docker compose up -d vortex-api vortex-control vortex-frontend
+python -m c3rnt2 prepare-model --profile rtx4080_16gb_programming_qwen_coder_local
+python -m c3rnt2 doctor --deep --mock --profile rtx4080_16gb_programming_qwen_coder_local
+python -m c3rnt2 bench --profile rtx4080_16gb_programming_qwen_coder_local --max-new-tokens 64 --json-out data/bench/programming_qwen_coder_local.json
 ```
 
 Si faltan pesos locales, descarga solo con paso manual explicito:
 
 ```bash
-python -m c3rnt2.model_init --model google/gemma-4-E4B-it --cache-dir data/models/hf-cache --download
+python -m c3rnt2.model_init --model Qwen/Qwen2.5-Coder-7B-Instruct --cache-dir data/models/hf-cache --download
 ```
 
 Despues, runtime normal queda offline (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`).
@@ -64,9 +65,31 @@ La UI usa proxy interno al backend y al control plane, asÃ­ que el estado del 
 Training manual separado:
 
 ```bash
-docker compose run --rm trainer python -m c3rnt2 doctor --deep --mock --profile rtx4080_16gb_programming_train_docker
-docker compose run --rm trainer python -m c3rnt2 train-once --profile rtx4080_16gb_programming_train_docker
-docker compose run --rm eval python -m c3rnt2 bench --profile rtx4080_16gb_programming_gemma4_local --scenario default
+docker compose run --rm trainer python -m c3rnt2 doctor --deep --mock --profile rtx4080_16gb_programming_qwen_coder_train_docker
+docker compose run --rm trainer python -m c3rnt2 train-once --profile rtx4080_16gb_programming_qwen_coder_train_docker
+docker compose run --rm eval python -m c3rnt2 bench --profile rtx4080_16gb_programming_qwen_coder_local --scenario default
+```
+
+Flutter official docs pipeline:
+
+```powershell
+python scripts/ingest_flutter_docs.py `
+  --sources docs.flutter.dev api.flutter.dev `
+  --out data/flutter_docs `
+  --rate-limit 1.0
+
+python scripts/build_flutter_training_dataset.py `
+  --chunks data/flutter_docs/processed/chunks.jsonl `
+  --out config/datasets
+
+python scripts/audit_flutter_coverage.py `
+  --chunks data/flutter_docs/processed/chunks.jsonl `
+  --datasets config/datasets `
+  --out data/flutter_docs/reports
+
+docker compose run --rm eval python scripts/eval_flutter_adapter.py `
+  --profile rtx4080_16gb_programming_qwen_coder_local `
+  --eval config/datasets/flutter_official_hard_eval.jsonl
 ```
 
 Windows one-command local-lab bootstrap:
@@ -75,21 +98,23 @@ Windows one-command local-lab bootstrap:
 powershell -ExecutionPolicy Bypass -File ..\scripts\local_lab_init.ps1
 ```
 
-Ese wrapper levanta `c3rnt2.control_server`, verifica pesos locales de Gemma 4, arranca `vortex-api` y abre `vortex-chat` en `http://127.0.0.1:4173`.
+Ese wrapper levanta `c3rnt2.control_server`, verifica pesos locales de Qwen Coder, arranca `vortex-api` y abre `vortex-chat` en `http://127.0.0.1:4173`.
 
 Notas:
 - El runtime diario es HF dentro de `vortex-api`; no requiere `sglang-runtime`.
 - `sglang-runtime` queda solo como perfil manual legacy: `docker compose --profile qwen-sglang up -d sglang-runtime vortex-api-sglang`.
 - La API de Vortex queda expuesta en `http://127.0.0.1:8000`.
 - El control plane local queda expuesto en `http://127.0.0.1:8765`.
-- No hay fallback silencioso a Qwen ni a modelo remoto en el perfil Gemma diario.
+- No hay fallback silencioso a Gemma ni a modelo remoto en el perfil Qwen Coder diario.
 - `ingest_web`, `autolearn.web_ingest` y `autolearn.url_discovery` quedan desactivados en el path principal.
 - El modo internet del frontend es por prompt y usa allowlist editable desde la UI/control service.
 - Los runs de entrenamiento rápido/completo quedan en `data/control/training_runs/`.
 - El corpus local vive en `data/corpora/programming/{python,fastapi,react_ts,pytorch,git_linux,repo_notes}` y puedes ampliar la parte defensiva en `data/corpora/cybersecurity/`.
 - Los adapters HF quedan en cuarentena manual; el training genera `meta.json`, eval y bench, pero no promociona a producción automaticamente.
 
-Adapter Gemma: `data/registry/hf_train/gemma4_e4b`. Runtime carga ultimo adapter aprobado/local si existe; si no existe, arranca base Gemma y deja log.
+Adapter Qwen Coder: `data/registry/hf_train/qwen_coder_flutter`. Runtime carga ultimo adapter aprobado/local si existe; si no existe, arranca base Qwen Coder y deja log claro.
+
+Rollback rapido: restaura `data/registry/hf_train/qwen_coder_flutter/registry.json`, reinicia API o llama `/v1/reload_adapter`, y re-ejecuta doctor/eval.
 
 ## RTX 4080 16GB Quickstart (Windows, perfil safe)
 Comandos recomendados (core backend, sin descargas, web deny-by-default):

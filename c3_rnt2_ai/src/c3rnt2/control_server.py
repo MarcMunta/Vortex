@@ -35,8 +35,8 @@ DEFAULT_CONTROL_PORT = 8765
 DEFAULT_FRONTEND_PORT = 4173
 DEFAULT_API_PORT = 8000
 DEFAULT_RUNTIME_PORT = 30000
-DEFAULT_API_PROFILE = "rtx4080_16gb_programming_gemma4_local"
-DEFAULT_TRAINING_PROFILE = "rtx4080_16gb_programming_train_docker"
+DEFAULT_API_PROFILE = "rtx4080_16gb_programming_qwen_coder_local"
+DEFAULT_TRAINING_PROFILE = "rtx4080_16gb_programming_qwen_coder_train_docker"
 DEFAULT_FALLBACK_PROFILE = "rtx4080_16gb_safe_windows_hf"
 DEFAULT_QUICK_QUEUE_THRESHOLD = 3
 DEFAULT_QUICK_QUEUE_COOLDOWN_S = 900
@@ -2104,6 +2104,15 @@ class ControlState:
                 and model_loaded
             )
         runtime_ready = api_ready
+        if engine_kind == "hf":
+            if active_model:
+                runtime_models = {"data": [{"id": active_model}], "source": "api_status"}
+            runtime_ready = bool(
+                status_payload.get("engine_ready")
+                and model_ready
+                and model_loaded
+                and not model_loading
+            ) or api_ready
         if not runtime_ready and engine_kind in {"", "sglang", "vllm", "external"}:
             runtime_ready = runtime_models is not None or bool(
                 status_payload.get("engine_ready") and model_ready

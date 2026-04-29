@@ -11,6 +11,7 @@ interface VirtualizedMessageListProps {
   onShowReasoning: (messageId: string) => void;
   onOpenModificationExplorer: (fileChanges: { path: string, diff: string }[]) => void;
   onSuggestPatch: (messageId: string) => void;
+  onContinueResponse?: (messageId: string) => void;
   isLoading: boolean;
   language: Language;
   containerRef: React.RefObject<HTMLDivElement | null>;
@@ -26,6 +27,7 @@ const VirtualizedMessageList: React.FC<VirtualizedMessageListProps> = ({
   onShowReasoning,
   onOpenModificationExplorer,
   onSuggestPatch,
+  onContinueResponse,
   isLoading,
   language,
   containerRef
@@ -142,6 +144,7 @@ const VirtualizedMessageList: React.FC<VirtualizedMessageListProps> = ({
                   onShowReasoning={onShowReasoning} 
                   onOpenModificationExplorer={onOpenModificationExplorer} 
                   onSuggestPatch={onSuggestPatch}
+                  onContinueResponse={onContinueResponse}
                   isStreaming={isStreaming} 
                   language={language} 
                 />
