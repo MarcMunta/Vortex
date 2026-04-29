@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "setup:spatial-assets": "powershell -ExecutionPolicy Bypass -File ..\\scripts\\setup_spatial_assets.ps1",
+    "test": "node scripts/run-unit-tests.cjs",
     "test:smoke": "playwright test --config=playwright.config.ts --reporter=line",
     "test:integration": "playwright test --config=playwright.integration.config.ts --reporter=line",
     "test:spatial-smoke": "playwright test tests/spatial-smoke.spec.ts --config=playwright.config.ts --reporter=list"

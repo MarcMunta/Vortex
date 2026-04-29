@@ -551,11 +551,12 @@ export class VortexService {
       const includeSources = shouldUseSources(prompt, useInternet, intent);
       const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
       const clientNowIso = new Date().toISOString();
-      const payload = {
-        model: this.model,
-        stream: true,
-        agent_mode: mode === "agent",
-        include_sources: includeSources,
+        const payload = {
+          model: this.model,
+          stream: true,
+          agent_mode: mode === "agent",
+          vortex_mode: mode === "agent" ? "agent" : "chat",
+          include_sources: includeSources,
         include_perf: mode === "agent",
         web_ingest: includeSources && useInternet,
         web_allowlist: webAllowlist,

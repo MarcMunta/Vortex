@@ -7,7 +7,6 @@ import type { SettingsTab } from "./components/SettingsModal";
 import VirtualizedMessageList from "./components/VirtualizedMessageList";
 import { BrowserAction, ChatSession, Message, Role, ViewType, LogEntry, AppMode, Source } from "./types";
 import { isLikelyTruncatedCode, vortexService } from "./services/vortexService";
-import { controlService } from "./services/controlService";
 import { translations } from "./translations";
 import { AppHeader } from "./app/AppHeader";
 import { ChatHomeState } from "./app/ChatHomeState";
@@ -19,11 +18,7 @@ const CommandPalette = lazy(() => import("./components/CommandPalette"));
 const SettingsModal = lazy(() => import("./components/SettingsModal"));
 const HelpModal = lazy(() => import("./components/HelpModal"));
 const ReasoningDrawer = lazy(() => import("./components/ReasoningDrawer"));
-const AnalysisView = lazy(() => import("./components/AnalysisView"));
 const SpatialWorkspaceView = lazy(() => import("./components/spatial/SpatialWorkspaceView"));
-const TrainingView = lazy(() => import("./components/TrainingView"));
-const TerminalView = lazy(() => import("./components/TerminalView"));
-const SelfEditsView = lazy(() => import("./components/SelfEditsView"));
 const ModificationExplorerModal = lazy(() => import("./components/ModificationExplorerModal"));
 
 const App: React.FC = () => {
@@ -38,7 +33,6 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [mode, setMode] = useState<AppMode>("ask");
-  const [analysisFocusTab, setAnalysisFocusTab] = useState<"stack" | "learning" | "internet">("stack");
   const [isComposerFocused, setIsComposerFocused] = useState(false);
   const [hasComposerDraft, setHasComposerDraft] = useState(false);
   const [headerVisible, setHeaderVisible] = useState(true);
@@ -72,12 +66,7 @@ const App: React.FC = () => {
     settings,
   } = useWorkspaceState({ isLoading });
 
-  const {
-    controlStatus,
-    operationalStatus,
-    selfEditsPendingCount,
-    setSelfEditsPendingCount,
-  } = useSystemStatus({ addLog, language: settings.language });
+  const { controlStatus, operationalStatus } = useSystemStatus({ addLog, language: settings.language });
 
   const inactivityTimerRef = useRef<number | null>(null);
   const isAutoScrollingRef = useRef(false);
@@ -100,7 +89,6 @@ const App: React.FC = () => {
   const chatReady = Boolean(operationalStatus?.chat_ready ?? operationalStatus?.ok);
   const chatMode = operationalStatus?.chat_mode || (chatReady ? "primary" : "unavailable");
   const canUseInternet = Boolean(controlStatus?.ok);
-  const canStartTraining = Boolean(controlStatus?.ok);
   const degradedChatAvailable = !stackReady && chatReady;
   const sendDisabledReason = chatReady
     ? undefined
@@ -140,24 +128,13 @@ const App: React.FC = () => {
       : (settings.language === "es" ? "Revisa el estado antes de empezar." : "Review the stack before you start.");
   const statusBody = stackReady
     ? (settings.language === "es"
-      ? "Consulta, agente, navegación puntual y entrenamiento siguen visibles desde la misma interfaz."
-      : "Query, agent mode, prompt browsing, and training stay visible from the same interface.")
+      ? "Chat y agente listos. Memoria Obsidian disponible si esta configurada."
+      : "Chat and agent are ready. Obsidian memory is used when configured.")
     : degradedChatAvailable || chatMode === "fallback_degraded"
       ? (settings.language === "es"
-        ? "El chat sigue disponible mientras el runtime principal termina de recuperarse o mientras el entrenamiento usa el fallback."
-        : "Chat stays available while the primary runtime recovers or training uses the fallback.")
+        ? "El chat sigue disponible mientras el runtime principal se recupera."
+        : "Chat stays available while the primary runtime recovers.")
       : rawStatusReason || sendDisabledReason;
-  const heroCards = settings.language === "es"
-    ? [
-        { label: "Modo", value: "Consulta y agente" },
-        { label: "Internet", value: "Solo al activarlo" },
-        { label: "Entreno", value: "Visible y manual" },
-      ]
-    : [
-        { label: "Mode", value: "Query and agent" },
-        { label: "Internet", value: "Only when enabled" },
-        { label: "Training", value: "Visible and manual" },
-      ];
   const modeThemeStyle = (mode === "agent"
     ? (isDarkMode
       ? {
@@ -395,18 +372,9 @@ const App: React.FC = () => {
   }, [createAccount]);
 
   const handleSelectView = useCallback((newView: ViewType) => {
-    if (newView === "analysis") setAnalysisFocusTab("stack");
     setActiveView((prev) => {
       setPrevView(prev);
       return newView;
-    });
-    setHeaderVisible(true);
-  }, []);
-
-  const openTrainingView = useCallback(() => {
-    setActiveView((prev) => {
-      setPrevView(prev);
-      return "training";
     });
     setHeaderVisible(true);
   }, []);
@@ -542,7 +510,7 @@ const VORTEX_CONFIG = {
     useInternet: boolean = false,
     selectedMode: AppMode = "ask",
     useThinking: boolean = true,
-    autoTrain: boolean = true,
+    autoTrain: boolean = false,
     options?: { preserveView?: boolean },
   ) => {
     if (sendDisabledReason) {
@@ -610,8 +578,6 @@ const VORTEX_CONFIG = {
       );
       let started = false;
       let aborted = false;
-      let lastText = "";
-      let lastRequestId: string | undefined;
       let lastBrowserActions: BrowserAction[] = [];
 
       for await (const chunk of stream) {
@@ -624,8 +590,6 @@ const VORTEX_CONFIG = {
           addLog("INFO", settings.language === "es" ? "Stream SSE conectado." : "SSE stream connected.");
         }
         setIsSearching(false);
-        lastText = chunk.text || lastText;
-        if (chunk.requestId) lastRequestId = chunk.requestId;
         if (chunk.browserActions?.length) lastBrowserActions = chunk.browserActions;
         setSessions((prev) => prev.map((session) => (
           session.id === targetSessionId
@@ -654,52 +618,6 @@ const VORTEX_CONFIG = {
       } else {
         if (lastBrowserActions.length > 0) {
           openBrowserActions(lastBrowserActions);
-        }
-        if (autoTrain && lastRequestId && lastText) {
-          addLog("LEARN", settings.language === "es" ? "Aprendizaje: encolando respuesta para curación..." : "Learning: queueing answer for curation...");
-          const feedback = await vortexService.submitFeedback(lastRequestId, lastText);
-          if (feedback.ok && feedback.trainingEvent) {
-            const learningStatus = feedback.quickTrainScheduled
-              ? "scheduled"
-              : (feedback.learningQueueItem?.status || "queued");
-            setSessions((prev) => prev.map((session) => (
-              session.id === targetSessionId
-                ? {
-                    ...session,
-                    messages: session.messages.map((message) => (
-                      message.id === aiMessageId
-                        ? {
-                            ...message,
-                            trainingEvent: true,
-                            learningStatus,
-                            learningQueueId: feedback.learningQueueItem?.id,
-                            learningRunId: feedback.scheduledRunId || undefined,
-                          }
-                        : message
-                    )),
-                  }
-                : session
-            )));
-            addLog(
-              "LEARN",
-              settings.language === "es"
-                ? `Respuesta en cola (${feedback.learningQueueDepth || 0}). Motivo: ${feedback.queueReason || "queued"}.`
-                : `Answer queued (${feedback.learningQueueDepth || 0}). Reason: ${feedback.queueReason || "queued"}.`,
-            );
-            if (feedback.quickTrainScheduled && feedback.scheduledRunId) {
-              addLog("LEARN", settings.language === "es" ? `Quick learning programado: ${feedback.scheduledRunId}` : `Quick learning scheduled: ${feedback.scheduledRunId}`);
-            }
-            await suggestPatchFromMessage(aiMessageId, "auto-train");
-            return;
-          }
-          if (feedback.ok) {
-            addLog("SYSTEM", settings.language === "es" ? "Aprendizaje no encolado: falta muestra curable para training." : "Learning not queued: no curatable sample available for training.");
-            return;
-          }
-          addLog("SYSTEM", settings.language === "es" ? `Aprendizaje falló: ${feedback.error || "error"}` : `Learning failed: ${feedback.error || "error"}`);
-          return;
-        } else if (autoTrain) {
-          addLog("SYSTEM", settings.language === "es" ? "Aprendizaje omitido: request_id ausente." : "Learning skipped: missing request_id.");
         }
       }
     } catch (error) {
@@ -789,7 +707,6 @@ const VORTEX_CONFIG = {
               onOpenSettings={openSettings}
               isOpen
               language={settings.language}
-              selfEditsPendingCount={selfEditsPendingCount}
               currentAccount={currentAccount}
               accounts={accounts}
               currentAccountId={currentAccountId}
@@ -804,25 +721,16 @@ const VORTEX_CONFIG = {
           {!activeModificationFiles && (
             <AppHeader
               activeView={activeView}
-              controlStatus={controlStatus}
               headerVisible={headerVisible}
-              isCommandPaletteOpen={isCommandPaletteOpen}
               isSidebarOpen={isSidebarOpen}
               language={settings.language}
-              onBootstrap={() => controlService.bootstrap(false)}
-              onModelInit={() => controlService.initModel()}
               onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
-              onOpenTraining={openTrainingView}
-              onRestartRuntime={() => controlService.restartRuntime()}
               onSelectView={handleSelectView}
               onSetLanguage={(language) => setSettings({ ...settings, language })}
               onShowSidebar={() => {
                 setIsSidebarOpen(true);
                 setIsReasoningOpen(false);
               }}
-              onStartAutonomy={() => controlService.startAutonomy()}
-              onStartTraining={() => controlService.startTraining("quick")}
-              onStopAutonomy={() => controlService.stopAutonomy()}
               operationalStatus={operationalStatus}
               springConfig={springConfig}
             />
@@ -849,11 +757,8 @@ const VORTEX_CONFIG = {
                     <ChatHomeState
                       activeEngineLabel={activeEngineLabel}
                       activeModelLabel={activeModelLabel}
-                      heroCards={heroCards}
                       language={settings.language}
                       onLoadDemo={handleLoadDemo}
-                      onOpenAnalysis={() => handleSelectView("analysis")}
-                      onOpenTraining={openTrainingView}
                       operationalStatus={operationalStatus}
                       readyLabel={readyLabel}
                       sendDisabledReason={sendDisabledReason}
@@ -901,60 +806,6 @@ const VORTEX_CONFIG = {
                 </motion.div>
               )}
 
-              {activeView === "analysis" && (
-                <motion.div key="analysis" custom={direction} variants={{ initial: (value: number) => ({ opacity: 0, x: value * 40, filter: "blur(10px)" }), animate: { opacity: 1, x: 0, filter: "blur(0px)", transition: springConfig }, exit: (value: number) => ({ opacity: 0, x: -value * 40, filter: "blur(10px)", transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1">
-                  <Suspense fallback={lazyPanelFallback}>
-                    <AnalysisView
-                      sessions={sessions}
-                      onNavigateToChat={handleNavigateToChat}
-                      onAddLog={addLog}
-                      language={settings.language}
-                      controlStatus={controlStatus}
-                      operationalStatus={operationalStatus}
-                      onBootstrap={() => controlService.bootstrap(false)}
-                      onModelInit={() => controlService.initModel()}
-                      onRestartRuntime={() => controlService.restartRuntime()}
-                      onReloadInstructions={() => controlService.reloadInstructions()}
-                      onStartTraining={(trainingMode) => controlService.startTraining(trainingMode)}
-                      onSaveAllowlist={(domains) => controlService.saveAllowlist(domains)}
-                      focusTab={analysisFocusTab}
-                    />
-                  </Suspense>
-                </motion.div>
-              )}
-
-              {activeView === "training" && (
-                <motion.div key="training" custom={direction} variants={{ initial: (value: number) => ({ opacity: 0, x: value * 40, filter: "blur(10px)" }), animate: { opacity: 1, x: 0, filter: "blur(0px)", transition: springConfig }, exit: (value: number) => ({ opacity: 0, x: -value * 40, filter: "blur(10px)", transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1">
-                  <Suspense fallback={lazyPanelFallback}>
-                    <TrainingView
-                      sessions={sessions}
-                      language={settings.language}
-                      controlStatus={controlStatus}
-                      onAddLog={addLog}
-                      onStartTraining={(trainingMode) => controlService.startTraining(trainingMode)}
-                      onStartAutonomy={() => controlService.startAutonomy()}
-                      onStopAutonomy={() => controlService.stopAutonomy()}
-                      onConfigureAutonomy={(config) => controlService.configureAutonomy(config)}
-                    />
-                  </Suspense>
-                </motion.div>
-              )}
-
-              {activeView === "edits" && (
-                <motion.div key="edits" custom={direction} variants={{ initial: (value: number) => ({ opacity: 0, x: value * 40, filter: "blur(10px)" }), animate: { opacity: 1, x: 0, filter: "blur(0px)", transition: springConfig }, exit: (value: number) => ({ opacity: 0, x: -value * 40, filter: "blur(10px)", transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1">
-                  <Suspense fallback={lazyPanelFallback}>
-                    <SelfEditsView language={settings.language} onAddLog={addLog} onPendingCountChange={setSelfEditsPendingCount} />
-                  </Suspense>
-                </motion.div>
-              )}
-
-              {activeView === "terminal" && (
-                <motion.div key="terminal" custom={direction} variants={{ initial: (value: number) => ({ opacity: 0, x: value * 40, filter: "blur(10px)" }), animate: { opacity: 1, x: 0, filter: "blur(0px)", transition: springConfig }, exit: (value: number) => ({ opacity: 0, x: -value * 40, filter: "blur(10px)", transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1">
-                  <Suspense fallback={lazyPanelFallback}>
-                    <TerminalView logs={logs} onClear={() => setLogs([])} language={settings.language} />
-                  </Suspense>
-                </motion.div>
-              )}
             </AnimatePresence>
           </div>
 
@@ -968,7 +819,6 @@ const VORTEX_CONFIG = {
                   mode={mode}
                   onModeChange={setMode}
                   canUseInternet={canUseInternet}
-                  allowAutoTrain={canStartTraining}
                   sendDisabledReason={sendDisabledReason}
                   onStop={() => {
                     abortControllerRef.current = true;

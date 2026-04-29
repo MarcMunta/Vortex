@@ -4,6 +4,8 @@ import warnings
 from copy import deepcopy
 from typing import Any
 
+from c3rnt2.context_budget import DEFAULT_CONTEXT_BUDGET
+
 
 def normalize_settings(settings: dict) -> dict:
     normalized = deepcopy(settings)
@@ -250,6 +252,24 @@ def normalize_settings(settings: dict) -> dict:
     multimodal_context.setdefault("include_voice", True)
     multimodal_context.setdefault("include_gesture", True)
     normalized["multimodal_context"] = multimodal_context
+
+    context = normalized.get("context", {}) or {}
+    context = dict(context) if isinstance(context, dict) else {}
+    for key, value in DEFAULT_CONTEXT_BUDGET.items():
+        context.setdefault(key, value)
+    normalized["context"] = context
+
+    cloud_training = normalized.get("cloud_training", {}) or {}
+    cloud_training = dict(cloud_training) if isinstance(cloud_training, dict) else {}
+    cloud_training.setdefault("provider", "gcp")
+    cloud_training.setdefault("enabled", False)
+    cloud_training.setdefault("project_id", None)
+    cloud_training.setdefault("region", "us-central1")
+    cloud_training.setdefault("bucket", None)
+    cloud_training.setdefault("dataset_path", "data/registry/hf_train/qwen_coder_flutter_sft_samples.jsonl")
+    cloud_training.setdefault("job_name_prefix", "vortex-qwen-coder")
+    cloud_training.setdefault("service_account_env", "GOOGLE_APPLICATION_CREDENTIALS")
+    normalized["cloud_training"] = cloud_training
 
     presentation = normalized.get("presentation", {}) or {}
     presentation.setdefault("default_panel_type", "presentation")

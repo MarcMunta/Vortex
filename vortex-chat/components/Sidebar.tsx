@@ -1,11 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BarChart3,
   ChevronUp,
   ChevronsUpDown,
   CircleUserRound,
-  FileCode2,
-  FlaskConical,
   Layers3,
   MessageSquare,
   Moon,
@@ -13,7 +10,6 @@ import {
   Plus,
   Settings,
   Sun,
-  TerminalSquare,
   Trash2,
   AlertTriangle,
 } from 'lucide-react';
@@ -37,7 +33,6 @@ interface SidebarProps {
   onOpenSettings: (tab?: SettingsTab) => void;
   isOpen: boolean;
   language: Language;
-  selfEditsPendingCount?: number;
   currentAccount?: LocalAccount | null;
   accounts: LocalAccount[];
   currentAccountId: string | null;
@@ -59,7 +54,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   onClose,
   onOpenSettings,
   language,
-  selfEditsPendingCount = 0,
   currentAccount,
   accounts,
   currentAccountId,
@@ -78,12 +72,8 @@ const Sidebar: React.FC<SidebarProps> = ({
     () => [
       { id: 'chat' as ViewType, label: t.nav_chat, icon: MessageSquare },
       { id: 'spatial' as ViewType, label: t.nav_spatial, icon: Layers3 },
-      { id: 'analysis' as ViewType, label: t.nav_analysis, icon: BarChart3 },
-      { id: 'training' as ViewType, label: t.nav_training, icon: FlaskConical },
-      { id: 'edits' as ViewType, label: t.nav_edits, icon: FileCode2, badge: selfEditsPendingCount },
-      { id: 'terminal' as ViewType, label: t.nav_terminal, icon: TerminalSquare },
     ],
-    [selfEditsPendingCount, t.nav_analysis, t.nav_chat, t.nav_edits, t.nav_spatial, t.nav_terminal, t.nav_training],
+    [t.nav_chat, t.nav_spatial],
   );
 
   const orderedSessions = useMemo(
@@ -127,22 +117,16 @@ const Sidebar: React.FC<SidebarProps> = ({
           <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.18),transparent)] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.03),transparent)]" />
         </div>
 
-        <div className="relative z-10 border-b border-border/50 px-5 pb-5 pt-6">
-          <div className="flex items-start justify-between gap-3">
+        <div className="relative z-10 border-b border-border/50 px-4 pb-4 pt-4">
+          <div className="flex items-center justify-between gap-3">
             <button
               type="button"
               onClick={() => onSelectView('chat')}
-            className="group flex min-w-0 items-center gap-3 rounded-[1.15rem] border border-border/70 bg-muted/15 px-3 py-3 text-left shadow-sm transition-all hover:border-primary/20 hover:bg-background"
+              className="group flex min-w-0 items-center gap-3 rounded-xl px-2 py-2 text-left transition-all hover:bg-muted/30"
             >
-              <VortexLogo size={34} alt="Vortex" />
+              <VortexLogo size={28} alt="Vortex" />
               <div className="min-w-0">
-                <p className="text-[9px] font-black uppercase tracking-[0.16em] text-primary/80">
-                  {language === 'es' ? 'Local core' : 'Local core'}
-                </p>
-                <p className="mt-1 truncate text-sm font-extrabold tracking-tight">Vortex</p>
-                <p className="mt-1 text-[10px] font-semibold text-muted-foreground">
-                  {language === 'es' ? 'Frontend principal' : 'Primary frontend'}
-                </p>
+                <p className="truncate text-sm font-extrabold tracking-tight">Vortex</p>
               </div>
             </button>
 
@@ -160,7 +144,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           <button
             type="button"
             onClick={onNewChat}
-            className="mt-5 flex w-full items-center justify-between rounded-[1.15rem] border border-border/70 bg-muted/15 px-4 py-3 text-left shadow-sm transition-all hover:border-primary/20 hover:bg-background"
+            className="mt-4 flex w-full items-center justify-between rounded-xl border border-border/70 bg-muted/15 px-4 py-3 text-left shadow-sm transition-all hover:border-primary/20 hover:bg-background"
           >
             <div>
               <p className="text-[10px] font-black uppercase tracking-[0.2em] text-primary">
@@ -205,11 +189,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                   <span className="relative z-10 flex-1 text-sm font-semibold tracking-tight">
                     {item.label}
                   </span>
-                  {Boolean(item.badge) && (
-                    <span className="relative z-10 rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-black text-white">
-                      {item.badge! > 99 ? '99+' : item.badge}
-                    </span>
-                  )}
                 </button>
               );
             })}

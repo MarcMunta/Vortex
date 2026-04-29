@@ -4,7 +4,7 @@ export enum Role {
   AI = 'ai'
 }
 
-export type ViewType = 'chat' | 'spatial' | 'analysis' | 'training' | 'edits' | 'terminal';
+export type ViewType = 'chat' | 'spatial';
 export type AppMode = 'ask' | 'agent';
 export type FontSize = 'small' | 'medium' | 'large';
 export type Language = 'es' | 'en';

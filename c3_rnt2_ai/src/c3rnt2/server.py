@@ -88,6 +88,13 @@ from .prepare import prepare_model_state
 from .instructions import load_instruction_bundle
 from .runtime.vram_governor import decide_max_new_tokens
 from .utils.oom import is_oom_error, clear_cuda_cache
+from .context_budget import (
+    apply_message_budget,
+    context_limit_for_mode,
+    output_limit_for_mode,
+    resolve_context_budget,
+    resolve_model_context_limit,
+)
 from .api_server.chat_services import (
     ChatContextService,
     compose_dynamic_system_prompt as _compose_dynamic_system_prompt_impl,
@@ -1382,20 +1389,23 @@ def _stream_generate(
 def _resolve_decode_args(settings: dict, payload: dict) -> dict[str, Any]:
     decode_cfg = settings.get("decode", {}) or {}
     generation_cfg = settings.get("generation", {}) or {}
+    context_cfg = resolve_context_budget(settings)
+    mode = str(payload.get("vortex_mode") or payload.get("mode") or payload.get("response_mode") or "chat").strip().lower()
     bad_cfg = settings.get("bad", {}) or {}
     hard_max = int(
         generation_cfg.get(
             "hard_max_tokens",
-            decode_cfg.get("hard_max_new_tokens", decode_cfg.get("hard_max_tokens", 4096)),
+            decode_cfg.get("hard_max_new_tokens", decode_cfg.get("hard_max_tokens", context_cfg["max_output_tokens"])),
         )
-        or 4096
+        or context_cfg["max_output_tokens"]
     )
+    hard_max = min(hard_max, int(context_cfg["max_agent_final_tokens"] if mode == "agent" else context_cfg["max_output_tokens"]))
     default_max = int(
         generation_cfg.get(
             "default_max_tokens",
-            decode_cfg.get("max_new_tokens", 2048),
+            decode_cfg.get("max_new_tokens", output_limit_for_mode(settings, "agent" if mode == "agent" else "chat")),
         )
-        or 2048
+        or output_limit_for_mode(settings, "agent" if mode == "agent" else "chat")
     )
     code_max = int(
         generation_cfg.get(
@@ -1569,8 +1579,11 @@ def _decode_metadata(decode_args: dict[str, Any], *, backend: str, model: str | 
 
 
 def _resolve_ctx_max_tokens(settings: dict) -> int | None:
+    context_cfg = resolve_context_budget(settings)
     server_cfg = settings.get("server", {}) or {}
     raw = server_cfg.get("ctx_max_tokens")
+    if raw is None and bool(context_cfg.get("enabled", True)):
+        raw = context_cfg.get("model_max_context_tokens")
     if raw is None:
         raw = (settings.get("bench_thresholds", {}) or {}).get("required_ctx")
     if raw is None:
@@ -1579,7 +1592,7 @@ def _resolve_ctx_max_tokens(settings: dict) -> int | None:
         val = int(raw) if raw is not None else None
     except Exception:
         val = None
-    return int(val) if isinstance(val, int) and val > 0 else None
+    return int(val) if isinstance(val, int) and val > 0 else int(context_cfg.get("model_max_context_tokens") or 32768)
 
 
 def _resolve_ctx_overflow_policy(settings: dict) -> str:
@@ -1587,7 +1600,7 @@ def _resolve_ctx_overflow_policy(settings: dict) -> str:
     raw = (
         server_cfg.get("ctx_overflow_policy")
         or server_cfg.get("ctx_trim_policy")
-        or "reject"
+        or "tail_keep_last_n"
     )
     return str(raw or "reject").strip().lower()
 
@@ -3193,6 +3206,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         settings=settings,
         chat_sessions_store=chat_sessions_store,
         multimodal_fusion=app.state.multimodal_fusion,
+        obsidian_sync=app.state.obsidian_sync,
         extract_query=_extract_query,
         inject_chat_memory_context=_inject_chat_memory_context,
         build_temporal_system_context=_build_temporal_system_context,
@@ -4126,6 +4140,8 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         messages = _prepend_system_message(
             messages, _code_generation_system_instruction(payload)
         )
+        mode_for_budget = "agent" if bool(payload.get("agent_mode")) else "chat"
+        messages = apply_message_budget(messages, settings, mode=mode_for_budget)
         prompt = build_chat_prompt(
             messages,
             backend_cfg,
@@ -4134,7 +4150,11 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         )
         engine_messages = list(messages)
 
-        ctx_max = _resolve_ctx_max_tokens(settings)
+        ctx_max = min(
+            _resolve_ctx_max_tokens(settings) or 32768,
+            resolve_model_context_limit(settings, selected_model),
+            context_limit_for_mode(settings, mode_for_budget),
+        )
         if ctx_max is not None:
             policy = _resolve_ctx_overflow_policy(settings)
             max_new_before = int(decode_args.get("max_new_tokens") or 0)

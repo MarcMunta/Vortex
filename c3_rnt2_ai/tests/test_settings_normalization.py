@@ -156,6 +156,18 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert daily["generation"]["hard_max_tokens"] >= 4096
     assert daily["core"]["vram_floor_tokens"] >= 256
     assert daily["core"]["vram_ceil_tokens"] >= 4096
+    assert daily["context"]["model_max_context_tokens"] == 32768
+    assert daily["context"]["default_chat_context_tokens"] == 16384
+    assert daily["context"]["default_agent_context_tokens"] == 24576
+    assert daily["context"]["max_output_tokens"] == 2048
+    assert daily["context"]["max_agent_action_tokens"] == 2048
+    assert daily["context"]["max_agent_final_tokens"] == 4096
+    assert daily["context"]["obsidian_tokens"] == 5000
+    assert daily["agent"]["action_max_new_tokens"] == 2048
+    assert daily["agent"]["final_summary_max_new_tokens"] == 4096
+    assert daily["cloud_training"]["provider"] == "gcp"
+    assert daily["cloud_training"]["enabled"] is False
+    assert daily["cloud_training"]["service_account_env"] == "GOOGLE_APPLICATION_CREDENTIALS"
 
     assert legacy["core"]["backend"] == "external"
     assert legacy["core"]["external_engine"] == "sglang"
@@ -177,6 +189,8 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert "awq" not in train["hf_train"]["model_name"].lower()
     assert train["hf_train"]["registry_dir"] == "data/registry/hf_train/qwen_coder_flutter"
     assert train["hf_train"]["manual_promotion_only"] is False
+    assert train["context"]["default_agent_context_tokens"] > train["context"]["default_chat_context_tokens"]
+    assert train["cloud_training"]["enabled"] is False
     assert train["hf_train"]["extra_training_paths"] == [
         "data/registry/hf_train/sft_samples.jsonl",
         "data/registry/hf_train/programming_eval.jsonl",

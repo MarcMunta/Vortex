@@ -256,11 +256,40 @@ profiles:
       reload_interval_s: 15
       allow_parallel_runtime_training: false
       lazy_model_load: true
+      ctx_overflow_policy: tail_keep_last_n
+    context:
+      enabled: true
+      model_max_context_tokens: 32768
+      default_chat_context_tokens: 16384
+      default_agent_context_tokens: 24576
+      max_input_tokens: 24576
+      max_output_tokens: 2048
+      max_agent_action_tokens: 2048
+      max_agent_final_tokens: 4096
+      reserve_output_tokens: 2048
+      reserve_system_tokens: 1500
+      reserve_tool_tokens: 4000
+      compression_enabled: true
+      summarize_old_messages: true
+      rolling_summary_tokens: 2500
+      recent_messages_tokens: 6000
+      rag_tokens: 6000
+      obsidian_tokens: 5000
+      repo_context_tokens: 5000
+    cloud_training:
+      provider: gcp
+      enabled: false
+      project_id:
+      region: us-central1
+      bucket:
+      dataset_path: "data/registry/hf_train/qwen_coder_flutter_sft_samples.jsonl"
+      job_name_prefix: "vortex-qwen-coder"
+      service_account_env: "GOOGLE_APPLICATION_CREDENTIALS"
     agent:
       web_allowlist: []
       max_iters: 50
-      action_max_new_tokens: 768
-      final_summary_max_new_tokens: 2048
+      action_max_new_tokens: 2048
+      final_summary_max_new_tokens: 4096
       max_wall_time_s: 1800
     tools:
       web:
@@ -426,11 +455,13 @@ profiles:
     core:
       hf_cache_dir: "data/models/hf-cache"
     agent:
-      max_iters: 2
+      max_iters: 8
+      action_max_new_tokens: 2048
+      final_summary_max_new_tokens: 4096
     rag:
       enabled: true
-      top_k: 6
-      max_chars: 2200
+      top_k: 8
+      max_chars: 24000
   ethical_security_lab_4080_offensive_lab:
     # Offensive simulation profile for isolated, user-owned security labs only.
     # Local-only and fail-closed by contract.

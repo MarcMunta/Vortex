@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Square, ArrowUp, Globe, Timer, FlaskConical } from 'lucide-react';
+import { Square, ArrowUp, Globe, Timer } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { AppMode, Language } from '../types';
 import { translations } from '../translations';
@@ -13,7 +13,6 @@ interface ChatInputProps {
   mode: AppMode;
   onModeChange: (mode: AppMode) => void;
   canUseInternet?: boolean;
-  allowAutoTrain?: boolean;
   sendDisabledReason?: string;
   isThinking?: boolean;
   onStop?: () => void;
@@ -31,7 +30,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
   mode,
   onModeChange,
   canUseInternet = true,
-  allowAutoTrain = true,
   sendDisabledReason,
   isThinking,
   onStop,
@@ -43,11 +41,10 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const [input, setInput] = useState('');
   const [isInternetEnabled, setIsInternetEnabled] = useState(false);
   const [useThinking, setUseThinking] = useState(true);
-  const [autoTrainEnabled, setAutoTrainEnabled] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const t = translations[language];
-  const MAX_HEIGHT = 200; 
+  const MAX_HEIGHT = 360; 
 
   const adjustHeight = useCallback(() => {
     const textarea = textareaRef.current;
@@ -71,14 +68,10 @@ const ChatInput: React.FC<ChatInputProps> = ({
     if (!canUseInternet) setIsInternetEnabled(false);
   }, [canUseInternet]);
 
-  useEffect(() => {
-    if (!allowAutoTrain) setAutoTrainEnabled(false);
-  }, [allowAutoTrain]);
-
   const handleSend = () => {
     if (input.trim() && !isLoading && !sendDisabledReason) {
       onInteraction?.();
-      onSend(input.trim(), isInternetEnabled, mode, useThinking, autoTrainEnabled);
+      onSend(input.trim(), isInternetEnabled, mode, useThinking, false);
       setInput('');
       if (textareaRef.current) textareaRef.current.style.height = 'auto';
     }
@@ -101,9 +94,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
       : (language === 'es' ? 'Fast' : 'Fast'),
     isInternetEnabled
       ? (language === 'es' ? 'Internet en este prompt' : 'Internet on this prompt')
-      : null,
-    autoTrainEnabled
-      ? (language === 'es' ? 'Encolar para aprendizaje' : 'Queue for learning')
       : null,
   ].filter(Boolean) as string[];
 
@@ -184,26 +174,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
             disabled={!canUseInternet}
           >
             <Globe size={18} className={isInternetEnabled ? 'animate-pulse' : ''} />
-          </button>
-
-          <button
-            onClick={() => {
-              if (!allowAutoTrain) return;
-              setAutoTrainEnabled(!autoTrainEnabled);
-              onInteraction?.();
-            }}
-            aria-label={autoTrainEnabled ? (language === 'es' ? 'Encolar para aprendizaje activo' : 'Queue for learning active') : (language === 'es' ? 'Encolar para aprendizaje inactivo' : 'Queue for learning inactive')}
-            title={autoTrainEnabled ? (language === 'es' ? 'Encolar para aprendizaje activado' : 'Queue for learning enabled') : (language === 'es' ? 'Encolar para aprendizaje desactivado' : 'Queue for learning disabled')}
-            className={`flex items-center justify-center rounded-full border border-transparent p-2.5 transition-all duration-300 ${
-              !allowAutoTrain
-                ? 'text-muted-foreground/20 dark:text-zinc-700 cursor-not-allowed'
-                : autoTrainEnabled
-                ? 'bg-primary/12 text-primary border-primary/20'
-                : 'text-muted-foreground dark:text-zinc-400 hover:bg-muted hover:text-foreground'
-            }`}
-            disabled={!allowAutoTrain}
-          >
-            <FlaskConical size={18} className={autoTrainEnabled ? 'animate-pulse' : ''} />
           </button>
 
           {isLoading ? (

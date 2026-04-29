@@ -149,3 +149,18 @@ def register_multimodal_routes(app: FastAPI, deps: ApiDependencies) -> None:
             tags=[str(item) for item in (payload.get("tags") or []) if str(item).strip()],
         )
         return JSONResponse(content=result, status_code=200 if bool(result.get("ok")) else 400)
+
+    @app.post("/v1/obsidian/reindex")
+    async def obsidian_reindex():
+        result = get_api_services(app).obsidian_sync.reindex()
+        return JSONResponse(content=result, status_code=200 if bool(result.get("ok")) else 400)
+
+    @app.post("/v1/obsidian/search")
+    async def obsidian_search(request: Request):
+        payload = await request.json()
+        result = get_api_services(app).obsidian_sync.search(
+            str(payload.get("query") or ""),
+            top_k=int(payload.get("top_k") or payload.get("topK") or 6),
+            max_tokens=int(payload.get("max_tokens") or payload.get("maxTokens") or 5000),
+        )
+        return JSONResponse(content=result, status_code=200 if bool(result.get("ok")) else 400)

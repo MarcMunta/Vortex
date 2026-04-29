@@ -18,14 +18,10 @@ export const DEFAULT_SETTINGS: UserSettings = {
 export const VIEW_INDEX = {
   chat: 0,
   spatial: 1,
-  analysis: 2,
-  training: 3,
-  edits: 4,
-  terminal: 5,
 } as const;
 
 export const MAX_LOCAL_SESSION_CACHE_SESSIONS = 12;
-export const MAX_LOCAL_SESSION_CACHE_MESSAGES = 18;
+export const MAX_LOCAL_SESSION_CACHE_MESSAGES = 48;
 
 export const repairMojibakeText = (value: string | null | undefined): string => {
   if (!value || !/[ÃƒÃ‚]/.test(value)) return value ?? "";

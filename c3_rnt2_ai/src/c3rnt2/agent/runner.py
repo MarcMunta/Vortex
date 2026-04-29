@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from ..config import resolve_web_allowlist
+from ..context_budget import apply_message_budget, output_limit_for_mode, resolve_context_budget
 from ..lab_guard import evaluate_lab_request
 from ..model_loader import load_inference_model
+from ..multimodal.obsidian_sync import ObsidianSyncService
 from ..prompting.chat_format import build_chat_prompt
 from .permissions import AgentPermissions, build_agent_permission_context
 from .tools import AgentTools, ToolResult
@@ -240,8 +242,15 @@ def run_agent(
         max_iters = _cfg_int(agent_cfg, "max_iters", 5)
     else:
         max_iters = max(1, int(max_iters))
-    action_max_new_tokens = _cfg_int(agent_cfg, "action_max_new_tokens", 256)
-    final_summary_max_new_tokens = _cfg_int(agent_cfg, "final_summary_max_new_tokens", 160)
+    context_cfg = resolve_context_budget(settings)
+    action_max_new_tokens = min(
+        _cfg_int(agent_cfg, "action_max_new_tokens", output_limit_for_mode(settings, "agent")),
+        int(context_cfg.get("max_agent_action_tokens") or 2048),
+    )
+    final_summary_max_new_tokens = min(
+        _cfg_int(agent_cfg, "final_summary_max_new_tokens", output_limit_for_mode(settings, "agent", final=True)),
+        int(context_cfg.get("max_agent_final_tokens") or 4096),
+    )
     max_wall_time_s = _cfg_float(agent_cfg, "max_wall_time_s", 0.0)
 
     tools_enabled = agent_cfg.get("tools_enabled")
@@ -294,6 +303,16 @@ def run_agent(
         f"Permission context: {permission_context} "
         f"Tool schemas: {'; '.join(allowed_tool_schemas)}"
     )
+    try:
+        obsidian_budget = int(context_cfg.get("obsidian_tokens") or 0)
+        if obsidian_budget > 0:
+            obsidian = ObsidianSyncService(settings=settings, base_dir=base_dir)
+            obsidian_context = obsidian.build_context(task, max_tokens=obsidian_budget, top_k=6)
+            obsidian_text = str(obsidian_context.get("text") or "").strip()
+            if obsidian_text:
+                system_prompt += f" Curated Obsidian memory follows. Use when relevant and keep paths traceable. {obsidian_text}"
+    except Exception:
+        pass
     messages: List[dict] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task},
@@ -349,12 +368,14 @@ def run_agent(
             summary = "stopped_by_wall_time_limit"
             break
         if action_provider is None and current_model is not None:
+            messages = apply_message_budget(messages, settings, mode="agent")
             prompt = build_chat_prompt(messages, backend=str(settings.get("core", {}).get("backend", "vortex")), tokenizer=getattr(current_model, "tokenizer", None), default_system=None)
             with (model_lock() if model_lock is not None else nullcontext()):
                 output = current_model.generate(prompt, max_new_tokens=action_max_new_tokens, temperature=0.0)
             action, ok = _parse_action(output)
             if not ok:
                 messages.append({"role": "system", "content": "JSON ONLY. No markdown."})
+                messages = apply_message_budget(messages, settings, mode="agent")
                 prompt = build_chat_prompt(messages, backend=str(settings.get("core", {}).get("backend", "vortex")), tokenizer=getattr(current_model, "tokenizer", None), default_system=None)
                 with (model_lock() if model_lock is not None else nullcontext()):
                     output = current_model.generate(prompt, max_new_tokens=action_max_new_tokens, temperature=0.0)
@@ -455,8 +476,9 @@ def run_agent(
             else:
                 result = ToolResult(ok=False, output="unknown action")
 
-        tool_calls.append({"action": action.type, "args": action.args, "ok": result.ok, "output": result.output[:1000]})
-        messages.append({"role": "tool", "content": result.output[:2000]})
+        tool_chars = max(2000, int(context_cfg.get("reserve_tool_tokens") or 4000) * 4)
+        tool_calls.append({"action": action.type, "args": action.args, "ok": result.ok, "output": result.output[: min(4000, tool_chars)]})
+        messages.append({"role": "tool", "content": result.output[:tool_chars]})
 
     if _summary_needs_fallback(summary):
         summary = _infer_exists_summary(task, workspace_dir) or summary

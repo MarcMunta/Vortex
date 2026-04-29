@@ -116,6 +116,37 @@ Adapter Qwen Coder: `data/registry/hf_train/qwen_coder_flutter`. Runtime carga u
 
 Rollback rapido: restaura `data/registry/hf_train/qwen_coder_flutter/registry.json`, reinicia API o llama `/v1/reload_adapter`, y re-ejecuta doctor/eval.
 
+## Chat, agente y contexto
+
+Vortex prioriza Qwen Coder para chat normal y modo agente. El perfil principal define una sola fuente de verdad en `context`:
+- chat: `default_chat_context_tokens: 16384`
+- agente: `default_agent_context_tokens: 24576`
+- salida normal: `max_output_tokens: 2048`
+- acciones agente: `max_agent_action_tokens: 2048`
+- resumen final agente: `max_agent_final_tokens: 4096`
+
+El ensamblador conserva instrucciones, resumen acumulado, mensajes recientes completos, notas Obsidian relevantes, RAG/repo context y contexto multimodal con limites por tokens. Si el modelo reporta un contexto real menor, Vortex recorta al limite real y reserva salida. Subir estos valores puede aumentar VRAM y latencia en RTX 4080 16GB.
+
+Obsidian:
+```yaml
+obsidian:
+  enabled: true
+  vault_path: "D:/Obsidian/Vault"
+```
+
+Endpoints:
+```text
+GET  /v1/obsidian/status
+POST /v1/obsidian/reindex
+POST /v1/obsidian/search
+```
+
+Si `vault_path` no existe, la app no falla y devuelve `Obsidian no configurado`. Solo indexa Markdown `.md`, ignora carpetas ocultas/caches y usa hash incremental. No vuelca todo el vault al prompt: recupera top-k notas relevantes con limite de tokens.
+
+## Entrenamiento
+
+El entrenamiento local visible en la UI queda deprecated. La ruta futura es `cloud_training` con provider `gcp`, `enabled: false` por defecto, `project_id`, `region`, `bucket`, `dataset_path`, `job_name_prefix` y `service_account_env`. No hay credenciales hardcodeadas.
+
 ## RTX 4080 16GB Quickstart (Windows, perfil safe)
 Comandos recomendados (core backend, sin descargas, web deny-by-default):
 ```bash

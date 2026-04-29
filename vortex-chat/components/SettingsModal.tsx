@@ -311,6 +311,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         ))}
                       </Reorder.Group>
                     </div>
+
+                    <div className="rounded-[1.3rem] border border-border/60 bg-muted/10 p-4">
+                      <p className="text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                        {settings.language === 'es' ? 'Entrenamiento' : 'Training'}
+                      </p>
+                      <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                        {settings.language === 'es'
+                          ? 'Google Cloud pendiente de configurar.'
+                          : 'Google Cloud pending configuration.'}
+                      </p>
+                    </div>
                   </div>
                 </div>
               )}
