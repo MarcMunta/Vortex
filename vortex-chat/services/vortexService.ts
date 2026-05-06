@@ -40,17 +40,11 @@ export const DEFAULT_CHAT_MAX_TOKENS = 2048;
 export const CODE_CHAT_MAX_TOKENS = 3072;
 export const COMPLETE_CODE_MAX_TOKENS = 4096;
 
-const resolveApiBaseUrl = (): string => {
+export const resolveApiBaseUrl = (): string => {
   const env = ((import.meta as any).env || {}) as Record<string, string | undefined>;
   const raw = (env.VITE_API_BASE_URL || "").trim();
   if (raw) return raw.replace(/\/+$/, "");
-  const port = (
-    env.VITE_BACKEND_PORT
-    || env.VITE_API_PORT
-    || "8000"
-  ).trim() || "8000";
-  const host = typeof window !== "undefined" ? (window.location.hostname || "127.0.0.1") : "127.0.0.1";
-  return `http://${host}:${port}`;
+  return "";
 };
 
 export function classifyPromptIntent(prompt: string): PromptIntent {
@@ -498,7 +492,7 @@ export class VortexService {
   private readonly baseUrl = resolveApiBaseUrl();
 
   private url(path: string): string {
-    return `${this.baseUrl}${path}`;
+    return this.baseUrl ? `${this.baseUrl}${path}` : path;
   }
 
   private async json<T>(path: string, init?: RequestInit): Promise<T> {

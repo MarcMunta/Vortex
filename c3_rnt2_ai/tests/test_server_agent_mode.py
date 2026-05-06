@@ -153,6 +153,7 @@ def test_chat_completions_agent_mode_stream(tmp_path: Path, monkeypatch) -> None
 
     assert resp.status_code == 200
     assert resp.headers.get("content-type", "").startswith("text/event-stream")
+    assert "Agente iniciado" in resp.text
     assert "agent-stream" in resp.text
     assert "data: [DONE]" in resp.text
 

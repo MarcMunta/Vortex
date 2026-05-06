@@ -540,7 +540,18 @@ const VORTEX_CONFIG = {
 
     const userMessage: Message = { id: Date.now().toString(), role: Role.USER, content, timestamp: Date.now() };
     const aiMessageId = (Date.now() + 1).toString();
-    const initialAiMessage: Message = { id: aiMessageId, role: Role.AI, content: "", thought: "", requestId: undefined, sources: [], groundingSupports: [], timestamp: Date.now() };
+    const initialAiMessage: Message = {
+      id: aiMessageId,
+      role: Role.AI,
+      content: selectedMode === "agent"
+        ? (settings.language === "es" ? "Agente en ejecucion..." : "Agent running...")
+        : "",
+      thought: "",
+      requestId: undefined,
+      sources: [],
+      groundingSupports: [],
+      timestamp: Date.now(),
+    };
     setSessions((prev) => prev.map((session) => (
       session.id === targetSessionId
         ? { ...session, messages: [...session.messages, userMessage, initialAiMessage], updatedAt: Date.now() }
@@ -622,7 +633,35 @@ const VORTEX_CONFIG = {
       }
     } catch (error) {
       const detail = error instanceof Error ? error.message : (settings.language === "es" ? "Interrupción de flujo." : "Flow interrupted.");
-      addLog("SYSTEM", repairMojibakeText(detail));
+      const cleanedDetail = repairMojibakeText(detail);
+      addLog("SYSTEM", cleanedDetail);
+      setSessions((prev) => prev.map((session) => (
+        session.id === targetSessionId
+          ? {
+              ...session,
+              messages: session.messages.map((message) => (
+                message.id === aiMessageId
+                  ? {
+                      ...message,
+                      content: selectedMode === "agent"
+                        ? (
+                            settings.language === "es"
+                              ? `No se pudo completar la ejecucion del agente: ${cleanedDetail}`
+                              : `Agent run could not complete: ${cleanedDetail}`
+                          )
+                        : (
+                            settings.language === "es"
+                              ? `No se pudo completar la respuesta: ${cleanedDetail}`
+                              : `Response could not complete: ${cleanedDetail}`
+                          ),
+                      finishReason: "error",
+                    }
+                  : message
+              )),
+              updatedAt: Date.now(),
+            }
+          : session
+      )));
     } finally {
       setIsLoading(false);
       setIsSearching(false);
