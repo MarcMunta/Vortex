@@ -5,6 +5,7 @@ import {
   DEFAULT_CHAT_MAX_TOKENS,
   isLikelyTruncatedCode,
   resolveApiBaseUrl,
+  resolveDirectApiBaseUrl,
   shouldUseSources,
   VortexService,
 } from '../services/vortexService';
@@ -37,6 +38,7 @@ test('token constants keep code budget long', () => {
 
 test('agent stream uses same-origin API proxy by default', async () => {
   expect(resolveApiBaseUrl()).toBe('');
+  expect(resolveDirectApiBaseUrl()).toBe('http://127.0.0.1:8000');
 
   const originalFetch = globalThis.fetch;
   let seenUrl = '';
@@ -67,6 +69,72 @@ test('agent stream uses same-origin API proxy by default', async () => {
     expect(seenPayload.vortex_mode).toBe('agent');
     expect(chunks.at(-1)?.text).toBe('agent-ok');
     expect(chunks.at(-1)?.done).toBeTruthy();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('chat stream falls back to direct backend when proxy does not return SSE', async () => {
+  const originalFetch = globalThis.fetch;
+  const seenUrls: string[] = [];
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    seenUrls.push(url);
+    if (seenUrls.length === 1) {
+      return new Response('<html>vite preview fallback</html>', {
+        status: 200,
+        headers: { 'Content-Type': 'text/html' },
+      });
+    }
+    const body = [
+      'data: {"choices":[{"index":0,"delta":{"content":"fallback-ok"},"finish_reason":null}],"request_id":"req-2"}\n\n',
+      'data: [DONE]\n\n',
+    ].join('');
+    return new Response(body, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  }) as typeof fetch;
+
+  try {
+    const chunks = [];
+    for await (const chunk of new VortexService().generateResponseStream([], 'hola', false, true, 'ask', 'es')) {
+      chunks.push(chunk);
+    }
+
+    expect(seenUrls).toEqual(['/v1/chat/completions', 'http://127.0.0.1:8000/v1/chat/completions']);
+    expect(chunks.at(-1)?.text).toBe('fallback-ok');
+    expect(chunks.at(-1)?.done).toBeTruthy();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('status falls back to direct backend when proxy returns non-json', async () => {
+  const originalFetch = globalThis.fetch;
+  const seenUrls: string[] = [];
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    seenUrls.push(url);
+    if (seenUrls.length === 1) {
+      return new Response('<html>frontend shell</html>', {
+        status: 200,
+        headers: { 'Content-Type': 'text/html' },
+      });
+    }
+    return new Response(JSON.stringify({ ok: true, chat_ready: true, chat_mode: 'primary' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    const status = await new VortexService().fetchOperationalStatus();
+
+    expect(seenUrls).toEqual(['/v1/status', 'http://127.0.0.1:8000/v1/status']);
+    expect(status?.chat_ready).toBeTruthy();
   } finally {
     globalThis.fetch = originalFetch;
   }

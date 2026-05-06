@@ -48,19 +48,18 @@ export const useSystemStatus = ({ addLog, language }: UseSystemStatusArgs) => {
 
     const poll = async () => {
       try {
-        const resp = await fetch("/v1/status");
-        if (!resp.ok || disposed) return;
-        const data = await resp.json().catch(() => null);
+        const data = await vortexService.fetchOperationalStatus();
         if (!data || disposed) return;
 
-        const backends = data.backends || [];
-        const adaptersLoaded = data.adapters
-          ? Object.values(data.adapters).filter(Boolean).length
+        const statusData = data as any;
+        const backends = statusData.backends || [];
+        const adaptersLoaded = statusData.adapters
+          ? Object.values(statusData.adapters).filter(Boolean).length
           : 0;
-        const metrics = data.metrics || {};
-        const episodes = data.episodes || 0;
-        const knowledge = data.knowledge_chunks || 0;
-        const autolearn = data.autolearn || {};
+        const metrics = statusData.metrics || {};
+        const episodes = statusData.episodes || 0;
+        const knowledge = statusData.knowledge_chunks || 0;
+        const autolearn = statusData.autolearn || {};
 
         const backendKey = `${backends.join(",")}|${adaptersLoaded}`;
         if (backendKey !== prevBackendKey) {
