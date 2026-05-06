@@ -12,9 +12,21 @@ Nota de rol:
 - **Vortex-Tok** es para los backends Vortex/C3 (no se usa para HF). Bench: `python scripts/bench_tokenizer.py --profile dev_small`.
 
 ## Ruta recomendada (RTX 4080 16GB)
-La ruta principal soportada es ahora **Docker-first + HF local + Qwen Coder 7B**.
+La ruta principal soportada es ahora **local-first + llama.cpp + LLaMA 2 7B Chat Q4_K_M**.
+
+Ruta diaria por defecto actual: **LLaMA 2 7B Chat local + GGUF Q4_K_M + llama.cpp**.
+
+- Perfil: `rtx4080_16gb_llama2_7b_q4_local`.
+- Modelo esperado: `data/models/gguf/llama-2-7b-chat.Q4_K_M.gguf`.
+- Contexto configurado: 8192 tokens con RoPE scaling.
+
+```powershell
+python -m c3rnt2 doctor --deep --mock --profile rtx4080_16gb_llama2_7b_q4_local
+python -m c3rnt2 bench --profile rtx4080_16gb_llama2_7b_q4_local --max-new-tokens 64
+```
 
 Perfiles principales:
+- `rtx4080_16gb_llama2_7b_q4_local`: serving diario local con llama.cpp y `llama-2-7b-chat.Q4_K_M.gguf`.
 - `rtx4080_16gb_programming_qwen_coder_local`: serving diario local con HF y `Qwen/Qwen2.5-Coder-7B-Instruct`.
 - `rtx4080_16gb_programming_qwen_coder_train_docker`: training manual en contenedor separado con `Qwen/Qwen2.5-Coder-7B-Instruct` + QLoRA 4-bit.
 - `rtx4080_16gb_programming_qwen_coder_sglang`: perfil manual para inferencia SGLang con `Qwen/Qwen2.5-Coder-14B-Instruct-AWQ`.

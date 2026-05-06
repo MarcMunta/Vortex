@@ -88,3 +88,28 @@ def test_actual_api_and_control_apps_share_ci_safe_contracts(tmp_path: Path, mon
     assert control_client.get("/control/status").json()["ok"] is True
     assert control_client.get("/control/training/runs").json()["runs"] == []
     assert control_client.get("/control/autonomy/status").json()["autonomy"]["state"] == "idle"
+
+
+def test_control_status_returns_degraded_json_on_state_error() -> None:
+    from fastapi.testclient import TestClient
+
+    from c3rnt2.control_plane.app import create_control_app
+    from c3rnt2.control_plane.dependencies import ControlDependencies
+
+    state = _ControlState()
+
+    def _broken_status():
+        raise RuntimeError("status_broken")
+
+    deps = ControlDependencies.from_state(state)
+    deps = ControlDependencies(
+        **{**deps.__dict__, "status": _broken_status}
+    )
+    client = TestClient(create_control_app(deps))
+
+    resp = client.get("/control/status")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ok"] is False
+    assert payload["error"] == "status_broken"

@@ -158,6 +158,50 @@ def test_chat_completions_agent_mode_stream(tmp_path: Path, monkeypatch) -> None
     assert "data: [DONE]" in resp.text
 
 
+def test_chat_completions_agent_mode_does_not_503_when_model_failed(tmp_path: Path, monkeypatch) -> None:
+    client, _dummy, server_mod = _setup_app(tmp_path, monkeypatch)
+    seen: dict[str, object] = {}
+    client.app.state.models = {}
+    client.app.state.model = None
+    client.app.state.model_loading = False
+    client.app.state.model_load_error = "missing_gguf"
+
+    def _fake_run_agent(task, settings, base_dir, **kwargs):
+        seen["model"] = kwargs.get("model")
+        seen["allow_model_load"] = kwargs.get("allow_model_load")
+        return {
+            "ok": False,
+            "summary": "agent_model_unavailable: missing_gguf",
+            "patch_id": None,
+            "patch": "",
+            "tests_ok": False,
+            "tools_ok": False,
+            "browser_actions": [],
+            "tool_calls": [],
+        }
+
+    monkeypatch.setattr(server_mod, "run_agent", _fake_run_agent)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "core",
+            "messages": [{"role": "user", "content": "arregla el modo agente"}],
+            "agent_mode": True,
+            "stream": False,
+            "include_perf": True,
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "agent_model_unavailable" in data["choices"][0]["message"]["content"]
+    assert data["perf"]["agent_mode"] is True
+    assert data["perf"]["agent_model_unavailable_reason"] == "model_load_failed:missing_gguf"
+    assert seen["model"] is None
+    assert seen["allow_model_load"] is False
+
+
 def test_chat_completions_agent_mode_external_runtime_uses_direct_generate(
     tmp_path: Path, monkeypatch
 ) -> None:

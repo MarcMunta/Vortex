@@ -598,6 +598,7 @@ const VORTEX_CONFIG = {
     autoTrain: boolean = false,
     options?: { preserveView?: boolean },
   ) => {
+    let agentStartupWarning: string | null = null;
     let projectForSend = activeProject;
     if (selectedMode === "agent") {
       if (!projectForSend && settings.projects.length === 1) {
@@ -613,13 +614,18 @@ const VORTEX_CONFIG = {
         : { ok: true, invalidIds: [] as string[] };
       if (projectForSend && validation.ok && validation.invalidIds.includes(projectForSend.id)) {
         const projectPath = projectForSend.rootPath || projectForSend.projectPath || projectForSend.name;
+        agentStartupWarning = settings.language === "es"
+          ? `Aviso: el backend no confirmo acceso directo a ${projectPath}. Enviare el agente igualmente; si el runtime esta en Docker, usara el repo montado o devolvera un error visible.`
+          : `Warning: backend did not confirm direct access to ${projectPath}. I will still send the agent request; if the runtime is in Docker, it will use the mounted repo or return a visible error.`;
         addLog(
           "SYSTEM",
-          settings.language === "es"
-            ? `No puedo ver la carpeta desde Docker: ${projectPath}. Proyecto conservado. Selecciona una carpeta dentro de D:\\GitHub o ajusta C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT.`
-            : `Docker cannot see this folder: ${projectPath}. Project kept. Select a folder inside D:\\GitHub or adjust C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT.`,
+          agentStartupWarning,
         );
-        return;
+      } else if (projectForSend && !validation.ok) {
+        agentStartupWarning = settings.language === "es"
+          ? "Aviso: no pude validar el proyecto antes de enviar. El backend mostrara el error real si no puede acceder al scope."
+          : "Warning: project preflight could not complete. Backend will show the real error if it cannot access the scope.";
+        addLog("SYSTEM", agentStartupWarning);
       }
     }
     const targetProjectId = projectForSend?.id || null;
@@ -656,7 +662,7 @@ const VORTEX_CONFIG = {
     const initialAiMessage: Message = {
       id: aiMessageId,
       role: Role.AI,
-      content: buildInitialAssistantStatus(selectedMode, useInternet),
+      content: [buildInitialAssistantStatus(selectedMode, useInternet), agentStartupWarning].filter(Boolean).join("\n\n"),
       thought: "",
       requestId: undefined,
       sources: [],

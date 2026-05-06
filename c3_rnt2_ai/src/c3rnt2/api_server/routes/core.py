@@ -21,6 +21,15 @@ def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDepend
     def _with_shared_mount_fallback(path: Path, raw_path: str) -> Path:
         if path.exists():
             return path
+        nested_name = (
+            PureWindowsPath(raw_path).name
+            if re.match(r"^[A-Za-z]:[\\/]", raw_path)
+            else Path(raw_path).name
+        )
+        repo_name = str(os.getenv("C3RNT2_HOST_WORKSPACE_REPO_NAME") or "").strip()
+        base_path = Path(base_dir).resolve()
+        if nested_name and nested_name in {base_path.name, repo_name}:
+            return base_path
         shared_mount = str(os.getenv("C3RNT2_HOST_WORKSPACE_MOUNT") or "").strip()
         if not shared_mount or not _looks_host_absolute(raw_path):
             return path
@@ -38,11 +47,6 @@ def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDepend
                     return nested
             except Exception:
                 pass
-        nested_name = (
-            PureWindowsPath(raw_path).name
-            if re.match(r"^[A-Za-z]:[\\/]", raw_path)
-            else Path(raw_path).name
-        )
         if mount_path.name == nested_name:
             return mount_path
         nested = mount_path / nested_name

@@ -43,7 +43,7 @@ Abrir UI:
 ### Docker local
 Arranque unificado en Docker:
 
-Ruta actual: `rtx4080_16gb_programming_qwen_coder_local` (HF Qwen Coder). `sglang-runtime` queda manual con perfil `qwen-sglang`.
+Ruta actual: `rtx4080_16gb_llama2_7b_q4_local` (LLaMA 2 7B Chat GGUF Q4_K_M via llama.cpp). `sglang-runtime` queda manual con perfil `qwen-sglang`.
 
 ```powershell
 .\run_docker.ps1
@@ -68,7 +68,12 @@ Parar stack Docker:
 ```
 
 ### Doctor / Bench (opcional)
-Perfil recomendado actual: `C3RNT2_PROFILE=rtx4080_16gb_programming_qwen_coder_local`.
+Perfil recomendado actual: `C3RNT2_PROFILE=rtx4080_16gb_llama2_7b_q4_local`.
+
+Modelo local requerido para ese perfil:
+- `c3_rnt2_ai/data/models/gguf/llama-2-7b-chat.Q4_K_M.gguf`
+- Contexto configurado: 8192 tokens con RoPE scaling.
+- Cuantizacion: GGUF `Q4_K_M`, GPU layers `-1`, batch `512`.
 
 Perfil recomendado (4080 safe): `C3RNT2_PROFILE=rtx4080_16gb_safe`.
 
@@ -77,6 +82,13 @@ cd c3_rnt2_ai
 .\.venv\Scripts\python.exe -m vortex doctor --profile $env:C3RNT2_PROFILE
 .\.venv\Scripts\python.exe -m vortex doctor --deep --mock --profile $env:C3RNT2_PROFILE
 .\.venv\Scripts\python.exe -m vortex bench --profile $env:C3RNT2_PROFILE --max-new 64
+```
+
+Equivalente perfil LLaMA 2 por defecto:
+
+```powershell
+.\.venv\Scripts\python.exe -m vortex doctor --deep --mock --profile rtx4080_16gb_llama2_7b_q4_local
+.\.venv\Scripts\python.exe -m vortex bench --profile rtx4080_16gb_llama2_7b_q4_local --max-new 64
 ```
 
 ## Arquitectura (simple)

@@ -1533,6 +1533,11 @@ def _chat_kwargs_for_model(
         if default_system:
             kwargs["system"] = str(default_system)
         return kwargs
+    if bool(getattr(model, "is_llama_cpp", False)):
+        kwargs = {"messages": list(messages)}
+        if default_system:
+            kwargs["system"] = str(default_system)
+        return kwargs
     return {}
 
 
@@ -3802,57 +3807,6 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             fb = _resolve_fallback_backend(settings, chosen_backend, base_dir)
             if fb:
                 chosen_backend = fb
-        selected_model = models.get(chosen_backend)
-        model_loading = bool(getattr(app.state, "model_loading", False))
-        model_load_error = _safe_str(getattr(app.state, "model_load_error", None))
-        if selected_model is None and model_loading:
-            return JSONResponse(
-                status_code=503,
-                content=_openai_error(
-                    "model_loading",
-                    type="server_error",
-                    code="model_loading",
-                ),
-                headers={"Retry-After": "10"},
-            )
-        if selected_model is None and model_load_error:
-            return JSONResponse(
-                status_code=503,
-                content=_openai_error(
-                    f"model_load_failed:{model_load_error}",
-                    type="server_error",
-                    code="model_load_failed",
-                ),
-                headers={"Retry-After": "30"},
-            )
-        if selected_model is None:
-            selected_model = _get_or_load_backend(
-                models, settings, base_dir, chosen_backend
-            )
-        if selected_model is None:
-            raise HTTPException(
-                status_code=400,
-                detail=_openai_error(
-                    "model_not_found",
-                    type="invalid_request_error",
-                    code="model_not_found",
-                    param="model",
-                ),
-            )
-        stream_topk_override = None
-        if decision is not None and hasattr(selected_model, "runtime_cfg"):
-            stream_topk_override = _maybe_set_stream_topk(
-                selected_model,
-                enabled=bool(decision.stream_topk),
-                top_k=int(router_cfg.get("stream_topk_k", 64)),
-            )
-        device, dtype = _resolve_device_dtype(selected_model, settings)
-        if not bool(decode_args.get("preserve_max_new_tokens", False)):
-            if not bool(decode_args.get("preserve_max_new_tokens", False)):
-                decode_args["max_new_tokens"] = decide_max_new_tokens(
-                    decode_args["max_new_tokens"], device, dtype, settings
-                )
-        decode_args["max_tokens_effective"] = int(decode_args["max_new_tokens"])
         agent_mode = bool(payload.get("agent_mode", False))
         agent_permissions = (
             permissions_from_request(payload, base_dir) if agent_mode else None
@@ -3865,6 +3819,74 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         force_tool_runner = bool(
             agent_permissions is not None and agent_permissions.requires_tool_runner
         )
+        selected_model = models.get(chosen_backend)
+        model_loading = bool(getattr(app.state, "model_loading", False))
+        model_load_error = _safe_str(getattr(app.state, "model_load_error", None))
+        agent_model_unavailable_reason: str | None = None
+        if selected_model is None and model_loading:
+            if agent_mode:
+                agent_model_unavailable_reason = "model_loading"
+            else:
+                return JSONResponse(
+                    status_code=503,
+                    content=_openai_error(
+                        "model_loading",
+                        type="server_error",
+                        code="model_loading",
+                    ),
+                    headers={"Retry-After": "10"},
+                )
+        if selected_model is None and model_load_error:
+            if agent_mode:
+                agent_model_unavailable_reason = f"model_load_failed:{model_load_error}"
+            else:
+                return JSONResponse(
+                    status_code=503,
+                    content=_openai_error(
+                        f"model_load_failed:{model_load_error}",
+                        type="server_error",
+                        code="model_load_failed",
+                    ),
+                    headers={"Retry-After": "30"},
+                )
+        if selected_model is None and agent_model_unavailable_reason is None:
+            try:
+                selected_model = _get_or_load_backend(
+                    models, settings, base_dir, chosen_backend
+                )
+            except Exception as exc:
+                if agent_mode:
+                    agent_model_unavailable_reason = f"model_load_failed:{exc}"
+                else:
+                    raise
+        if selected_model is None and not agent_mode:
+            raise HTTPException(
+                status_code=400,
+                detail=_openai_error(
+                    "model_not_found",
+                    type="invalid_request_error",
+                    code="model_not_found",
+                    param="model",
+                ),
+            )
+        stream_topk_override = None
+        if selected_model is not None and decision is not None and hasattr(selected_model, "runtime_cfg"):
+            stream_topk_override = _maybe_set_stream_topk(
+                selected_model,
+                enabled=bool(decision.stream_topk),
+                top_k=int(router_cfg.get("stream_topk_k", 64)),
+            )
+        device, dtype = (
+            _resolve_device_dtype(selected_model, settings)
+            if selected_model is not None
+            else (None, None)
+        )
+        if selected_model is not None and not bool(decode_args.get("preserve_max_new_tokens", False)):
+            if not bool(decode_args.get("preserve_max_new_tokens", False)):
+                decode_args["max_new_tokens"] = decide_max_new_tokens(
+                    decode_args["max_new_tokens"], device, dtype, settings
+                )
+        decode_args["max_tokens_effective"] = int(decode_args["max_new_tokens"])
 
         if agent_mode:
             start = time.time()
@@ -4040,6 +4062,8 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                         "agent_mode": True,
                         "agent_strategy": "tool_runner",
                     }
+                    if agent_model_unavailable_reason:
+                        perf["agent_model_unavailable_reason"] = agent_model_unavailable_reason
                     try:
                         report = await asyncio.to_thread(
                             run_agent,
@@ -4057,6 +4081,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                             model_lock=model_lock.read_lock,
                             permissions=agent_permissions,
                             workspace_root=agent_workspace_root,
+                            allow_model_load=selected_model is not None,
                         )
                         elapsed = max(1e-6, time.time() - start)
                         text = _format_agent_report_text(report)
@@ -4200,6 +4225,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 model_lock=model_lock.read_lock,
                 permissions=agent_permissions,
                 workspace_root=agent_workspace_root,
+                allow_model_load=selected_model is not None,
             )
             elapsed = max(1e-6, time.time() - start)
             if stream_topk_override is not None:
@@ -4230,6 +4256,8 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 "permissions": report.get("permissions"),
                 "browser_actions": report.get("browser_actions") or [],
             }
+            if agent_model_unavailable_reason:
+                perf["agent_model_unavailable_reason"] = agent_model_unavailable_reason
             if hasattr(selected_model, "runtime_stats"):
                 try:
                     ext_stats = selected_model.runtime_stats()

@@ -416,6 +416,7 @@ def run_agent(
     model_lock: Callable[[], Any] | None = None,
     permissions: AgentPermissions | None = None,
     workspace_root: Path | None = None,
+    allow_model_load: bool = True,
 ) -> dict:
     supported_tools = [
         "open_docs",
@@ -561,8 +562,6 @@ def run_agent(
         permissions=effective_permissions,
     )
     current_model = model
-    if action_provider is None and current_model is None:
-        current_model = load_inference_model(settings)
 
     tool_calls: List[dict] = []
     patch_id: str | None = None
@@ -601,6 +600,64 @@ def run_agent(
         )
         tools_ok = bool(direct_result.ok)
         summary = "file_action_done" if direct_result.ok else direct_result.output
+
+    if (
+        direct_action is None
+        and action_provider is None
+        and current_model is None
+        and allow_model_load
+    ):
+        current_model = load_inference_model(settings)
+
+    if direct_action is None and action_provider is None and current_model is None:
+        summary = (
+            "agent_model_unavailable: no hay modelo cargado para planificar acciones; "
+            "las acciones directas siguen disponibles cuando la tarea es determinista."
+        )
+        episode = {
+            "version": 2,
+            "ts": time.time(),
+            "task": task,
+            "prompt": task,
+            "workspace_root": str(workspace_dir),
+            "permissions": effective_permissions.to_dict(),
+            "patch_id": None,
+            "patch": "",
+            "tests_ok": False,
+            "tools_ok": False,
+            "summary": summary,
+            "tool_calls": tool_calls,
+            "max_iters": max_iters,
+            "max_total_iters": max_total_iters,
+            "max_context_compactions": max_context_compactions,
+            "context_compactions_done": compactions_done,
+            "iterations_done": iterations_done,
+            "invalid_json_count": invalid_json_count,
+            "action_max_new_tokens": action_max_new_tokens,
+            "final_summary_max_new_tokens": final_summary_max_new_tokens,
+            "max_wall_time_s": max_wall_time_s,
+            "model_unavailable": True,
+        }
+        backend = settings.get("core", {}).get("backend")
+        if backend:
+            episode["model_backend"] = str(backend)
+        profile = os.getenv("C3RNT2_PROFILE")
+        if profile:
+            episode["profile"] = profile
+        _log_episode(base_dir, episode)
+        return {
+            "ok": False,
+            "patch_id": None,
+            "patch": "",
+            "tests_ok": False,
+            "tools_ok": False,
+            "summary": summary,
+            "workspace_root": str(workspace_dir),
+            "permissions": effective_permissions.to_dict(),
+            "browser_actions": [],
+            "tool_calls": tool_calls,
+            "model_unavailable": True,
+        }
 
     while iterations_done < max_total_iters:
         if direct_action is not None:

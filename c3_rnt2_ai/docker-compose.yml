@@ -96,7 +96,7 @@ services:
       - c3rnt2
       - serve
       - --profile
-      - ${VORTEX_API_PROFILE:-rtx4080_16gb_programming_qwen_coder_local}
+      - ${VORTEX_API_PROFILE:-rtx4080_16gb_llama2_7b_q4_local}
       - --host
       - 0.0.0.0
       - --port
@@ -189,7 +189,7 @@ services:
       - --port
       - "8765"
       - --api-profile
-      - ${VORTEX_API_PROFILE:-rtx4080_16gb_programming_qwen_coder_local}
+      - ${VORTEX_API_PROFILE:-rtx4080_16gb_llama2_7b_q4_local}
       - --training-profile
       - ${VORTEX_TRAINING_PROFILE:-rtx4080_16gb_programming_qwen_coder_train_docker}
       - --api-url
@@ -284,7 +284,7 @@ services:
       - c3rnt2
       - bench
       - --profile
-      - rtx4080_16gb_programming_qwen_coder_local
+      - rtx4080_16gb_llama2_7b_q4_local
       - --scenario
       - default
       - --mock

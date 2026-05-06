@@ -291,7 +291,7 @@ Usage:
   .\run.bat [--all] [--front-only|--back-only] [--no-control] [--no-self-train] [--no-auto-edits] [--no-open-browser]
 
 Env:
-  C3RNT2_PROFILE=rtx4080_16gb_programming_qwen_coder_local
+  C3RNT2_PROFILE=rtx4080_16gb_llama2_7b_q4_local
   VORTEX_BACKEND_PORT=8000
   VORTEX_FRONTEND_PORT=5173
   ENABLE_SELF_TRAIN=1
@@ -304,7 +304,7 @@ Env:
   }
 }
 
-$defaultModelProfile = "rtx4080_16gb_programming_qwen_coder_local"
+$defaultModelProfile = "rtx4080_16gb_llama2_7b_q4_local"
 
 $modelProfile = ($env:C3RNT2_PROFILE -as [string])
 if ($modelProfile) { $modelProfile = $modelProfile.Trim() }
@@ -353,11 +353,11 @@ if ($needPython) {
     Fail "Python venv bootstrap failed: $py"
   }
   Write-Step "Checking Python deps..."
-  & $py -c "import importlib.util as u; import sys; mods=['c3rnt2','fastapi','uvicorn','pytest','transformers','huggingface_hub','PIL','torchvision']; miss=[m for m in mods if u.find_spec(m) is None]; sys.exit(0 if not miss else 1)" 2>$null | Out-Null
+  & $py -c "import importlib.util as u; import sys; mods=['c3rnt2','fastapi','uvicorn','pytest','transformers','huggingface_hub','PIL','torchvision','llama_cpp']; miss=[m for m in mods if u.find_spec(m) is None]; sys.exit(0 if not miss else 1)" 2>$null | Out-Null
   if ($LASTEXITCODE -ne 0) {
-    Write-Step "Installing backend deps (editable + api + hf extras)..."
+    Write-Step "Installing backend deps (editable + api + hf + llama_cpp extras)..."
     & $py -m pip install -U pip
-    & $py -m pip install -e "c3_rnt2_ai[api,hf]" pytest
+    & $py -m pip install -e "c3_rnt2_ai[api,hf,llama_cpp]" pytest
   }
   Ensure-TorchCudaBuild -PythonExe $py
   if (-not (Test-VortexProfile -PythonExe $py -Profile $modelProfile)) {

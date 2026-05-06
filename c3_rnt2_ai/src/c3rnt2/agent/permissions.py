@@ -29,10 +29,25 @@ def _looks_posix_absolute(raw_path: str) -> bool:
     return str(raw_path or "").strip().startswith("/")
 
 
+def _repo_name_fallback(base_dir: Path, raw_path: str) -> Path | None:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return None
+    name = PureWindowsPath(raw).name if _looks_windows_absolute(raw) else Path(raw).name
+    repo_name = str(os.getenv("C3RNT2_HOST_WORKSPACE_REPO_NAME") or "").strip()
+    base = base_dir.resolve()
+    if name and name in {base.name, repo_name}:
+        return base
+    return None
+
+
 def _resolve_workspace_base(base_dir: Path, workspace_root: str) -> Path:
     base_dir = base_dir.resolve()
     if not workspace_root:
         return base_dir
+    repo_fallback = _repo_name_fallback(base_dir, workspace_root)
+    if repo_fallback is not None:
+        return repo_fallback
     shared_mount = str(os.getenv("C3RNT2_HOST_WORKSPACE_MOUNT") or "").strip()
     shared_mount_path = Path(shared_mount).resolve() if shared_mount else None
     host_workspace_root = str(os.getenv("C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT") or "").strip()
@@ -113,6 +128,9 @@ def _resolve_scope(base_dir: Path, workspace_root: str, project_path: str) -> Pa
     base_scope = _resolve_workspace_base(base_dir, workspace_root)
     scope_root = base_scope
     if project_path:
+        repo_fallback = _repo_name_fallback(base_dir, project_path)
+        if repo_fallback is not None:
+            return repo_fallback
         project_rel = _absolute_project_relative(workspace_root, project_path)
         raw_project = Path(project_rel or project_path)
         candidate = (

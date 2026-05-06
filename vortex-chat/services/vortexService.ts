@@ -582,7 +582,7 @@ export class VortexService {
           const text = await candidate.text().catch(() => "");
           const parsed = parseJsonSafely<{ error?: { message?: string }; detail?: string }>(text);
           const detail = parsed?.error?.message || parsed?.detail || text;
-          throw new Error(detail || `HTTP ${candidate.status}`);
+          throw new Error(`HTTP ${candidate.status}${detail ? `: ${detail}` : ""}`);
         }
 
         const contentType = candidate.headers.get("content-type") || "";

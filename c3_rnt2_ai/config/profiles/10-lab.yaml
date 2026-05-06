@@ -361,6 +361,137 @@ profiles:
       code_max_tokens: 1024
       hard_max_tokens: 2048
       allow_long_code_outputs: true
+  rtx4080_16gb_llama2_7b_q4_local:
+    # Daily local profile requested for this machine: LLaMA 2 7B Chat via
+    # llama.cpp + GGUF Q4_K_M. Put the model file at:
+    # data/models/gguf/llama-2-7b-chat.Q4_K_M.gguf
+    base_profile: rtx4080_16gb_programming_local
+    core:
+      backend: llama_cpp
+      external_engine:
+      external_base_url:
+      external_model:
+      hf_model:
+      llama_cpp_model_path: "data/models/gguf/llama-2-7b-chat.Q4_K_M.gguf"
+      llama_cpp_quant: "Q4_K_M"
+      llama_cpp_chat_format: "llama-2"
+      llama_cpp_ctx: 8192
+      llama_cpp_n_gpu_layers: -1
+      llama_cpp_threads: 8
+      llama_cpp_batch: 512
+      llama_cpp_flash_attn: true
+      # LLaMA 2 was trained for 4k context. 8k uses RoPE scaling; quality can
+      # drop on very long prompts, but this keeps max local context available.
+      llama_cpp_rope_freq_scale: 0.5
+      hf_system_prompt: "You are Vortex, a fully local LLaMA 2 7B Chat coding agent. Be direct, inspect context, use tools when allowed, and return concrete validated changes."
+      backend_fallback:
+      hf_fallback:
+      allow_implicit_hf_fallback: false
+      vram_threshold_mb: 1800
+      vram_floor_tokens: 256
+      vram_ceil_tokens: 4096
+      vram_safety_margin_mb: 768
+    docker:
+      enabled: false
+      compose_path: "docker-compose.yml"
+      runtime_service:
+      api_service: "vortex-api"
+      trainer_service: "trainer"
+      eval_service: "eval"
+    server:
+      auto_reload_adapter: false
+      reload_interval_s: 15
+      allow_parallel_runtime_training: false
+      lazy_model_load: true
+      ctx_overflow_policy: tail_keep_last_n
+      use_instruction_files: false
+    context:
+      enabled: true
+      model_max_context_tokens: 8192
+      default_chat_context_tokens: 4096
+      default_agent_context_tokens: 8192
+      max_input_tokens: 8192
+      max_output_tokens: 1024
+      max_agent_action_tokens: 1024
+      max_agent_final_tokens: 2048
+      reserve_output_tokens: 1024
+      reserve_system_tokens: 512
+      reserve_tool_tokens: 1024
+      compression_enabled: true
+      summarize_old_messages: true
+      rolling_summary_tokens: 1024
+      recent_messages_tokens: 2048
+      rag_tokens: 0
+      obsidian_tokens: 0
+      repo_context_tokens: 1024
+    agent:
+      web_allowlist: []
+      max_iters: 12
+      max_context_compactions: 64
+      action_max_new_tokens: 1024
+      final_summary_max_new_tokens: 2048
+      max_wall_time_s: 600
+    tools:
+      web:
+        enabled: false
+        allow_domains: []
+    rag:
+      enabled: false
+      top_k: 0
+      max_chars: 0
+    obsidian:
+      enabled: false
+      top_k: 0
+    multimodal_context:
+      enabled: false
+      max_chars: 1
+      include_memory: false
+      include_spatial_selection: false
+      include_voice: false
+      include_gesture: false
+    security:
+      web:
+        strict: true
+        allowlist_domains: []
+    continuous:
+      ingest_web: false
+      ingest_urls: []
+      local_sources:
+        enabled: true
+        include_repo: true
+        include_local_corpus: true
+        include_lessons: true
+        include_logs: false
+        include_memory: false
+    autolearn:
+      enabled: false
+      web_ingest: false
+      url_discovery: false
+      allow_domains: []
+    hf_train:
+      enabled: false
+      model_name: "meta-llama/Llama-2-7b-chat-hf"
+      registry_dir: "data/registry/hf_train/llama2_7b_chat"
+      manual_promotion_only: true
+    profile_contract:
+      offline_required: true
+      require_web_disabled: true
+      require_ollama: false
+      require_external_engine:
+      require_local_base_url: false
+      require_docker: false
+      disable_fallbacks: true
+      approved_training_sources_only: false
+      min_host_ram_free_mb: 4096
+    decode:
+      max_new_tokens: 1024
+      default_code_max_new_tokens: 1536
+      hard_max_new_tokens: 2048
+    generation:
+      default_max_tokens: 1024
+      code_max_tokens: 1536
+      hard_max_tokens: 2048
+      allow_long_code_outputs: true
   rtx4080_16gb_programming_gemma4_local:
     # Canonical daily-use profile: fully-local Gemma 4 E4B HF runtime.
     # No Qwen/SGLang fallback, no web discovery, adapters loaded from local registry.

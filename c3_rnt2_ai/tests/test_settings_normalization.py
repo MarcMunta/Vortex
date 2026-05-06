@@ -47,6 +47,7 @@ def test_settings_normalization_profiles() -> None:
     _assert_profile("rtx4080_16gb_gemma3_12b_hf")
     _assert_profile("rtx4080_16gb_vortexx_next")
     _assert_profile("safe_selftrain_4080")
+    _assert_profile("rtx4080_16gb_llama2_7b_q4_local")
     _assert_profile("rtx4080_16gb_programming_qwen_coder_local")
     _assert_profile("rtx4080_16gb_programming_qwen_coder_sglang")
     _assert_profile("rtx4080_16gb_programming_qwen_coder_train_docker")
@@ -113,7 +114,8 @@ def test_legacy_offensive_profile_name_removed() -> None:
 
 
 def test_programming_profiles_are_local_and_offline() -> None:
-    daily = load_settings("rtx4080_16gb_programming_qwen_coder_local")
+    daily = load_settings("rtx4080_16gb_llama2_7b_q4_local")
+    qwen_daily = load_settings("rtx4080_16gb_programming_qwen_coder_local")
     gemma_legacy = load_settings("rtx4080_16gb_programming_gemma4_local")
     legacy = load_settings("rtx4080_16gb_programming_local")
     sglang = load_settings("rtx4080_16gb_programming_qwen_coder_sglang")
@@ -121,15 +123,12 @@ def test_programming_profiles_are_local_and_offline() -> None:
     train_alias = load_settings("rtx4080_16gb_programming_train_docker")
     train_wsl = load_settings("rtx4080_16gb_programming_train_wsl")
 
-    assert daily["core"]["backend"] == "hf"
-    assert daily["core"]["hf_model"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
-    assert "gemma" not in daily["core"]["hf_model"].lower()
-    assert daily["core"]["hf_model_loader"] == "causal_lm"
-    assert daily["core"]["hf_local_files_only"] is True
-    assert daily["core"]["hf_load_in_4bit"] is True
-    assert daily["core"]["hf_max_memory"][0] == "15GiB"
-    assert daily["core"]["hf_max_memory"]["cpu"] == "32GiB"
-    assert daily["core"]["hf_use_latest_adapter"] is True
+    assert daily["core"]["backend"] == "llama_cpp"
+    assert daily["core"]["llama_cpp_model_path"] == "data/models/gguf/llama-2-7b-chat.Q4_K_M.gguf"
+    assert daily["core"]["llama_cpp_quant"] == "Q4_K_M"
+    assert daily["core"]["llama_cpp_chat_format"] == "llama-2"
+    assert daily["core"]["llama_cpp_ctx"] == 8192
+    assert daily["core"]["llama_cpp_n_gpu_layers"] == -1
     assert daily["core"]["backend_fallback"] is None
     assert daily["core"]["hf_fallback"] is None
     assert daily["core"]["allow_implicit_hf_fallback"] is False
@@ -142,35 +141,36 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert daily["autolearn"]["url_discovery"] is False
     assert daily["profile_contract"]["require_external_engine"] is None
     assert daily["profile_contract"]["require_docker"] is False
-    assert daily["profile_contract"]["disable_fallbacks"] is False
+    assert daily["profile_contract"]["disable_fallbacks"] is True
     assert daily["continuous"]["local_sources"]["include_repo"] is True
     assert daily["continuous"]["local_sources"]["include_local_corpus"] is True
     assert daily["hf_train"]["enabled"] is False
-    assert daily["hf_train"]["model_name"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
-    assert daily["hf_train"]["registry_dir"] == "data/registry/hf_train/qwen_coder_flutter"
-    assert daily["decode"]["max_new_tokens"] == 512
-    assert daily["decode"]["default_code_max_new_tokens"] == 1024
+    assert daily["hf_train"]["model_name"] == "meta-llama/Llama-2-7b-chat-hf"
+    assert daily["hf_train"]["registry_dir"] == "data/registry/hf_train/llama2_7b_chat"
+    assert daily["decode"]["max_new_tokens"] == 1024
+    assert daily["decode"]["default_code_max_new_tokens"] == 1536
     assert daily["decode"]["hard_max_new_tokens"] == 2048
-    assert daily["generation"]["default_max_tokens"] == 512
-    assert daily["generation"]["code_max_tokens"] == 1024
+    assert daily["generation"]["default_max_tokens"] == 1024
+    assert daily["generation"]["code_max_tokens"] == 1536
     assert daily["generation"]["hard_max_tokens"] == 2048
     assert daily["core"]["vram_floor_tokens"] >= 256
     assert daily["core"]["vram_ceil_tokens"] >= 4096
-    assert daily["context"]["model_max_context_tokens"] == 32768
-    assert daily["context"]["default_chat_context_tokens"] == 2048
-    assert daily["context"]["default_agent_context_tokens"] == 4096
-    assert daily["context"]["max_output_tokens"] == 512
-    assert daily["context"]["max_agent_action_tokens"] == 512
-    assert daily["context"]["max_agent_final_tokens"] == 768
+    assert daily["context"]["model_max_context_tokens"] == 8192
+    assert daily["context"]["default_chat_context_tokens"] == 4096
+    assert daily["context"]["default_agent_context_tokens"] == 8192
+    assert daily["context"]["max_output_tokens"] == 1024
+    assert daily["context"]["max_agent_action_tokens"] == 1024
+    assert daily["context"]["max_agent_final_tokens"] == 2048
     assert daily["context"]["obsidian_tokens"] == 0
-    assert daily["agent"]["action_max_new_tokens"] == 512
-    assert daily["agent"]["final_summary_max_new_tokens"] == 768
+    assert daily["agent"]["action_max_new_tokens"] == 1024
+    assert daily["agent"]["final_summary_max_new_tokens"] == 2048
     assert "write_file" in daily["agent"]["tools_enabled"]
     assert "delete_file" in daily["agent"]["tools_enabled"]
     assert "run_command" in daily["agent"]["tools_enabled"]
     assert daily["cloud_training"]["provider"] == "gcp"
     assert daily["cloud_training"]["enabled"] is False
     assert daily["cloud_training"]["service_account_env"] == "GOOGLE_APPLICATION_CREDENTIALS"
+    assert qwen_daily["core"]["hf_model"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
 
     assert legacy["core"]["backend"] == "external"
     assert legacy["core"]["external_engine"] == "sglang"
@@ -225,7 +225,7 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert train_wsl["profile_contract"]["require_wsl_training"] is True
 
 
-def test_docker_compose_defaults_to_qwen_without_sglang_dependency() -> None:
+def test_docker_compose_defaults_to_llama2_without_sglang_dependency() -> None:
     from c3rnt2 import control_server
 
     compose = yaml.safe_load((BASE_DIR / "docker-compose.yml").read_text(encoding="utf-8"))
@@ -234,12 +234,12 @@ def test_docker_compose_defaults_to_qwen_without_sglang_dependency() -> None:
     control = services["vortex-control"]
     sglang = services["sglang-runtime"]
 
-    assert control_server.DEFAULT_API_PROFILE == "rtx4080_16gb_programming_qwen_coder_local"
+    assert control_server.DEFAULT_API_PROFILE == "rtx4080_16gb_llama2_7b_q4_local"
     assert control_server.DEFAULT_TRAINING_PROFILE == "rtx4080_16gb_programming_qwen_coder_train_docker"
     assert "depends_on" not in api or "sglang-runtime" not in (api.get("depends_on") or {})
     assert "sglang-runtime" not in (control.get("depends_on") or {})
-    assert "rtx4080_16gb_programming_qwen_coder_local" in " ".join(api["command"])
-    assert "rtx4080_16gb_programming_qwen_coder_local" in " ".join(control["command"])
+    assert "rtx4080_16gb_llama2_7b_q4_local" in " ".join(api["command"])
+    assert "rtx4080_16gb_llama2_7b_q4_local" in " ".join(control["command"])
     assert "rtx4080_16gb_programming_qwen_coder_train_docker" in " ".join(control["command"])
     assert "manual" in sglang.get("profiles", [])
     assert "qwen-sglang" in sglang.get("profiles", [])
@@ -248,12 +248,12 @@ def test_docker_compose_defaults_to_qwen_without_sglang_dependency() -> None:
     assert api["environment"]["HF_DATASETS_OFFLINE"] == "1"
 
 
-def test_qwen_commands_are_documented_for_doctor_bench_eval() -> None:
+def test_default_llama2_commands_are_documented_for_doctor_bench_eval() -> None:
     readme = (BASE_DIR / "README.md").read_text(encoding="utf-8")
     doc = (BASE_DIR / "docs/QWEN_CODER_FLUTTER_OFFICIAL_DOCS_TRAINING.md").read_text(encoding="utf-8")
     text = readme + "\n" + doc
 
-    assert "doctor --deep --mock --profile rtx4080_16gb_programming_qwen_coder_local" in text
-    assert "bench --profile rtx4080_16gb_programming_qwen_coder_local" in text
+    assert "doctor --deep --mock --profile rtx4080_16gb_llama2_7b_q4_local" in text
+    assert "bench --profile rtx4080_16gb_llama2_7b_q4_local" in text
     assert "eval_flutter_adapter.py `" in text
     assert "--profile rtx4080_16gb_programming_qwen_coder_local" in doc

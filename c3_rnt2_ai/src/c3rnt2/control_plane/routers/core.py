@@ -18,7 +18,15 @@ def build_core_router(deps: ControlDependencies) -> APIRouter:
 
     @router.get("/control/status")
     async def control_status() -> dict[str, object]:
-        return await asyncio.to_thread(deps.status)
+        try:
+            return await asyncio.to_thread(deps.status)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "service": "vortex-control",
+                "error": str(exc),
+                "ts": float(time.time()),
+            }
 
     @router.post("/control/bootstrap")
     async def control_bootstrap(payload: BootstrapRequest) -> dict[str, object]:
