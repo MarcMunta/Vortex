@@ -71,3 +71,10 @@ test("settings own theme and project permissions", () => {
   expect(settings).toContain("Tema de la app");
   expect(chatInput).toContain("Gestionar proyectos");
 });
+
+test("chat send is not hard-blocked by status polling", () => {
+  const app = read("App.tsx");
+  expect(app).toContain("const sendDisabledReason = undefined");
+  expect(app).not.toContain("if (baseSendDisabledReason)");
+  expect(app).not.toContain("Selecciona un proyecto para usar agente");
+});

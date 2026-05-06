@@ -99,13 +99,10 @@ const App: React.FC = () => {
   const chatMode = operationalStatus?.chat_mode || (chatReady ? "primary" : "unavailable");
   const canUseInternet = Boolean(controlStatus?.ok);
   const degradedChatAvailable = !stackReady && chatReady;
-  const baseSendDisabledReason = chatReady
+  const chatStatusReason = chatReady
     ? undefined
     : rawStatusReason || (settings.language === "es" ? "Chat local no listo." : "Local chat not ready.");
-  const sendDisabledReason = baseSendDisabledReason
-    || (mode === "agent" && !activeProject
-      ? (settings.language === "es" ? "Selecciona un proyecto para usar agente." : "Select a project to use agent mode.")
-      : undefined);
+  const sendDisabledReason = undefined;
   const activeModelLabel = operationalStatus?.active_model || (settings.language === "es" ? "Modelo base pendiente" : "Base model pending");
   const activeEngineLabel = (operationalStatus?.engine_kind || "local").toUpperCase();
   const readyLabel = stackReady
@@ -131,7 +128,7 @@ const App: React.FC = () => {
       ? (settings.language === "es"
         ? "El chat sigue disponible mientras el runtime principal se recupera."
         : "Chat stays available while the primary runtime recovers.")
-      : rawStatusReason || sendDisabledReason;
+      : rawStatusReason || chatStatusReason;
   const modeThemeStyle = (mode === "agent"
     ? (isDarkMode
       ? {
@@ -601,11 +598,6 @@ const VORTEX_CONFIG = {
     autoTrain: boolean = false,
     options?: { preserveView?: boolean },
   ) => {
-    if (baseSendDisabledReason) {
-      addLog("SYSTEM", baseSendDisabledReason);
-      return;
-    }
-
     let projectForSend = activeProject;
     if (selectedMode === "agent") {
       if (!projectForSend && settings.projects.length === 1) {
@@ -616,13 +608,10 @@ const VORTEX_CONFIG = {
           permissions: permissionsFromProject(projectForSend || null),
         }));
       }
-      if (!projectForSend) {
-        addLog("SYSTEM", settings.language === "es" ? "Selecciona un proyecto para usar agente." : "Select a project to use agent mode.");
-        openSettings("permissions");
-        return;
-      }
-      const validation = await vortexService.validateWorkspaceProjects([projectForSend]);
-      if (validation.ok && validation.invalidIds.includes(projectForSend.id)) {
+      const validation = projectForSend
+        ? await vortexService.validateWorkspaceProjects([projectForSend])
+        : { ok: true, invalidIds: [] as string[] };
+      if (projectForSend && validation.ok && validation.invalidIds.includes(projectForSend.id)) {
         const projectPath = projectForSend.rootPath || projectForSend.projectPath || projectForSend.name;
         addLog(
           "SYSTEM",
