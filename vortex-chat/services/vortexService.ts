@@ -41,10 +41,15 @@ export const DEFAULT_CHAT_MAX_TOKENS = 2048;
 export const CODE_CHAT_MAX_TOKENS = 3072;
 export const COMPLETE_CODE_MAX_TOKENS = 4096;
 
-const resolveApiBaseUrl = (): string => {
+export const resolveApiBaseUrl = (): string => {
   const env = ((import.meta as any).env || {}) as Record<string, string | undefined>;
   const raw = (env.VITE_API_BASE_URL || "").trim();
   if (raw) return raw.replace(/\/+$/, "");
+  return "";
+};
+
+export const resolveDirectApiBaseUrl = (): string => {
+  const env = ((import.meta as any).env || {}) as Record<string, string | undefined>;
   const port = (
     env.VITE_BACKEND_PORT
     || env.VITE_API_PORT
@@ -507,13 +512,31 @@ const parseSseLines = (rawEvent: string): string[] => {
 export class VortexService {
   private model: string = "auto";
   private readonly baseUrl = resolveApiBaseUrl();
+  private readonly directBaseUrl = resolveDirectApiBaseUrl();
 
   private url(path: string): string {
-    return `${this.baseUrl}${path}`;
+    return this.baseUrl ? `${this.baseUrl}${path}` : path;
+  }
+
+  private urls(path: string): string[] {
+    if (this.baseUrl) return [`${this.baseUrl}${path}`];
+    return [path, `${this.directBaseUrl}${path}`];
   }
 
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
-    return requestJson<T>(this.url(path), init);
+    let lastError: unknown = null;
+    for (const endpoint of this.urls(path)) {
+      try {
+        const payload = await requestJson<T>(endpoint, init);
+        if (payload === null || payload === undefined) {
+          throw new Error("empty_json_response");
+        }
+        return payload;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("network_error");
   }
 
   private responseError(payload: unknown, fallback: string): string {
@@ -594,21 +617,44 @@ export class VortexService {
           : undefined,
       };
 
-      const resp = await fetch(this.url("/v1/chat/completions"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-        },
-        body: JSON.stringify(payload),
-        signal: abortController.signal,
-      });
+      const body = JSON.stringify(payload);
+      let resp: Response | null = null;
+      let lastError: Error | null = null;
+      for (const endpoint of this.urls("/v1/chat/completions")) {
+        try {
+          const candidate = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "text/event-stream",
+            },
+            body,
+            signal: abortController.signal,
+          });
 
-      if (!resp.ok || !resp.body) {
-        const text = await resp.text().catch(() => "");
-        const parsed = parseJsonSafely<{ error?: { message?: string }; detail?: string }>(text);
-        const detail = parsed?.error?.message || parsed?.detail || text;
-        throw new Error(detail || `HTTP ${resp.status}`);
+          if (!candidate.ok || !candidate.body) {
+            const text = await candidate.text().catch(() => "");
+            const parsed = parseJsonSafely<{ error?: { message?: string }; detail?: string }>(text);
+            const detail = parsed?.error?.message || parsed?.detail || text;
+            throw new Error(detail || `HTTP ${candidate.status}`);
+          }
+
+          const contentType = candidate.headers.get("content-type") || "";
+          if (!contentType.toLowerCase().includes("text/event-stream")) {
+            const text = await candidate.text().catch(() => "");
+            throw new Error(text ? `non_sse_response:${text.slice(0, 120)}` : "non_sse_response");
+          }
+
+          resp = candidate;
+          break;
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") throw error;
+          lastError = error instanceof Error ? error : new Error("network_error");
+        }
+      }
+
+      if (!resp?.body) {
+        throw lastError || new Error("network_error");
       }
 
       const reader = resp.body.getReader();

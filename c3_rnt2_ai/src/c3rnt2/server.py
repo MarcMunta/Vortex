@@ -3,6 +3,7 @@ from __future__ import annotations
 # pylint: disable=broad-exception-caught,redefined-builtin,raise-missing-from,unused-argument
 # ruff: noqa: BLE001,ARG001,B904,A002
 
+import asyncio
 import json
 import os
 import re
@@ -3003,6 +3004,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
+            allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?",
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -3996,6 +3998,193 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 payload.get("prompt"),
                 permission_context=permission_context,
             )
+            if stream:
+                created = int(time.time())
+                resp_id = f"chatcmpl-{request_id}"
+                headers = {
+                    "X-Request-Id": str(request_id),
+                    "X-Vortex-Backend": str(chosen_backend),
+                }
+
+                async def _iter_agent_tool_runner():
+                    header = {
+                        "id": resp_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": str(chosen_backend),
+                        "choices": [
+                            {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+                        ],
+                        "request_id": request_id,
+                    }
+                    yield f"data: {json.dumps(header)}\n\n"
+                    progress = {
+                        "id": resp_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": str(chosen_backend),
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": "Agente iniciado. Analizando el repo...\n\n"},
+                                "finish_reason": None,
+                            }
+                        ],
+                        "request_id": request_id,
+                    }
+                    yield f"data: {json.dumps(progress)}\n\n"
+
+                    report: dict[str, Any] | None = None
+                    text = ""
+                    perf: dict[str, Any] = {
+                        "agent_mode": True,
+                        "agent_strategy": "tool_runner",
+                    }
+                    try:
+                        report = await asyncio.to_thread(
+                            run_agent,
+                            agent_task,
+                            settings,
+                            base_dir,
+                            max_iters=max(
+                                1,
+                                int(
+                                    agent_cfg.get("max_iters", agent_default_iters)
+                                    or agent_default_iters
+                                ),
+                            ),
+                            model=selected_model,
+                            model_lock=model_lock.read_lock,
+                            permissions=agent_permissions,
+                            workspace_root=agent_workspace_root,
+                        )
+                        elapsed = max(1e-6, time.time() - start)
+                        text = _format_agent_report_text(report)
+                        prompt_tokens = _estimate_tokens(agent_task, selected_model)
+                        tokens_out = _estimate_tokens(text, selected_model)
+                        vram_peak = None
+                        if torch is not None and torch.cuda.is_available():
+                            try:
+                                vram_peak = float(torch.cuda.max_memory_allocated() / (1024**2))
+                            except Exception:
+                                vram_peak = None
+                        perf.update(
+                            {
+                                "latency_ms": float(elapsed * 1000.0),
+                                "tokens_out_est": int(tokens_out),
+                                "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
+                                "vram_peak_mb": vram_peak,
+                                "tests_ok": bool(report.get("tests_ok")),
+                                "patch_id": report.get("patch_id"),
+                                "permissions": report.get("permissions"),
+                                "browser_actions": report.get("browser_actions") or [],
+                            }
+                        )
+                        if hasattr(selected_model, "runtime_stats"):
+                            try:
+                                ext_stats = selected_model.runtime_stats()
+                            except Exception:
+                                ext_stats = None
+                            if isinstance(ext_stats, dict):
+                                perf["external_runtime"] = ext_stats
+                        episode = {
+                            "version": 1,
+                            "ts": time.time(),
+                            "request_id": request_id,
+                            "backend": str(chosen_backend),
+                            "messages": messages,
+                            "prompt_text": agent_task,
+                            "response_text": text,
+                            "decode_args": decode_args,
+                            "rag": rag_info,
+                            "chat_memory": chat_memory_info,
+                            "perf": perf,
+                            "agent_mode": True,
+                            "agent_report": report,
+                            "agent_permissions": report.get("permissions"),
+                        }
+                        with app.state.episode_lock:
+                            _log_chat_episode(base_dir, app.state.episode_index, episode)
+                        try:
+                            app.state.metrics.observe_chat(
+                                stream=True,
+                                prompt_tokens_est=int(prompt_tokens),
+                                completion_tokens_est=int(tokens_out),
+                                latency_ms=float(elapsed * 1000.0),
+                                vram_peak_mb=vram_peak,
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            LOG.info(
+                                "chat_done request_id=%s model=%s stream=true agent_mode=true prompt_tokens=%s completion_tokens=%s latency_ms=%.1f tok_s=%.2f",
+                                str(request_id),
+                                str(chosen_backend),
+                                str(prompt_tokens),
+                                str(tokens_out),
+                                float(elapsed * 1000.0),
+                                float(perf.get("tokens_per_sec") or 0.0),
+                            )
+                        except Exception:
+                            pass
+                    except Exception as exc:
+                        elapsed = max(1e-6, time.time() - start)
+                        text = f"No se pudo completar la ejecucion del agente: {exc}"
+                        perf.update(
+                            {
+                                "latency_ms": float(elapsed * 1000.0),
+                                "agent_error": str(exc),
+                                "tests_ok": False,
+                                "browser_actions": [],
+                            }
+                        )
+                    finally:
+                        if stream_topk_override is not None:
+                            _maybe_set_stream_topk(
+                                selected_model,
+                                enabled=bool(stream_topk_override),
+                                top_k=int(stream_topk_override)
+                                if stream_topk_override
+                                else None,
+                            )
+
+                    if text:
+                        chunk = {
+                            "id": resp_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": str(chosen_backend),
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": text},
+                                    "finish_reason": None,
+                                }
+                            ],
+                            "request_id": request_id,
+                        }
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    done = {
+                        "id": resp_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": str(chosen_backend),
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "request_id": request_id,
+                    }
+                    if payload.get("include_sources"):
+                        done["sources"] = rag_info.get("refs", [])
+                    if payload.get("include_perf"):
+                        done["perf"] = perf
+                    yield f"data: {json.dumps(done)}\n\n"
+                    yield "data: [DONE]\n\n"
+
+                return StreamingResponse(
+                    _iter_agent_tool_runner(),
+                    media_type="text/event-stream",
+                    headers=headers,
+                )
+
             report = run_agent(
                 agent_task,
                 settings,
