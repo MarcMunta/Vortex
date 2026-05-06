@@ -90,6 +90,8 @@ def _resolve_lora_target_modules(model: object, cfg: dict) -> list[str]:
     ]
     if fallback:
         return fallback
+    if not bool(cfg.get("strict_target_modules", False)):
+        return requested
     raise ValueError(
         "No supported LoRA target modules could be resolved from the requested configuration. "
         f"requested={requested!r}"
@@ -300,6 +302,70 @@ def _resolve_extra_training_paths(base_dir: Path, settings: dict) -> list[Path]:
             path = base_dir / path
         resolved.append(path.resolve())
     return resolved
+
+
+def _resolve_hf_cache_dir(base_dir: Path, settings: dict) -> Path | None:
+    cfg = settings.get("hf_train", {}) or {}
+    core = settings.get("core", {}) or {}
+    raw = cfg.get("hf_cache_dir") or cfg.get("cache_dir") or core.get("hf_cache_dir")
+    if not raw:
+        return None
+    path = Path(str(raw))
+    if not path.is_absolute():
+        path = base_dir / path
+    return path
+
+
+def _find_hf_snapshot(cache_dir: Path, model_name: str) -> Path | None:
+    if "/" not in model_name:
+        return None
+    repo_dir_name = f"models--{model_name.replace('/', '--')}"
+    for root in (cache_dir, cache_dir / "hub"):
+        repo_dir = root / repo_dir_name
+        snapshots_dir = repo_dir / "snapshots"
+        if not snapshots_dir.is_dir():
+            continue
+        refs_dir = repo_dir / "refs"
+        for ref_name in ("main", "master"):
+            ref_path = refs_dir / ref_name
+            try:
+                revision = ref_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                revision = ""
+            if revision:
+                snapshot = snapshots_dir / revision
+                if (snapshot / "config.json").is_file():
+                    return snapshot
+        snapshots: list[Path] = []
+        try:
+            candidates = list(snapshots_dir.iterdir())
+        except OSError:
+            candidates = []
+        for snapshot in candidates:
+            if snapshot.is_dir() and (snapshot / "config.json").is_file():
+                snapshots.append(snapshot)
+        if snapshots:
+            return max(snapshots, key=lambda path: path.stat().st_mtime)
+    return None
+
+
+def _resolve_hf_model_source(model_name: str, settings: dict, base_dir: Path) -> tuple[str, Path | None, bool]:
+    cfg = settings.get("hf_train", {}) or {}
+    core = settings.get("core", {}) or {}
+    cache_dir = _resolve_hf_cache_dir(base_dir, settings)
+    local_files_only = bool(cfg.get("local_files_only", core.get("hf_local_files_only", False)))
+
+    model_path = Path(model_name)
+    if not model_path.is_absolute():
+        model_path = base_dir / model_path
+    if (model_path / "config.json").is_file():
+        return str(model_path), cache_dir, local_files_only
+
+    if local_files_only and cache_dir:
+        snapshot = _find_hf_snapshot(cache_dir, model_name)
+        if snapshot is not None:
+            return str(snapshot), cache_dir, local_files_only
+    return model_name, cache_dir, local_files_only
 
 
 def _hash_paths(paths: list[Path]) -> str | None:
@@ -700,12 +766,22 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
             bnb_4bit_quant_type=str(cfg.get("quant_type", "nf4")),
         )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=bool(cfg.get("use_fast", True)))
+    model_source, hf_cache_dir, local_files_only = _resolve_hf_model_source(str(model_name), settings, base_dir)
+    tokenizer_kwargs = {"use_fast": bool(cfg.get("use_fast", True))}
+    if hf_cache_dir is not None:
+        tokenizer_kwargs["cache_dir"] = str(hf_cache_dir)
+    if local_files_only:
+        tokenizer_kwargs["local_files_only"] = True
+    tokenizer = AutoTokenizer.from_pretrained(model_source, **tokenizer_kwargs)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
     load_kwargs = {"torch_dtype": torch_dtype}
+    if hf_cache_dir is not None:
+        load_kwargs["cache_dir"] = str(hf_cache_dir)
+    if local_files_only:
+        load_kwargs["local_files_only"] = True
     attn_impl = cfg.get("attn_implementation") or settings.get("core", {}).get("hf_attn_implementation")
     if attn_impl:
         load_kwargs["attn_implementation"] = attn_impl
@@ -716,7 +792,7 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
         load_kwargs["quantization_config"] = quant_config
         load_kwargs["device_map"] = "auto" if device.startswith("cuda") else "cpu"
 
-    model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+    model = AutoModelForCausalLM.from_pretrained(model_source, **load_kwargs)
     base_eval_samples: list[Sample] = []
     eval_cfg = cfg.get("eval", {}) or {}
     eval_enabled = bool(eval_cfg.get("enabled", True))
@@ -743,7 +819,12 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
         if not adapter_path.is_absolute():
             adapter_path = base_dir / adapter_path
     if adapter_path:
-        model = PeftModel.from_pretrained(model, str(adapter_path), is_trainable=True)
+        model = PeftModel.from_pretrained(
+            model,
+            str(adapter_path),
+            is_trainable=True,
+            autocast_adapter_dtype=bool(cfg.get("autocast_adapter_dtype", False)),
+        )
     else:
         target_modules = _resolve_lora_target_modules(model, cfg)
         lora_cfg = LoraConfig(
@@ -754,7 +835,7 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
             bias="none",
             task_type="CAUSAL_LM",
         )
-        model = get_peft_model(model, lora_cfg)
+        model = get_peft_model(model, lora_cfg, autocast_adapter_dtype=bool(cfg.get("autocast_adapter_dtype", False)))
 
     if bool(cfg.get("gradient_checkpointing", True)) and hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()

@@ -45,8 +45,8 @@ def _client(tmp_path: Path, monkeypatch):
     app = server_mod.create_app(
         {
             "core": {"backend": "hf", "hf_model": "google/gemma-4-E4B-it", "hf_system_prompt": "SYS"},
-            "decode": {"max_new_tokens": 2048, "default_code_max_new_tokens": 3072, "hard_max_new_tokens": 4096},
-            "generation": {"default_max_tokens": 2048, "code_max_tokens": 3072, "hard_max_tokens": 4096},
+            "decode": {"max_new_tokens": 512, "default_code_max_new_tokens": 1024, "hard_max_new_tokens": 2048},
+            "generation": {"default_max_tokens": 512, "code_max_tokens": 1024, "hard_max_tokens": 2048},
             "rag": {"enabled": True},
             "multimodal_context": {"enabled": False},
             "chat_memory": {"enabled": False},
@@ -79,8 +79,8 @@ def test_flutter_code_request_uses_code_budget_and_no_sources(tmp_path: Path, mo
     assert "sources" not in data
     assert rag_calls == []
     assert web_calls == []
-    assert dummy.calls[-1]["kwargs"]["max_new_tokens"] >= 3072
-    assert data["max_tokens_effective"] >= 3072
+    assert dummy.calls[-1]["kwargs"]["max_new_tokens"] >= 1024
+    assert data["max_tokens_effective"] >= 1024
     assert data["backend"] == "hf"
     assert data["active_model"] == "google/gemma-4-E4B-it"
 

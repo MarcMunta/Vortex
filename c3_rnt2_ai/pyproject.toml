@@ -34,8 +34,8 @@ hf = [
   "kernels>=0.11.1",
   # Required for PEFT adapters/expert bank inference.
   "peft>=0.10",
-  # bitsandbytes is Linux-focused; HF can run without it on Windows.
-  "bitsandbytes>=0.43; platform_system != 'Windows'",
+  # Required for local 4-bit HF runtime.
+  "bitsandbytes>=0.49.2",
 ]
 experts = ["peft>=0.10"]
 train = ["peft>=0.10"]

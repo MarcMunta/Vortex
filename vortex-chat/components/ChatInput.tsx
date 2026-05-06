@@ -1,8 +1,8 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Square, ArrowUp, Globe, Timer } from 'lucide-react';
+import { Square, ArrowUp, Globe, Timer, FolderOpen, ChevronDown, ChevronUp, ShieldCheck, SquareTerminal, Cpu } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { AppMode, Language } from '../types';
+import { AppMode, Language, WorkspaceProject } from '../types';
 import { translations } from '../translations';
 
 interface ChatInputProps {
@@ -16,10 +16,13 @@ interface ChatInputProps {
   sendDisabledReason?: string;
   isThinking?: boolean;
   onStop?: () => void;
-  permissionChips?: string[];
   onInteraction?: () => void;
   onFocusChange?: (focused: boolean) => void;
   onDraftChange?: (hasDraft: boolean) => void;
+  projects?: WorkspaceProject[];
+  activeProjectId?: string | null;
+  onSelectProject?: (projectId: string | null) => void;
+  onOpenProjectSettings?: () => void;
 }
 
 const ChatInput: React.FC<ChatInputProps> = ({
@@ -33,14 +36,19 @@ const ChatInput: React.FC<ChatInputProps> = ({
   sendDisabledReason,
   isThinking,
   onStop,
-  permissionChips = [],
   onInteraction,
   onFocusChange,
   onDraftChange,
+  projects = [],
+  activeProjectId = null,
+  onSelectProject,
+  onOpenProjectSettings,
 }) => {
   const [input, setInput] = useState('');
   const [isInternetEnabled, setIsInternetEnabled] = useState(false);
   const [useThinking, setUseThinking] = useState(true);
+  const [isProjectPickerOpen, setIsProjectPickerOpen] = useState(false);
+  const [isProjectDetailsOpen, setIsProjectDetailsOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const t = translations[language];
@@ -69,7 +77,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
   }, [canUseInternet]);
 
   const handleSend = () => {
-    if (input.trim() && !isLoading && !sendDisabledReason) {
+    if (input.trim() && !isLoading) {
       onInteraction?.();
       onSend(input.trim(), isInternetEnabled, mode, useThinking, false);
       setInput('');
@@ -84,23 +92,32 @@ const ChatInput: React.FC<ChatInputProps> = ({
     }
   };
 
-  const statusChips = [
-    ...permissionChips,
-    mode === 'agent'
-      ? (language === 'es' ? 'Agente activo' : 'Agent active')
-      : (language === 'es' ? 'Consulta guiada' : 'Grounded query'),
-    useThinking
-      ? (language === 'es' ? 'Thinking' : 'Thinking')
-      : (language === 'es' ? 'Fast' : 'Fast'),
-    isInternetEnabled
-      ? (language === 'es' ? 'Internet en este prompt' : 'Internet on this prompt')
-      : null,
-  ].filter(Boolean) as string[];
-
   const footerHint = sendDisabledReason
     || (language === 'es'
       ? 'Enter para enviar. Shift+Enter para nueva línea.'
       : 'Enter to send. Shift+Enter for a new line.');
+  const activeProject = projects.find((project) => project.id === activeProjectId) || null;
+  const projectLabel = activeProject?.name || (language === 'es' ? 'Añadir workspace' : 'Add workspace');
+  const permissionLabel = activeProject
+    ? activeProject.permissionLevel === 'full'
+      ? (language === 'es' ? 'total' : 'full')
+      : activeProject.permissionLevel === 'edit'
+        ? (language === 'es' ? 'edicion' : 'edit')
+        : activeProject.permissionLevel === 'read'
+          ? (language === 'es' ? 'lectura' : 'read')
+          : (language === 'es' ? 'sin acceso' : 'none')
+    : (language === 'es' ? 'sin proyecto' : 'no project');
+  const actionLabel = activeProject?.actionMode === 'full'
+    ? (language === 'es' ? 'acciones completas' : 'full actions')
+    : (language === 'es' ? 'modo seguro' : 'safe mode');
+  const scopeLabel = activeProject?.projectPath || activeProject?.rootPath || (language === 'es' ? 'sin scope' : 'no scope');
+  const projectDetails = [
+    { label: language === 'es' ? 'Permisos' : 'Permissions', value: permissionLabel },
+    { label: language === 'es' ? 'Acciones' : 'Actions', value: actionLabel },
+    { label: 'Scope', value: scopeLabel },
+    { label: language === 'es' ? 'Modo' : 'Mode', value: mode === 'agent' ? t.input_agent_mode : t.input_ask_mode },
+    { label: 'Thinking', value: useThinking ? 'on' : 'off' },
+  ];
 
   return (
     <div className="mx-auto w-full max-w-[1160px] relative px-6 accelerated">
@@ -188,11 +205,11 @@ const ChatInput: React.FC<ChatInputProps> = ({
           ) : (
             <button
               onClick={handleSend}
-              disabled={!input.trim() || Boolean(sendDisabledReason)}
+              disabled={!input.trim()}
               aria-label={language === 'es' ? 'Enviar mensaje' : 'Send message'}
               title={sendDisabledReason || (language === 'es' ? 'Enviar mensaje' : 'Send message')}
               className={`group/send flex h-10 w-10 items-center justify-center rounded-full transition-all duration-300 ${
-                input.trim() && !sendDisabledReason
+                input.trim()
                   ? mode === 'agent' 
                     ? 'bg-primary text-white shadow-lg shadow-primary/10 hover:scale-105 active:scale-90'
                     : 'bg-primary text-white shadow-lg shadow-primary/10 hover:scale-105 active:scale-90'
@@ -205,16 +222,114 @@ const ChatInput: React.FC<ChatInputProps> = ({
         </div>
       </motion.div>
 
-      <div className="mt-3 flex flex-col gap-3 px-2 md:flex-row md:items-center md:justify-between">
+      <div className="mt-3 flex flex-col gap-3 px-2 md:flex-row md:items-start md:justify-between">
         <div className="flex flex-wrap items-center gap-2">
-          {statusChips.map((chip) => (
-            <span
-              key={chip}
-              className="rounded-full border border-border/60 bg-muted/20 px-3 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground"
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setIsProjectPickerOpen((value) => !value);
+                setIsProjectDetailsOpen(false);
+                onInteraction?.();
+              }}
+              className="inline-flex max-w-[280px] items-center gap-2 rounded-full border border-border/60 bg-background/80 px-3 py-1.5 text-[11px] font-bold text-foreground shadow-sm transition-colors hover:border-primary/30"
+              title={activeProject?.rootPath || projectLabel}
             >
-              {chip}
-            </span>
-          ))}
+              <FolderOpen size={14} className="text-primary" />
+              <span className="truncate">{projectLabel}</span>
+              <ChevronDown size={13} className="text-muted-foreground" />
+            </button>
+            {isProjectPickerOpen && (
+              <div className="absolute bottom-full left-0 z-50 mb-2 w-[340px] overflow-hidden rounded-2xl border border-border/70 bg-background shadow-2xl">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelectProject?.(null);
+                    setIsProjectPickerOpen(false);
+                  }}
+                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm hover:bg-muted/40"
+                >
+                  <span>{language === 'es' ? 'Sin workspace' : 'No workspace'}</span>
+                  {!activeProject && <ShieldCheck size={15} className="text-primary" />}
+                </button>
+                {projects.map((project) => (
+                  <button
+                    key={project.id}
+                    type="button"
+                    onClick={() => {
+                      onSelectProject?.(project.id);
+                      setIsProjectPickerOpen(false);
+                    }}
+                    className="flex w-full items-center justify-between gap-3 border-t border-border/50 px-4 py-3 text-left hover:bg-muted/40"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-foreground">{project.name}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{project.projectPath || project.rootPath}</span>
+                    </span>
+                    <span className="shrink-0 rounded-full bg-muted px-2 py-1 text-[9px] font-black uppercase tracking-[0.1em] text-muted-foreground">{project.permissionLevel}</span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsProjectPickerOpen(false);
+                    onOpenProjectSettings?.();
+                  }}
+                  className="flex w-full items-center gap-2 border-t border-border/60 px-4 py-3 text-left text-sm font-bold text-primary hover:bg-primary/10"
+                >
+                  <FolderOpen size={15} />
+                  {language === 'es' ? 'Gestionar proyectos' : 'Manage projects'}
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setIsProjectDetailsOpen((value) => !value);
+                setIsProjectPickerOpen(false);
+                onInteraction?.();
+              }}
+              aria-label={language === 'es' ? 'Ver detalles del chat' : 'Show chat details'}
+              title={language === 'es' ? 'Detalles del chat' : 'Chat details'}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-border/60 bg-background/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/30 hover:text-foreground"
+            >
+              <ChevronUp size={15} className={`transition-transform duration-200 ${isProjectDetailsOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {isProjectDetailsOpen && (
+              <div className="absolute bottom-full left-0 z-50 mb-2 w-[360px] overflow-hidden rounded-2xl border border-border/70 bg-background shadow-2xl">
+                <div className="border-b border-border/60 bg-muted/20 px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary">
+                      <Cpu size={17} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-extrabold text-foreground">{activeProject?.name || (language === 'es' ? 'Chat sin proyecto' : 'Chat without project')}</p>
+                      <p className="truncate text-xs text-muted-foreground">{scopeLabel}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="grid gap-2 p-3">
+                  {projectDetails.map((item) => (
+                    <div key={item.label} className="flex items-center justify-between gap-4 rounded-xl bg-muted/20 px-3 py-2">
+                      <span className="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">{item.label}</span>
+                      <span className="min-w-0 truncate text-right text-xs font-bold text-foreground">{item.value}</span>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between gap-4 rounded-xl bg-muted/20 px-3 py-2">
+                    <span className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                      <SquareTerminal size={13} />
+                      {language === 'es' ? 'Estado' : 'Status'}
+                    </span>
+                    <span className="min-w-0 truncate text-right text-xs font-bold text-foreground">
+                      {isLoading ? (language === 'es' ? 'ejecutando' : 'running') : (language === 'es' ? 'listo' : 'ready')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
         <p className={`text-xs ${sendDisabledReason ? 'text-primary' : 'text-muted-foreground'}`}>
           {footerHint}

@@ -127,13 +127,13 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert daily["core"]["hf_model_loader"] == "causal_lm"
     assert daily["core"]["hf_local_files_only"] is True
     assert daily["core"]["hf_load_in_4bit"] is True
-    assert daily["core"]["hf_max_memory"][0] == "12GiB"
-    assert daily["core"]["hf_max_memory"]["cpu"] == "48GiB"
+    assert daily["core"]["hf_max_memory"][0] == "15GiB"
+    assert daily["core"]["hf_max_memory"]["cpu"] == "32GiB"
     assert daily["core"]["hf_use_latest_adapter"] is True
     assert daily["core"]["backend_fallback"] is None
     assert daily["core"]["hf_fallback"] is None
     assert daily["core"]["allow_implicit_hf_fallback"] is False
-    assert daily["docker"]["enabled"] is True
+    assert daily["docker"]["enabled"] is False
     assert daily["docker"]["runtime_service"] is None
     assert daily["tools"]["web"]["enabled"] is False
     assert daily["continuous"]["ingest_web"] is False
@@ -141,30 +141,33 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert daily["autolearn"]["web_ingest"] is False
     assert daily["autolearn"]["url_discovery"] is False
     assert daily["profile_contract"]["require_external_engine"] is None
-    assert daily["profile_contract"]["require_docker"] is True
-    assert daily["profile_contract"]["disable_fallbacks"] is True
+    assert daily["profile_contract"]["require_docker"] is False
+    assert daily["profile_contract"]["disable_fallbacks"] is False
     assert daily["continuous"]["local_sources"]["include_repo"] is True
     assert daily["continuous"]["local_sources"]["include_local_corpus"] is True
     assert daily["hf_train"]["enabled"] is False
     assert daily["hf_train"]["model_name"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
     assert daily["hf_train"]["registry_dir"] == "data/registry/hf_train/qwen_coder_flutter"
-    assert daily["decode"]["max_new_tokens"] >= 2048
-    assert daily["decode"]["default_code_max_new_tokens"] >= 3072
-    assert daily["decode"]["hard_max_new_tokens"] >= 4096
-    assert daily["generation"]["default_max_tokens"] >= 2048
-    assert daily["generation"]["code_max_tokens"] >= 3072
-    assert daily["generation"]["hard_max_tokens"] >= 4096
+    assert daily["decode"]["max_new_tokens"] == 512
+    assert daily["decode"]["default_code_max_new_tokens"] == 1024
+    assert daily["decode"]["hard_max_new_tokens"] == 2048
+    assert daily["generation"]["default_max_tokens"] == 512
+    assert daily["generation"]["code_max_tokens"] == 1024
+    assert daily["generation"]["hard_max_tokens"] == 2048
     assert daily["core"]["vram_floor_tokens"] >= 256
     assert daily["core"]["vram_ceil_tokens"] >= 4096
     assert daily["context"]["model_max_context_tokens"] == 32768
-    assert daily["context"]["default_chat_context_tokens"] == 16384
-    assert daily["context"]["default_agent_context_tokens"] == 24576
-    assert daily["context"]["max_output_tokens"] == 2048
-    assert daily["context"]["max_agent_action_tokens"] == 2048
-    assert daily["context"]["max_agent_final_tokens"] == 4096
-    assert daily["context"]["obsidian_tokens"] == 5000
-    assert daily["agent"]["action_max_new_tokens"] == 2048
-    assert daily["agent"]["final_summary_max_new_tokens"] == 4096
+    assert daily["context"]["default_chat_context_tokens"] == 2048
+    assert daily["context"]["default_agent_context_tokens"] == 4096
+    assert daily["context"]["max_output_tokens"] == 512
+    assert daily["context"]["max_agent_action_tokens"] == 512
+    assert daily["context"]["max_agent_final_tokens"] == 768
+    assert daily["context"]["obsidian_tokens"] == 0
+    assert daily["agent"]["action_max_new_tokens"] == 512
+    assert daily["agent"]["final_summary_max_new_tokens"] == 768
+    assert "write_file" in daily["agent"]["tools_enabled"]
+    assert "delete_file" in daily["agent"]["tools_enabled"]
+    assert "run_command" in daily["agent"]["tools_enabled"]
     assert daily["cloud_training"]["provider"] == "gcp"
     assert daily["cloud_training"]["enabled"] is False
     assert daily["cloud_training"]["service_account_env"] == "GOOGLE_APPLICATION_CREDENTIALS"

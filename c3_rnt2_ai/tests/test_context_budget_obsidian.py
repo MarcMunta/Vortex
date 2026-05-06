@@ -12,15 +12,15 @@ def test_context_budget_defaults_are_safe_and_agent_is_larger() -> None:
     context = settings["context"]
 
     assert context["model_max_context_tokens"] == 32768
-    assert context["default_chat_context_tokens"] == 16384
-    assert context["default_agent_context_tokens"] == 24576
-    assert context["max_output_tokens"] == 2048
-    assert context["max_agent_action_tokens"] == 2048
-    assert context["max_agent_final_tokens"] == 4096
+    assert context["default_chat_context_tokens"] == 2048
+    assert context["default_agent_context_tokens"] == 4096
+    assert context["max_output_tokens"] == 512
+    assert context["max_agent_action_tokens"] == 512
+    assert context["max_agent_final_tokens"] == 768
     assert context_limit_for_mode(settings, "agent") > context_limit_for_mode(settings, "chat")
-    assert output_limit_for_mode(settings, "chat") == 2048
-    assert output_limit_for_mode(settings, "agent") == 2048
-    assert output_limit_for_mode(settings, "agent", final=True) == 4096
+    assert output_limit_for_mode(settings, "chat") == 512
+    assert output_limit_for_mode(settings, "agent") == 512
+    assert output_limit_for_mode(settings, "agent", final=True) == 768
 
 
 def test_context_budget_summarizes_old_messages() -> None:

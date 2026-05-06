@@ -82,11 +82,11 @@ services:
       HF_DATASETS_OFFLINE: "1"
       C3RNT2_ASSUME_DOCKER_READY: "1"
       C3RNT2_HOST_WORKSPACE_MOUNT: /workspaces/root
-      C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub\Vortex}
+      C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}
       C3RNT2_HOST_WORKSPACE_REPO_NAME: Vortex
     volumes:
       - .:/workspace
-      - ../:/workspaces/root
+      - ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}:/workspaces/root
       - ./data/models/hf-cache:/root/.cache/huggingface
     ports:
       - "8000:8000"
@@ -133,11 +133,11 @@ services:
       HF_DATASETS_OFFLINE: "1"
       C3RNT2_ASSUME_DOCKER_READY: "1"
       C3RNT2_HOST_WORKSPACE_MOUNT: /workspaces/root
-      C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub\Vortex}
+      C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}
       C3RNT2_HOST_WORKSPACE_REPO_NAME: Vortex
     volumes:
       - .:/workspace
-      - ../:/workspaces/root
+      - ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}:/workspaces/root
       - ./data/models/hf-cache:/root/.cache/huggingface
     command:
       - python
@@ -157,7 +157,6 @@ services:
       dockerfile: docker/Dockerfile
     init: true
     restart: unless-stopped
-    gpus: all
     ipc: host
     shm_size: "32g"
     depends_on:
@@ -170,11 +169,11 @@ services:
       C3RNT2_ASSUME_DOCKER_READY: "1"
       DOCKER_HOST: unix:///var/run/docker.sock
       C3RNT2_HOST_WORKSPACE_MOUNT: /workspaces/root
-      C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub\Vortex}
+      C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}
       C3RNT2_HOST_WORKSPACE_REPO_NAME: Vortex
     volumes:
       - .:/workspace
-      - ../:/workspaces/root
+      - ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}:/workspaces/root
       - ./data/models/hf-cache:/root/.cache/huggingface
       - /var/run/docker.sock:/var/run/docker.sock
     command:

@@ -198,7 +198,11 @@ def _supported_agent_tools() -> set[str]:
         "read_file",
         "grep",
         "list_tree",
+        "write_file",
+        "delete_file",
         "run_tests",
+        "run_command",
+        "open_browser",
         "propose_patch",
         "sandbox_patch",
         "apply_patch",
@@ -622,7 +626,8 @@ def _run_doctor_checks(settings: dict, base_dir: Path) -> dict:
     try:
         # Dry checks only: avoid pulling large HF weights during "doctor".
         if backend == "hf":
-            __import__("transformers")
+            if (settings.get("core", {}) or {}).get("hf_model"):
+                __import__("transformers")
         elif backend == "llama_cpp":
             __import__("llama_cpp")
         elif backend == "tensorrt":
@@ -769,11 +774,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         "torch",
         "bitsandbytes",
         "faiss",
-        "triton",
         "fastapi",
         "zstandard",
         "lz4",
     ]
+    if not sys.platform.startswith("win"):
+        modules.append("triton")
     status = check_deps(modules)
     print({"deps": status})
 
@@ -1005,19 +1011,33 @@ def cmd_train_once(args: argparse.Namespace) -> None:
             return
     try:
         if not internal_subprocess and strategy == "wsl_subprocess_unload":
-            payload = _run_train_subprocess_wsl(
-                settings,
-                reuse_dataset=bool(args.reuse_dataset),
-                env=child_env,
-                allow_parallel_runtime=allow_parallel_runtime,
-            )
+            try:
+                payload = _run_train_subprocess_wsl(
+                    settings,
+                    reuse_dataset=bool(args.reuse_dataset),
+                    env=child_env,
+                    allow_parallel_runtime=allow_parallel_runtime,
+                )
+            except TypeError:
+                payload = _run_train_subprocess_wsl(
+                    settings,
+                    reuse_dataset=bool(args.reuse_dataset),
+                    env=child_env,
+                )
         elif not internal_subprocess and strategy.startswith("subprocess"):
-            payload = _run_train_subprocess(
-                settings,
-                reuse_dataset=bool(args.reuse_dataset),
-                env=child_env,
-                allow_parallel_runtime=allow_parallel_runtime,
-            )
+            try:
+                payload = _run_train_subprocess(
+                    settings,
+                    reuse_dataset=bool(args.reuse_dataset),
+                    env=child_env,
+                    allow_parallel_runtime=allow_parallel_runtime,
+                )
+            except TypeError:
+                payload = _run_train_subprocess(
+                    settings,
+                    reuse_dataset=bool(args.reuse_dataset),
+                    env=child_env,
+                )
         else:
             result = train_once_backend(
                 settings,

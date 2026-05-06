@@ -291,7 +291,7 @@ Usage:
   .\run.bat [--all] [--front-only|--back-only] [--no-control] [--no-self-train] [--no-auto-edits] [--no-open-browser]
 
 Env:
-  C3RNT2_PROFILE=rtx4080_16gb_safe_windows_hf
+  C3RNT2_PROFILE=rtx4080_16gb_programming_qwen_coder_local
   VORTEX_BACKEND_PORT=8000
   VORTEX_FRONTEND_PORT=5173
   ENABLE_SELF_TRAIN=1
@@ -304,9 +304,11 @@ Env:
   }
 }
 
+$defaultModelProfile = "rtx4080_16gb_programming_qwen_coder_local"
+
 $modelProfile = ($env:C3RNT2_PROFILE -as [string])
 if ($modelProfile) { $modelProfile = $modelProfile.Trim() }
-if (-not $modelProfile) { $modelProfile = "rtx4080_16gb_safe_windows_hf" }
+if (-not $modelProfile) { $modelProfile = $defaultModelProfile }
 
 $backendPort = $env:VORTEX_BACKEND_PORT
 if (-not $backendPort) { $backendPort = $env:BACKEND_PORT }
@@ -359,9 +361,9 @@ if ($needPython) {
   }
   Ensure-TorchCudaBuild -PythonExe $py
   if (-not (Test-VortexProfile -PythonExe $py -Profile $modelProfile)) {
-    if ($modelProfile -ne "rtx4080_16gb_safe_windows_hf") {
-      Write-Step "Profile '$modelProfile' not found; falling back to 'rtx4080_16gb_safe_windows_hf'."
-      $modelProfile = "rtx4080_16gb_safe_windows_hf"
+    if ($modelProfile -ne $defaultModelProfile) {
+      Write-Step "Profile '$modelProfile' not found; falling back to '$defaultModelProfile'."
+      $modelProfile = $defaultModelProfile
     }
   }
   if (-not (Test-VortexProfile -PythonExe $py -Profile $modelProfile)) {

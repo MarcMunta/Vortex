@@ -20,8 +20,9 @@ import {
   X,
 } from 'lucide-react';
 import { Reorder, AnimatePresence, motion } from 'framer-motion';
-import { FontSize, Language, LocalAccount, UserSettings } from '../types';
+import { FontSize, Language, LocalAccount, OperationalStatus, PermissionLevel, ThemeMode, UserSettings, WorkspaceProject } from '../types';
 import { translations } from '../translations';
+import { vortexService } from '../services/vortexService';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -33,9 +34,12 @@ interface SettingsModalProps {
   currentAccountId: string | null;
   onSelectAccount: (id: string) => void;
   onCreateAccount: (draft: { name: string; email: string; handle?: string }) => void;
+  operationalStatus?: OperationalStatus | null;
 }
 
 export type SettingsTab = 'general' | 'appearance' | 'permissions' | 'profiles';
+type FolderTarget = 'draftRoot' | 'activeRoot';
+type DirectoryPickerHandle = { name?: string };
 
 const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
@@ -47,12 +51,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   currentAccountId,
   onSelectAccount,
   onCreateAccount,
+  operationalStatus,
 }) => {
   const t = translations[settings.language];
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [draftName, setDraftName] = useState('');
   const [draftEmail, setDraftEmail] = useState('');
   const [draftHandle, setDraftHandle] = useState('');
+  const [projectDraft, setProjectDraft] = useState({ name: '', rootPath: '' });
+  const [folderPickerError, setFolderPickerError] = useState('');
 
   const currentAccount = useMemo(
     () => accounts.find((account) => account.id === currentAccountId) || accounts[0] || null,
@@ -90,6 +97,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     onUpdateSettings({ ...settings, codeTheme: theme });
   };
 
+  const handleThemeModeChange = (themeMode: ThemeMode) => {
+    onUpdateSettings({ ...settings, themeMode });
+  };
+
   const handleFontSizeChange = (size: FontSize) => {
     onUpdateSettings({ ...settings, fontSize: size });
   };
@@ -98,34 +109,125 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     onUpdateSettings({ ...settings, language: lang });
   };
 
-  const handlePermissionLevelChange = (level: 'none' | 'full') => {
+  const activeProject = settings.projects.find((project) => project.id === settings.activeProjectId) || null;
+
+  const updateProjects = (projects: WorkspaceProject[], activeProjectId: string | null) => {
+    const selected = projects.find((project) => project.id === activeProjectId) || null;
     onUpdateSettings({
       ...settings,
-      permissions: {
-        ...settings.permissions,
-        level,
-      },
+      projects,
+      activeProjectId,
+      permissions: selected
+        ? {
+            level: selected.permissionLevel,
+            workspaceRoot: selected.rootPath,
+            projectPath: selected.projectPath,
+            actionMode: selected.actionMode,
+          }
+        : {
+            ...settings.permissions,
+            level: 'none',
+            actionMode: 'safe',
+          },
     });
+  };
+
+  const patchActiveProject = (patch: Partial<WorkspaceProject>) => {
+    if (!activeProject) {
+      onUpdateSettings({
+        ...settings,
+        permissions: {
+          ...settings.permissions,
+          level: patch.permissionLevel || settings.permissions.level,
+          actionMode: patch.actionMode || settings.permissions.actionMode,
+          workspaceRoot: patch.rootPath ?? settings.permissions.workspaceRoot,
+          projectPath: patch.projectPath ?? settings.permissions.projectPath,
+        },
+      });
+      return;
+    }
+    const projects = settings.projects.map((project) => (
+      project.id === activeProject.id ? { ...project, ...patch, lastUsedAt: Date.now() } : project
+    ));
+    updateProjects(projects, activeProject.id);
+  };
+
+  const handlePermissionLevelChange = (level: PermissionLevel) => {
+    patchActiveProject({ permissionLevel: level });
   };
 
   const handlePermissionActionModeChange = (actionMode: 'safe' | 'full') => {
-    onUpdateSettings({
-      ...settings,
-      permissions: {
-        ...settings.permissions,
-        actionMode,
-      },
-    });
+    patchActiveProject({ actionMode });
   };
 
-  const handlePermissionFieldChange = (field: 'workspaceRoot' | 'projectPath', value: string) => {
-    onUpdateSettings({
-      ...settings,
-      permissions: {
-        ...settings.permissions,
-        [field]: value,
-      },
+  const applyFolderSelection = (target: FolderTarget, folderPath: string) => {
+    const value = folderPath.trim();
+    if (!value) return;
+    setFolderPickerError('');
+    if (target === 'draftRoot') {
+      setProjectDraft((prev) => ({
+        ...prev,
+        rootPath: value,
+        name: prev.name || value.split(/[\\/]/).filter(Boolean).pop() || '',
+      }));
+      return;
+    }
+    if (target === 'activeRoot') {
+      patchActiveProject({ rootPath: value, projectPath: value });
+      return;
+    }
+  };
+
+  const handleSelectFolder = async (target: FolderTarget) => {
+    setFolderPickerError('');
+    const initialDir = target === 'draftRoot'
+      ? projectDraft.rootPath
+      : settings.permissions.workspaceRoot;
+    const result = await vortexService.pickWorkspaceFolder({
+      title: settings.language === 'es' ? 'Selecciona carpeta del proyecto' : 'Select project folder',
+      initialDir,
     });
+    if (result.ok && result.path) {
+      applyFolderSelection(target, result.path);
+      return;
+    }
+    if (result.ok && result.cancelled) return;
+    const picker = (window as Window & { showDirectoryPicker?: () => Promise<DirectoryPickerHandle> }).showDirectoryPicker;
+    if (picker) {
+      try {
+        const handle = await picker();
+        if (handle?.name) {
+          applyFolderSelection(target, handle.name);
+          setFolderPickerError(settings.language === 'es'
+            ? 'Seleccionada por navegador. En Docker debe estar dentro de la carpeta montada.'
+            : 'Selected through browser. In Docker it must be inside the mounted folder.');
+          return;
+        }
+      } catch {
+        return;
+      }
+    }
+    setFolderPickerError(settings.language === 'es'
+      ? 'Selector de carpeta no disponible en este runtime. Usa backend local o configura la carpeta montada de Docker.'
+      : 'Folder picker unavailable in this runtime. Use local backend or configure the Docker mounted folder.');
+  };
+
+  const handleCreateProject = () => {
+    const rootPath = projectDraft.rootPath.trim();
+    const projectPath = rootPath;
+    if (!rootPath) return;
+    const name = projectDraft.name.trim() || projectPath.split(/[\\/]/).filter(Boolean).pop() || rootPath.split(/[\\/]/).filter(Boolean).pop() || 'Workspace';
+    const project: WorkspaceProject = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      rootPath,
+      projectPath,
+      permissionLevel: 'full',
+      actionMode: 'full',
+      lastUsedAt: Date.now(),
+    };
+    updateProjects([project, ...settings.projects], project.id);
+    setProjectDraft({ name: '', rootPath: '' });
   };
 
   const handleCreateAccount = () => {
@@ -270,6 +372,26 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
 
                   <div className="space-y-5">
+                    <div className="rounded-[1.3rem] border border-border/60 bg-muted/10 p-4">
+                      <p className="text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                        {settings.language === 'es' ? 'Estado local' : 'Local status'}
+                      </p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                        <div className="rounded-xl border border-border/50 bg-background px-4 py-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">API</p>
+                          <p className="mt-1 text-sm font-bold text-foreground">{operationalStatus?.ok ? 'OK' : (settings.language === 'es' ? 'Pendiente' : 'Pending')}</p>
+                        </div>
+                        <div className="rounded-xl border border-border/50 bg-background px-4 py-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Runtime</p>
+                          <p className="mt-1 text-sm font-bold text-foreground">{operationalStatus?.engine_kind || 'local'}</p>
+                        </div>
+                        <div className="rounded-xl border border-border/50 bg-background px-4 py-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Modelo</p>
+                          <p className="mt-1 truncate text-sm font-bold text-foreground">{operationalStatus?.active_model || 'Qwen'}</p>
+                        </div>
+                      </div>
+                    </div>
+
                     <div>
                       <p className="mb-3 text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">{t.language}</p>
                       <div className="grid gap-3 sm:grid-cols-2">
@@ -340,6 +462,36 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
 
                   <div className="space-y-5">
+                    <div className="rounded-[1.3rem] border border-border/60 bg-muted/10 p-5">
+                      <p className="mb-3 text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                        {settings.language === 'es' ? 'Tema de la app' : 'App theme'}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          { key: 'light', label: settings.language === 'es' ? 'Claro' : 'Light', icon: <Sun size={16} /> },
+                          { key: 'dark', label: settings.language === 'es' ? 'Oscuro' : 'Dark', icon: <Moon size={16} /> },
+                          { key: 'system', label: settings.language === 'es' ? 'Sistema' : 'System', icon: <Palette size={16} /> },
+                        ].map((option) => {
+                          const active = settings.themeMode === option.key;
+                          return (
+                            <button
+                              key={option.key}
+                              type="button"
+                              onClick={() => handleThemeModeChange(option.key as ThemeMode)}
+                              className={`inline-flex items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition-all ${
+                                active
+                                  ? 'border-primary/40 bg-primary/[0.10] text-foreground'
+                                  : 'border-border/70 bg-background text-muted-foreground hover:border-primary/25 hover:text-foreground'
+                              }`}
+                            >
+                              {option.icon}
+                              {option.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
                     <div className="rounded-[1.3rem] border border-border/60 bg-muted/10 p-5">
                       <p className="mb-3 text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">{t.settings_code_theme}</p>
                       <div className="flex flex-wrap gap-2">
@@ -423,6 +575,89 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     </p>
                   </div>
 
+                  <div className="rounded-[1.3rem] border border-border/60 bg-muted/10 p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                          {settings.language === 'es' ? 'Proyectos' : 'Projects'}
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                          {settings.language === 'es'
+                            ? 'Añade carpetas de trabajo y define permisos por proyecto.'
+                            : 'Add work folders and define permissions per project.'}
+                        </p>
+                      </div>
+                      <span className="rounded-full border border-border/60 bg-background px-3 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+                        {settings.projects.length}
+                      </span>
+                    </div>
+                    <div className="mt-4 grid gap-2">
+                      {settings.projects.map((project) => (
+                        <div key={project.id} className={`rounded-xl border px-4 py-3 ${project.id === settings.activeProjectId ? 'border-primary/35 bg-primary/10' : 'border-border/60 bg-background'}`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <button
+                              type="button"
+                              onClick={() => updateProjects(settings.projects, project.id)}
+                              className="min-w-0 flex-1 text-left"
+                            >
+                              <p className="truncate text-sm font-bold text-foreground">{project.name}</p>
+                              <p className="mt-1 truncate text-xs text-muted-foreground">{project.projectPath || project.rootPath}</p>
+                            </button>
+                            <div className="flex items-center gap-2">
+                              <span className="rounded-full bg-muted px-2 py-1 text-[9px] font-black uppercase tracking-[0.1em] text-muted-foreground">{project.permissionLevel}</span>
+                              <button
+                                type="button"
+                                onClick={() => updateProjects(settings.projects.filter((item) => item.id !== project.id), project.id === settings.activeProjectId ? null : settings.activeProjectId)}
+                                className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                aria-label={settings.language === 'es' ? 'Eliminar proyecto' : 'Remove project'}
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-4 grid gap-3">
+                      <input
+                        value={projectDraft.name}
+                        onChange={(event) => setProjectDraft((prev) => ({ ...prev, name: event.target.value }))}
+                        placeholder={settings.language === 'es' ? 'Nombre: Vortex' : 'Name: Vortex'}
+                        className="w-full rounded-xl border border-border/70 bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary/40 focus:ring-4 focus:ring-primary/10"
+                      />
+                      <div className="rounded-xl border border-border/70 bg-background p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                              {settings.language === 'es' ? 'Carpeta raiz' : 'Root folder'}
+                            </p>
+                            <p className="mt-1 truncate text-sm font-semibold text-foreground">
+                              {projectDraft.rootPath || (settings.language === 'es' ? 'Sin carpeta seleccionada' : 'No folder selected')}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => { void handleSelectFolder('draftRoot'); }}
+                            className="shrink-0 rounded-xl border border-primary/25 bg-primary/10 px-3 py-2 text-xs font-black uppercase tracking-[0.1em] text-primary transition-colors hover:bg-primary/15"
+                          >
+                            <span className="inline-flex items-center gap-2"><FolderOpen size={14} />{settings.language === 'es' ? 'Seleccionar' : 'Select'}</span>
+                          </button>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCreateProject}
+                        className="flex w-fit items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground shadow-[0_16px_36px_-24px_rgba(0,174,255,0.95)] transition-transform hover:scale-[1.01] active:scale-[0.99]"
+                      >
+                        <Plus size={16} />
+                        {settings.language === 'es' ? 'Añadir workspace' : 'Add workspace'}
+                      </button>
+                      {folderPickerError && (
+                        <p className="text-xs leading-5 text-muted-foreground">{folderPickerError}</p>
+                      )}
+                    </div>
+                  </div>
+
                   <div>
                     <p className="mb-3 text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">
                       {settings.language === 'es' ? 'Nivel de permisos' : 'Permission level'}
@@ -438,6 +673,24 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         onClick={() => handlePermissionLevelChange('none')}
                       />
                       <OptionCard
+                        active={settings.permissions.level === 'read'}
+                        title={settings.language === 'es' ? 'Solo lectura' : 'Read only'}
+                        description={settings.language === 'es'
+                          ? 'Puede leer contexto del proyecto, sin editar ni ejecutar comandos.'
+                          : 'May read project context, without edits or commands.'}
+                        icon={<FolderOpen size={18} />}
+                        onClick={() => handlePermissionLevelChange('read')}
+                      />
+                      <OptionCard
+                        active={settings.permissions.level === 'edit'}
+                        title={settings.language === 'es' ? 'Lectura y edicion' : 'Read and edit'}
+                        description={settings.language === 'es'
+                          ? 'Puede leer y editar archivos dentro del scope. Comandos bloqueados.'
+                          : 'May read and edit files inside scope. Commands blocked.'}
+                        icon={<ShieldCheck size={18} />}
+                        onClick={() => handlePermissionLevelChange('edit')}
+                      />
+                      <OptionCard
                         active={settings.permissions.level === 'full'}
                         title={settings.language === 'es' ? 'Permisos a todo' : 'Full permissions'}
                         description={settings.language === 'es'
@@ -449,33 +702,30 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   </div>
 
-                  <div className={`rounded-[1.3rem] border border-border/60 bg-muted/10 p-5 ${settings.permissions.level === 'full' ? '' : 'opacity-75'}`}>
+                  <div className={`rounded-[1.3rem] border border-border/60 bg-muted/10 p-5 ${settings.permissions.level !== 'none' ? '' : 'opacity-75'}`}>
                     <p className="mb-3 text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">
                       {settings.language === 'es' ? 'Scope de trabajo' : 'Work scope'}
                     </p>
                     <div className="grid gap-3">
-                      <label className="block">
-                        <span className="mb-2 flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-                          <FolderOpen size={12} /> {settings.language === 'es' ? 'Carpeta raiz autorizada' : 'Authorized root folder'}
-                        </span>
-                        <input
-                          value={settings.permissions.workspaceRoot}
-                          onChange={(event) => handlePermissionFieldChange('workspaceRoot', event.target.value)}
-                          placeholder={settings.language === 'es' ? 'D:\\GitHub\\MiProyecto' : 'D:\\GitHub\\MyProject'}
-                          className="w-full rounded-xl border border-border/70 bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary/40 focus:ring-4 focus:ring-primary/10"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="mb-2 flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-                          <FolderOpen size={12} /> {settings.language === 'es' ? 'Proyecto activo o subruta' : 'Active project or subpath'}
-                        </span>
-                        <input
-                          value={settings.permissions.projectPath}
-                          onChange={(event) => handlePermissionFieldChange('projectPath', event.target.value)}
-                          placeholder={settings.language === 'es' ? 'apps\\frontend o ruta del repo' : 'apps\\frontend or repo path'}
-                          className="w-full rounded-xl border border-border/70 bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary/40 focus:ring-4 focus:ring-primary/10"
-                        />
-                      </label>
+                      <div className="rounded-xl border border-border/70 bg-background p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="mb-1 flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+                              <FolderOpen size={12} /> {settings.language === 'es' ? 'Carpeta raiz autorizada' : 'Authorized root folder'}
+                            </p>
+                            <p className="truncate text-sm font-semibold text-foreground">
+                              {settings.permissions.workspaceRoot || (settings.language === 'es' ? 'Sin carpeta seleccionada' : 'No folder selected')}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => { void handleSelectFolder('activeRoot'); }}
+                            className="shrink-0 rounded-xl border border-primary/25 bg-primary/10 px-3 py-2 text-xs font-black uppercase tracking-[0.1em] text-primary transition-colors hover:bg-primary/15"
+                          >
+                            <span className="inline-flex items-center gap-2"><FolderOpen size={14} />{settings.language === 'es' ? 'Seleccionar' : 'Select'}</span>
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -517,7 +767,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         <p className="mt-2 text-sm font-bold text-foreground">
                           {settings.permissions.level === 'full'
                             ? (settings.language === 'es' ? 'Permisos a todo' : 'Full permissions')
-                            : (settings.language === 'es' ? 'Permisos a nada' : 'No permissions')}
+                            : settings.permissions.level === 'edit'
+                              ? (settings.language === 'es' ? 'Lectura y edicion' : 'Read and edit')
+                              : settings.permissions.level === 'read'
+                                ? (settings.language === 'es' ? 'Solo lectura' : 'Read only')
+                                : (settings.language === 'es' ? 'Permisos a nada' : 'No permissions')}
                         </p>
                       </div>
                       <div className="rounded-xl border border-white/10 bg-background/70 px-4 py-3">

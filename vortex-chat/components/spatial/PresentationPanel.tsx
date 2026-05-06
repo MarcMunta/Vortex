@@ -10,7 +10,7 @@ type PresentationPanelProps = {
   focused: boolean;
   language: "es" | "en";
   onFocus: (panelId: string) => void;
-  onStartTransform: (panelId: string, mode: TransformMode, event: React.PointerEvent<HTMLDivElement>) => void;
+  onStartTransform: (panelId: string, mode: TransformMode, event: React.PointerEvent<HTMLElement>) => void;
   onNavigate: (panelId: string, delta: number) => void;
 };
 

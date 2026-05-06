@@ -22,6 +22,7 @@ profiles:
 
     agent:
       max_iters: 50
+      max_context_compactions: 64
       action_max_new_tokens: 768
       final_summary_max_new_tokens: 2048
       max_wall_time_s: 1800

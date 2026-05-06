@@ -49,3 +49,25 @@ test("local training actions are absent from composer and app shell", () => {
   expect(app).not.toContain("startTraining");
   expect(app).not.toContain("submitFeedback");
 });
+
+test("stack status is kept out of the top bar", () => {
+  const header = read("app/AppHeader.tsx");
+  const app = read("App.tsx");
+  expect(header).not.toContain("OperationalStatus");
+  expect(header).not.toContain("activeEngineLabel");
+  expect(app).not.toContain("TopBarStackStatus");
+  expect(app).not.toContain("Revisar Stack");
+});
+
+test("settings own theme and project permissions", () => {
+  const types = read("types.ts");
+  const shell = read("app/shellUtils.ts");
+  const settings = read("components/SettingsModal.tsx");
+  const chatInput = read("components/ChatInput.tsx");
+  expect(types).toContain("export type PermissionLevel = 'none' | 'read' | 'edit' | 'full'");
+  expect(types).toContain("export type ThemeMode = 'light' | 'dark' | 'system'");
+  expect(shell).toContain("permissionsFromProject");
+  expect(settings).toContain("Añadir workspace");
+  expect(settings).toContain("Tema de la app");
+  expect(chatInput).toContain("Gestionar proyectos");
+});

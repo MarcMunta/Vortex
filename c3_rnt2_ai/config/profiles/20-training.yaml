@@ -76,6 +76,8 @@ profiles:
       block_during_training: true
       auto_reload_adapter: true
       reload_interval_s: 30
+      lazy_model_load: true
+      model_boot_fallback_profile: rtx4080_16gb_boot_fallback_core
       maintenance_window_s: 10
     tools:
       web:
@@ -138,6 +140,7 @@ profiles:
     core:
       backend: hf
       hf_model: "Qwen/Qwen2.5-7B-Instruct"
+      hf_abort_if_quant_unavailable: true
       hf_use_latest_adapter: false
       hf_adapter_path: null
       hf_merge_adapter: false
@@ -155,6 +158,8 @@ profiles:
       block_during_training: true
       auto_reload_adapter: true
       reload_interval_s: 30
+      lazy_model_load: true
+      model_boot_fallback_profile: rtx4080_16gb_boot_fallback_core
     hf_train:
       enabled: false
       # Tip (Windows): to run HF self-train without double-loading/VRAM spikes, use WSL2 and set

@@ -450,7 +450,21 @@ class AgentTools:
             return ToolResult(ok=False, output=f"grep failed: {exc}")
 
     def edit_repo(self, file_path: Path, new_text: str) -> ToolResult:
-        return self.write_file(str(file_path), new_text)
+        raw = Path(file_path)
+        if raw.is_absolute() and not self._is_allowed_path(raw.resolve()):
+            safe_name = raw.name or "file.txt"
+            result = self.write_file(safe_name, new_text)
+        else:
+            result = self.write_file(str(file_path), new_text)
+        if result.ok:
+            try:
+                payload = json.loads(result.output)
+                path = str(payload.get("path") or "")
+                if path:
+                    return ToolResult(ok=True, output=path, meta=result.meta)
+            except Exception:
+                pass
+        return result
 
     def write_file(self, path: str, text: str, *, append: bool = False) -> ToolResult:
         denied = self._ensure_write_access()
@@ -478,6 +492,23 @@ class AgentTools:
             )
         except Exception as exc:
             return ToolResult(ok=False, output=f"write failed: {exc}")
+
+    def delete_file(self, path: str) -> ToolResult:
+        denied = self._ensure_write_access()
+        if denied is not None:
+            return denied
+        try:
+            target = self._resolve_safe_path(path)
+            if target is None:
+                return ToolResult(ok=False, output="path not allowed")
+            if not target.exists():
+                return ToolResult(ok=False, output="path missing")
+            if not target.is_file():
+                return ToolResult(ok=False, output="path is not a file")
+            target.unlink()
+            return ToolResult(ok=True, output=json.dumps({"path": str(target), "deleted": True}))
+        except Exception as exc:
+            return ToolResult(ok=False, output=f"delete failed: {exc}")
 
     def propose_patch(
         self,

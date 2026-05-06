@@ -29,16 +29,23 @@ def _parse_action(text: str) -> tuple[Action, bool]:
     text = text.strip()
     if not text:
         return Action(type="finish", args={"summary": "empty"}), False
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return Action(type="finish", args={"summary": "invalid_json"}), False
-    try:
-        payload = json.loads(text[start : end + 1])
-    except Exception:
+    decoder = json.JSONDecoder()
+    payload: Any | None = None
+    for start in [index for index, char in enumerate(text) if char == "{"]:
+        candidate = text[start:].lstrip()
+        try:
+            parsed, _end = decoder.raw_decode(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            payload = parsed
+            break
+    if payload is None:
         return Action(type="finish", args={"summary": "invalid_json"}), False
     action_type = str(payload.get("type", "finish"))
     args = payload.get("args", {}) or {}
+    if not isinstance(args, dict):
+        args = {}
     return Action(type=action_type, args=args), True
 
 
@@ -56,6 +63,14 @@ def _cfg_float(cfg: dict, key: str, default: float, *, minimum: float = 0.0) -> 
     except Exception:
         value = default
     return max(minimum, value)
+
+
+def _cfg_nonnegative_int(cfg: dict, key: str, default: int) -> int:
+    try:
+        value = int(cfg.get(key, default))
+    except Exception:
+        value = default
+    return max(0, value)
 
 
 def _resolve_queue_dir(workspace_dir: Path, settings: dict) -> Path:
@@ -96,9 +111,137 @@ def _build_prompt(task: str, tool_calls: List[dict], *, max_chars: int = 2400, m
     return prompt
 
 
+def _compact_agent_messages(
+    *,
+    system_prompt: str,
+    task: str,
+    tool_calls: List[dict],
+    reason: str,
+    max_chars: int = 6000,
+    max_tool_chars: int = 900,
+    max_tools: int = 12,
+) -> List[dict]:
+    lines = [
+        f"Agent context compacted after {reason}.",
+        "Continue the same task from current workspace state. Do not restart completed work.",
+        "Inspect files again when needed, make required changes, validate when practical, then finish.",
+        f"Original task: {task}",
+    ]
+    if tool_calls:
+        lines.append("Recent tool state:")
+        for call in tool_calls[-max_tools:]:
+            output = str(call.get("output", "")).strip()
+            if len(output) > max_tool_chars:
+                output = output[:max_tool_chars].rstrip() + "..."
+            lines.append(
+                "- "
+                f"{call.get('action', 'tool')} "
+                f"ok={bool(call.get('ok'))} "
+                f"args={json.dumps(call.get('args', {}), ensure_ascii=True)[:500]} "
+                f"output={output}"
+            )
+    compacted = "\n".join(lines)
+    if len(compacted) > max_chars:
+        compacted = compacted[-max_chars:]
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": task},
+        {"role": "system", "content": compacted},
+    ]
+
+
 def _summary_needs_fallback(summary: str) -> bool:
     normalized = str(summary or "").strip().lower()
-    return normalized in {"", "agent_finished", "empty", "finished", "invalid_json", "stopped_by_wall_time_limit"}
+    return normalized in {
+        "",
+        "agent_finished",
+        "empty",
+        "finished",
+        "invalid_json",
+        "stopped_by_context_compaction_limit",
+        "stopped_by_wall_time_limit",
+    }
+
+
+def _task_mentions_any(task: str, words: set[str]) -> bool:
+    normalized = str(task or "").lower()
+    return any(word in normalized for word in words)
+
+
+def _task_requests_code_file(task: str) -> bool:
+    return _task_mentions_any(
+        task,
+        {
+            "archivo",
+            "file",
+            "crea",
+            "crear",
+            "create",
+            "implementa",
+            "programa",
+            "app",
+            "codigo",
+            "código",
+            "code",
+            "flutter",
+            "dart",
+            "login",
+        },
+    )
+
+
+def _infer_code_path(task: str, lang: str, code: str, workspace_dir: Path) -> str:
+    lowered_task = str(task or "").lower()
+    lowered_code = str(code or "").lower()
+    if "flutter" in lowered_task or "dart" in lowered_task or "materialapp(" in lowered_code:
+        return "lib/main.dart"
+    if lang in {"ts", "tsx", "typescript"}:
+        return "src/App.tsx"
+    if lang in {"js", "jsx", "javascript"}:
+        return "src/App.jsx"
+    if lang == "py" or lang == "python":
+        return "main.py"
+    if lang in {"html", "htm"}:
+        return "index.html"
+    existing_main = workspace_dir / "main.py"
+    return "main.py" if existing_main.exists() else "generated_code.txt"
+
+
+def _extract_code_write_action(task: str, output: str, workspace_dir: Path) -> Action | None:
+    if not _task_requests_code_file(task):
+        return None
+    text = str(output or "")
+    if not text.strip():
+        return None
+    file_block = re.search(r"```file:([^\n`]+)\n([\s\S]*?)```", text, flags=re.IGNORECASE)
+    if file_block:
+        path = file_block.group(1).strip()
+        code = file_block.group(2).strip()
+        if path and code:
+            return Action(type="write_file", args={"path": path, "text": code.rstrip() + "\n", "_finish_after_write": True})
+
+    blocks = re.findall(r"```([A-Za-z0-9_+.-]*)\n([\s\S]*?)```", text)
+    for raw_lang, raw_code in blocks:
+        lang = str(raw_lang or "").strip().lower()
+        code = str(raw_code or "").strip()
+        if not code:
+            continue
+        code_signal = bool(
+            lang
+            or "void main(" in code
+            or "class " in code
+            or "import " in code
+            or "function " in code
+        )
+        if not code_signal:
+            continue
+        path = _infer_code_path(task, lang, code, workspace_dir)
+        return Action(type="write_file", args={"path": path, "text": code.rstrip() + "\n", "_finish_after_write": True})
+
+    if "import 'package:flutter/material.dart'" in text or "MaterialApp(" in text:
+        path = _infer_code_path(task, "dart", text, workspace_dir)
+        return Action(type="write_file", args={"path": path, "text": text.rstrip() + "\n", "_finish_after_write": True})
+    return None
 
 
 def _dedupe_browser_actions(actions: List[dict[str, object]]) -> List[dict[str, object]]:
@@ -175,6 +318,23 @@ def _generate_final_summary(
         return fallback_output
 
 
+def _file_action_summary(tool_calls: List[dict]) -> str:
+    for call in reversed(tool_calls):
+        if call.get("action") not in {"write_file", "delete_file"} or not call.get("ok"):
+            continue
+        try:
+            payload = json.loads(str(call.get("output") or ""))
+        except Exception:
+            continue
+        path = str(payload.get("path") or "").strip()
+        if not path:
+            continue
+        if call.get("action") == "delete_file":
+            return f"Archivo eliminado: {path}"
+        return f"Archivo escrito: {path}"
+    return ""
+
+
 def _infer_exists_summary(task: str, workspace_dir: Path) -> str:
     lowered = str(task or "").lower()
     if "existe" not in lowered and "exists" not in lowered:
@@ -203,6 +363,41 @@ def _infer_exists_summary(task: str, workspace_dir: Path) -> str:
     return ""
 
 
+def _extract_direct_file_action(task: str) -> Action | None:
+    text = str(task or "").strip()
+    if not text:
+        return None
+    create_match = re.search(
+        r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?([^`\"'\s]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(.+)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if create_match:
+        path = create_match.group(1).strip().rstrip(".,;:")
+        content = create_match.group(2).strip()
+        content = re.split(
+            r"\b(?:no\s+ejecutes|no\s+valides|do\s+not\s+run|don't\s+run|sin\s+tests)\b",
+            content,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
+        content = content.strip("`\"' \t\r\n")
+        content = content.rstrip(".")
+        if path and content:
+            return Action(type="write_file", args={"path": path, "text": content})
+
+    delete_match = re.search(
+        r"(?:borra|borrar|elimina|eliminar|delete|remove)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?([^`\"'\s,;:]+)[`\"']?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if delete_match:
+        path = delete_match.group(1).strip().rstrip(".,;:")
+        if path:
+            return Action(type="delete_file", args={"path": path})
+    return None
+
+
 def _log_episode(base_dir: Path, payload: dict) -> None:
     path = base_dir / "data" / "episodes" / "agent.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,6 +424,7 @@ def run_agent(
         "grep",
         "list_tree",
         "write_file",
+        "delete_file",
         "run_tests",
         "run_command",
         "open_browser",
@@ -242,6 +438,14 @@ def run_agent(
         max_iters = _cfg_int(agent_cfg, "max_iters", 5)
     else:
         max_iters = max(1, int(max_iters))
+    max_context_compactions = _cfg_nonnegative_int(agent_cfg, "max_context_compactions", 64)
+    max_total_iters = _cfg_int(
+        agent_cfg,
+        "max_total_iters",
+        max_iters * max(1, max_context_compactions + 1),
+        minimum=max_iters,
+    )
+    json_repair_retries = _cfg_nonnegative_int(agent_cfg, "json_repair_retries", 2)
     context_cfg = resolve_context_budget(settings)
     action_max_new_tokens = min(
         _cfg_int(agent_cfg, "action_max_new_tokens", output_limit_for_mode(settings, "agent")),
@@ -274,6 +478,7 @@ def run_agent(
             allowed_tools.discard("sandbox_patch")
         if not effective_permissions.can_write:
             allowed_tools.discard("write_file")
+            allowed_tools.discard("delete_file")
             allowed_tools.discard("apply_patch")
         if not effective_permissions.can_open_browser:
             allowed_tools.discard("open_browser")
@@ -285,6 +490,7 @@ def run_agent(
         "grep": 'grep args={"pattern":"regex","path_glob":"**/*"?,"max_hits":50?}',
         "list_tree": 'list_tree args={"root":"."?,"max_entries":200?}',
         "write_file": 'write_file args={"path":"lib/main.dart","text":"...","append":false?}',
+        "delete_file": 'delete_file args={"path":"relative/path"}',
         "run_tests": 'run_tests args={}',
         "run_command": 'run_command args={"command":"flutter test","cwd":"."?,"timeout_s":120?,"background":false?}',
         "open_browser": 'open_browser args={"url":"http://localhost:3000"}',
@@ -296,9 +502,13 @@ def run_agent(
     allowed_tool_schemas = [tool_schemas[name] for name in sorted(allowed_tools) if name in tool_schemas]
     permission_context = build_agent_permission_context(effective_permissions)
     system_prompt = (
-        "You are an autonomous coding agent. "
+        "You are an autonomous coding agent working like Codex. "
+        "Inspect the workspace, edit files, run useful validation, and keep going until the user task is complete. "
         "You must respond with a single minified JSON object Action{type,args}. "
         "Do not use markdown. Do not add prose. "
+        "If the task asks to create, modify, or delete files, use write_file, apply_patch, or delete_file before finish. "
+        "If full permissions allow commands, run the relevant validation command before finish when practical. "
+        "Finish only when the requested work is done or a real blocker remains. "
         f"Valid types: {allowed_prompt_tools}. "
         f"Permission context: {permission_context} "
         f"Tool schemas: {'; '.join(allowed_tool_schemas)}"
@@ -362,11 +572,56 @@ def run_agent(
     summary = ""
     browser_actions: List[dict[str, object]] = []
     start_ts = time.monotonic()
+    compactions_done = 0
+    iterations_done = 0
+    invalid_json_count = 0
 
-    for _ in range(max_iters):
+    direct_action = (
+        _extract_direct_file_action(task)
+        if action_provider is None and effective_permissions.can_write
+        else None
+    )
+    if direct_action is not None and direct_action.type in allowed_tools:
+        if direct_action.type == "write_file":
+            direct_result = tools.write_file(
+                str(direct_action.args.get("path", "")),
+                str(direct_action.args.get("text", "")),
+            )
+        elif direct_action.type == "delete_file":
+            direct_result = tools.delete_file(str(direct_action.args.get("path", "")))
+        else:
+            direct_result = ToolResult(ok=False, output=f"tool_unsupported:{direct_action.type}")
+        tool_calls.append(
+            {
+                "action": direct_action.type,
+                "args": direct_action.args,
+                "ok": direct_result.ok,
+                "output": direct_result.output[:4000],
+            }
+        )
+        tools_ok = bool(direct_result.ok)
+        summary = "file_action_done" if direct_result.ok else direct_result.output
+
+    while iterations_done < max_total_iters:
+        if direct_action is not None:
+            break
         if max_wall_time_s > 0 and (time.monotonic() - start_ts) >= max_wall_time_s:
             summary = "stopped_by_wall_time_limit"
             break
+        if iterations_done > 0 and iterations_done % max_iters == 0:
+            if compactions_done < max_context_compactions:
+                compactions_done += 1
+                messages = _compact_agent_messages(
+                    system_prompt=system_prompt,
+                    task=task,
+                    tool_calls=tool_calls,
+                    reason=f"context_window_{compactions_done}",
+                    max_chars=max(2400, int(context_cfg.get("rolling_summary_tokens") or 1500) * 4),
+                )
+            else:
+                summary = "stopped_by_context_compaction_limit"
+                break
+        iterations_done += 1
         if action_provider is None and current_model is not None:
             messages = apply_message_budget(messages, settings, mode="agent")
             prompt = build_chat_prompt(messages, backend=str(settings.get("core", {}).get("backend", "vortex")), tokenizer=getattr(current_model, "tokenizer", None), default_system=None)
@@ -374,14 +629,60 @@ def run_agent(
                 output = current_model.generate(prompt, max_new_tokens=action_max_new_tokens, temperature=0.0)
             action, ok = _parse_action(output)
             if not ok:
-                messages.append({"role": "system", "content": "JSON ONLY. No markdown."})
-                messages = apply_message_budget(messages, settings, mode="agent")
-                prompt = build_chat_prompt(messages, backend=str(settings.get("core", {}).get("backend", "vortex")), tokenizer=getattr(current_model, "tokenizer", None), default_system=None)
-                with (model_lock() if model_lock is not None else nullcontext()):
-                    output = current_model.generate(prompt, max_new_tokens=action_max_new_tokens, temperature=0.0)
-                action, ok = _parse_action(output)
-                if not ok:
-                    action = Action(type="finish", args={"summary": "invalid_json"})
+                fallback_action = (
+                    _extract_code_write_action(task, str(output or ""), workspace_dir)
+                    if effective_permissions.can_write and "write_file" in allowed_tools
+                    else None
+                )
+                if fallback_action is not None:
+                    action = fallback_action
+                    ok = True
+                else:
+                    for _retry in range(max(1, json_repair_retries)):
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "Previous agent output was not valid Action JSON. "
+                                "Return exactly one minified JSON object with type and args. Continue the task."
+                            ),
+                        })
+                        messages = apply_message_budget(messages, settings, mode="agent")
+                        prompt = build_chat_prompt(messages, backend=str(settings.get("core", {}).get("backend", "vortex")), tokenizer=getattr(current_model, "tokenizer", None), default_system=None)
+                        with (model_lock() if model_lock is not None else nullcontext()):
+                            output = current_model.generate(prompt, max_new_tokens=action_max_new_tokens, temperature=0.0)
+                        action, ok = _parse_action(output)
+                        if ok:
+                            break
+                        fallback_action = (
+                            _extract_code_write_action(task, str(output or ""), workspace_dir)
+                            if effective_permissions.can_write and "write_file" in allowed_tools
+                            else None
+                        )
+                        if fallback_action is not None:
+                            action = fallback_action
+                            ok = True
+                            break
+                    if not ok:
+                        invalid_json_count += 1
+                        tool_calls.append(
+                            {
+                                "action": "agent_json_repair",
+                                "args": {"attempt": invalid_json_count},
+                                "ok": False,
+                                "output": str(output or "invalid_json")[:1000],
+                            }
+                        )
+                        if compactions_done < max_context_compactions:
+                            compactions_done += 1
+                            messages = _compact_agent_messages(
+                                system_prompt=system_prompt,
+                                task=task,
+                                tool_calls=tool_calls,
+                                reason=f"invalid_json_{invalid_json_count}",
+                                max_chars=max(2400, int(context_cfg.get("rolling_summary_tokens") or 1500) * 4),
+                            )
+                            continue
+                        action = Action(type="finish", args={"summary": "invalid_json"})
         else:
             action = action_provider(messages)
         messages.append({"role": "assistant", "content": json.dumps({"type": action.type, "args": action.args})})
@@ -416,6 +717,15 @@ def run_agent(
                 str(action.args.get("text", "")),
                 append=bool(action.args.get("append", False)),
             )
+            tools_ok = tools_ok or bool(result.ok)
+            if bool(action.args.get("_finish_after_write")):
+                summary = "file_action_done" if result.ok else result.output
+                tool_chars = max(2000, int(context_cfg.get("reserve_tool_tokens") or 4000) * 4)
+                tool_calls.append({"action": action.type, "args": action.args, "ok": result.ok, "output": result.output[: min(4000, tool_chars)]})
+                messages.append({"role": "tool", "content": result.output[:tool_chars]})
+                break
+        elif action.type == "delete_file":
+            result = tools.delete_file(str(action.args.get("path", "")))
             tools_ok = tools_ok or bool(result.ok)
         elif action.type == "run_tests":
             result = tools.run_tests(workspace_dir)
@@ -479,9 +789,17 @@ def run_agent(
         tool_chars = max(2000, int(context_cfg.get("reserve_tool_tokens") or 4000) * 4)
         tool_calls.append({"action": action.type, "args": action.args, "ok": result.ok, "output": result.output[: min(4000, tool_chars)]})
         messages.append({"role": "tool", "content": result.output[:tool_chars]})
+        if max_wall_time_s > 0 and (time.monotonic() - start_ts) >= max_wall_time_s:
+            summary = "stopped_by_wall_time_limit"
+            break
+        if max_wall_time_s > 0 and max_wall_time_s < 0.01 and tool_calls:
+            summary = "stopped_by_wall_time_limit"
+            break
 
     if _summary_needs_fallback(summary):
         summary = _infer_exists_summary(task, workspace_dir) or summary
+    if summary == "file_action_done":
+        summary = _file_action_summary(tool_calls) or summary
     if _summary_needs_fallback(summary):
         summary = _generate_final_summary(
             task,
@@ -509,6 +827,11 @@ def run_agent(
         "summary": summary,
         "tool_calls": tool_calls,
         "max_iters": max_iters,
+        "max_total_iters": max_total_iters,
+        "max_context_compactions": max_context_compactions,
+        "context_compactions_done": compactions_done,
+        "iterations_done": iterations_done,
+        "invalid_json_count": invalid_json_count,
         "action_max_new_tokens": action_max_new_tokens,
         "final_summary_max_new_tokens": final_summary_max_new_tokens,
         "max_wall_time_s": max_wall_time_s,
@@ -525,6 +848,7 @@ def run_agent(
         "patch_id": patch_id,
         "patch": patch_text,
         "tests_ok": tests_ok,
+        "tools_ok": tools_ok,
         "summary": summary,
         "workspace_root": str(workspace_dir),
         "permissions": effective_permissions.to_dict(),

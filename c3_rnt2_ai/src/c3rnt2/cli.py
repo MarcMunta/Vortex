@@ -65,11 +65,12 @@ def doctor(deep: bool = False):
         "torch",
         "bitsandbytes",
         "faiss",
-        "triton",
         "fastapi",
         "zstandard",
         "lz4",
     ]
+    if not sys.platform.startswith("win"):
+        modules.append("triton")
     status = check_deps(modules)
     rprint({"deps": status})
 

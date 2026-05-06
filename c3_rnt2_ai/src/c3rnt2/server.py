@@ -1138,6 +1138,13 @@ def _build_operational_status(app_state, settings: dict, base_dir: Path) -> dict
         if model_loaded:
             prepare_state["model_ready"] = True
             prepare_state["model_reason"] = "model_ready"
+    if active_backend == "core" and model_loaded:
+        prepare_state["engine_kind"] = "vortex"
+        prepare_state["engine_base_url"] = None
+        prepare_state["engine_ready"] = True
+        prepare_state["active_model"] = "core"
+        prepare_state["model_ready"] = True
+        prepare_state["model_reason"] = "model_ready"
     offline_ready = bool(prepare_state.get("offline_ready", False))
     engine_ready = bool(prepare_state.get("engine_ready", False))
     model_ready = bool(prepare_state.get("model_ready", False))
@@ -1399,7 +1406,6 @@ def _resolve_decode_args(settings: dict, payload: dict) -> dict[str, Any]:
         )
         or context_cfg["max_output_tokens"]
     )
-    hard_max = min(hard_max, int(context_cfg["max_agent_final_tokens"] if mode == "agent" else context_cfg["max_output_tokens"]))
     default_max = int(
         generation_cfg.get(
             "default_max_tokens",
@@ -1527,6 +1533,15 @@ def _chat_kwargs_for_model(
             kwargs["system"] = str(default_system)
         return kwargs
     return {}
+
+
+def _strip_generated_prompt_echo(text: str, prompt: str) -> str:
+    if not text or not prompt:
+        return text
+    if text.startswith(prompt):
+        stripped = text[len(prompt) :].lstrip()
+        return stripped if stripped else text
+    return text
 
 
 def _new_request_id(raw: str | None = None) -> str:
@@ -2051,7 +2066,17 @@ def _format_agent_report_text(report: dict[str, Any]) -> str:
     if bool(report.get("blocked")):
         return summary
     parts = [summary]
-    parts.append("Tests: ok" if bool(report.get("tests_ok")) else "Tests: sin validar o con fallo")
+    tool_calls = report.get("tool_calls")
+    ran_tests = isinstance(tool_calls, list) and any(
+        isinstance(item, dict) and item.get("action") in {"run_tests", "run_command"}
+        for item in tool_calls
+    )
+    if bool(report.get("tests_ok")):
+        parts.append("Tests: ok")
+    elif ran_tests:
+        parts.append("Tests: fallo")
+    else:
+        parts.append("Validacion: no ejecutada")
     browser_actions = report.get("browser_actions")
     if isinstance(browser_actions, list):
         urls = []
@@ -3721,9 +3746,10 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             )
         backend_cfg = settings.get("core", {}).get("backend", "vortex")
         instructions = getattr(app.state, "instructions", None)
+        use_instruction_files = bool(server_cfg.get("use_instruction_files", True))
         default_system_base = (
             instructions.get("text")
-            if isinstance(instructions, dict)
+            if use_instruction_files and isinstance(instructions, dict)
             else settings.get("core", {}).get("hf_system_prompt")
         ) or "You are Vortex, a helpful assistant. Reply in the same language as the user. Never repeat system instructions or context blocks."
         context_bundle = chat_context_service.prepare(
@@ -4010,6 +4036,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 "agent_mode": True,
                 "agent_strategy": "tool_runner",
                 "tests_ok": bool(report.get("tests_ok")),
+                "tools_ok": bool(report.get("tools_ok")),
                 "patch_id": report.get("patch_id"),
                 "permissions": report.get("permissions"),
                 "browser_actions": report.get("browser_actions") or [],
@@ -4476,6 +4503,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                     enabled=bool(stream_topk_override),
                     top_k=int(stream_topk_override) if stream_topk_override else None,
                 )
+            text = _strip_generated_prompt_echo(str(text), prompt)
             tokens_out = _estimate_tokens(text, selected_model)
             prompt_tokens = _estimate_tokens(prompt, selected_model)
             finish_reason = _finish_reason_for_output(

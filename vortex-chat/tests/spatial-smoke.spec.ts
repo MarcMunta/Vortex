@@ -172,7 +172,7 @@ test("spatial workspace handles core multimodal flows", async ({ page }, testInf
         vault_path: body.vault_path || obsidianStatus.vault_path,
         resolved_vault_path: body.vault_path || obsidianStatus.resolved_vault_path,
       };
-      await json(route, { ok: true, ...obsidianStatus });
+      await json(route, { ...obsidianStatus, ok: true });
       return;
     }
 

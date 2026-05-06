@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import inspect
 import importlib.util
 import json
 import os
@@ -262,6 +263,7 @@ def _self_train_mock(settings: dict, base_dir: Path) -> dict[str, Any]:
             block.lava.enable_write = False
         except Exception:
             pass
+    model.train()
 
     trainable = [p for p in model.parameters() if getattr(p, "requires_grad", False)]
     optimizer = torch.optim.Adam(trainable, lr=lr)

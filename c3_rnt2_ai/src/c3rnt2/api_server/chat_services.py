@@ -87,7 +87,8 @@ class ChatContextService:
         obsidian: JsonDict = {"enabled": False, "available": False, "notes": []}
         try:
             context_cfg = self.settings.get("context", {}) or {}
-            obsidian_budget = int(context_cfg.get("obsidian_tokens") or 5000)
+            obsidian_budget_raw = context_cfg.get("obsidian_tokens")
+            obsidian_budget = 5000 if obsidian_budget_raw is None else int(obsidian_budget_raw)
             if self.obsidian_sync is not None and obsidian_budget > 0:
                 user_query = self.extract_query(messages, None)
                 obsidian = self.obsidian_sync.build_context(

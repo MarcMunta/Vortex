@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { vortexService } from "../services/vortexService";
-import { ChatSession, LocalAccount, UserSettings } from "../types";
+import { ChatSession, LocalAccount, UserSettings, WorkspaceProject } from "../types";
 import {
   accountSessionsKey,
   accountSettingsKey,
@@ -12,6 +12,8 @@ import {
   getInitialDarkMode,
   normalizeSession,
   normalizeSettings,
+  permissionsFromProject,
+  systemPrefersDark,
 } from "./shellUtils";
 
 type UseWorkspaceStateArgs = {
@@ -167,6 +169,19 @@ export const useWorkspaceState = ({ isLoading }: UseWorkspaceStateArgs) => {
   }, [currentAccountId]);
 
   useEffect(() => {
+    const applyTheme = () => {
+      if (settings.themeMode === "dark") setIsDarkMode(true);
+      else if (settings.themeMode === "light") setIsDarkMode(false);
+      else setIsDarkMode(systemPrefersDark());
+    };
+    applyTheme();
+    if (settings.themeMode !== "system") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    media.addEventListener("change", applyTheme);
+    return () => media.removeEventListener("change", applyTheme);
+  }, [settings.themeMode]);
+
+  useEffect(() => {
     document.documentElement.classList.toggle("dark", isDarkMode);
     document.body.classList.toggle("dark", isDarkMode);
     document.documentElement.style.colorScheme = isDarkMode ? "dark" : "light";
@@ -197,6 +212,45 @@ export const useWorkspaceState = ({ isLoading }: UseWorkspaceStateArgs) => {
       localStorage.setItem(accountSettingsKey(currentAccountId), JSON.stringify(settings));
     }
   }, [currentAccountId, isAccountHydrated, settings]);
+
+  useEffect(() => {
+    if (!isAccountHydrated || settings.projects.length === 0) return;
+    let disposed = false;
+    const timer = window.setTimeout(() => {
+      void vortexService.validateWorkspaceProjects(settings.projects).then((result) => {
+        if (disposed || !result.ok || result.invalidIds.length === 0) return;
+        const invalidIds = new Set(result.invalidIds);
+        setSettings((prev) => {
+          const now = Date.now();
+          const projects = prev.projects.filter((project) => {
+            if (!invalidIds.has(project.id)) return true;
+            const pathValue = String(project.projectPath || project.rootPath || "");
+            const looksAbsolute = /^[A-Za-z]:[\\/]/.test(pathValue) || pathValue.startsWith("/");
+            if (!looksAbsolute) return true;
+            const ageMs = now - Number(project.lastUsedAt || 0);
+            return ageMs < 120000;
+          });
+          if (projects.length === prev.projects.length) return prev;
+          const activeProjectId = invalidIds.has(prev.activeProjectId || "")
+            ? (projects[0]?.id || null)
+            : prev.activeProjectId;
+          const activeProject = projects.find((project) => project.id === activeProjectId) || null;
+          return {
+            ...prev,
+            projects,
+            activeProjectId,
+            permissions: activeProject ? permissionsFromProject(activeProject) : DEFAULT_SETTINGS.permissions,
+          };
+        });
+      }).catch(() => {
+        // Backend offline: keep local project list unchanged.
+      });
+    }, 700);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [isAccountHydrated, settings.activeProjectId, settings.projects]);
 
   useEffect(() => {
     if (!isAccountHydrated || !currentAccountId || isLoading) return;
@@ -237,8 +291,8 @@ export const useWorkspaceState = ({ isLoading }: UseWorkspaceStateArgs) => {
     setCurrentSessionId(freshSession.id);
   }, [settings.language]);
 
-  const handleNewChat = useCallback(() => {
-    const newSession = createEmptySession(settings.language);
+  const handleNewChat = useCallback((project?: WorkspaceProject | null) => {
+    const newSession = createEmptySession(settings.language, project || null);
     setSessions((prev) => [newSession, ...prev]);
     setCurrentSessionId(newSession.id);
   }, [settings.language]);

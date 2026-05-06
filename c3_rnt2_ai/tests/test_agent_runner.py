@@ -102,6 +102,65 @@ def test_agent_runner_uses_fresh_model_lock_context_per_generation(tmp_path: Pat
     assert lock_calls["count"] == 2
 
 
+def test_agent_runner_compacts_and_continues_after_invalid_json(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "max_iters": 2,
+            "json_repair_retries": 1,
+            "max_context_compactions": 2,
+        },
+    }
+
+    class DummyModel:
+        def __init__(self):
+            self.tokenizer = None
+            self.calls = 0
+
+        def generate(self, _prompt: str, **_kwargs):
+            self.calls += 1
+            if self.calls <= 2:
+                return "not-json"
+            return json.dumps({"type": "finish", "args": {"summary": "continued"}})
+
+    model = DummyModel()
+    report = run_agent("Continue after bad model output", settings, tmp_path, model=model)
+
+    assert report["ok"] is True
+    assert report["summary"] == "continued"
+    assert model.calls == 3
+    episode_path = tmp_path / "data" / "episodes" / "agent.jsonl"
+    episode = json.loads(episode_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert episode["invalid_json_count"] == 1
+    assert episode["context_compactions_done"] >= 1
+
+
+def test_agent_runner_continues_after_iteration_window_compaction(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {"web_allowlist": [], "max_context_compactions": 1},
+    }
+    calls = {"count": 0}
+
+    def provider(_messages):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return Action(type="read_file", args={"path": "missing.txt"})
+        return Action(type="finish", args={"summary": "done_after_compaction"})
+
+    report = run_agent("Keep going past first window", settings, tmp_path, max_iters=1, action_provider=provider)
+
+    assert report["ok"] is True
+    assert report["summary"] == "done_after_compaction"
+    assert calls["count"] == 2
+    episode_path = tmp_path / "data" / "episodes" / "agent.jsonl"
+    episode = json.loads(episode_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert episode["context_compactions_done"] == 1
+
+
 def test_agent_runner_reads_generation_limits_from_settings(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("C3RNT2_NO_NET", "1")
     settings = {
@@ -173,6 +232,7 @@ def test_agent_tools_safe_mode_blocks_commands_and_writes(tmp_path: Path) -> Non
     command_result = tools.run_command("python --version")
     apply_result = tools.apply_patch(tmp_path, "patch-1", approve=True)
     write_result = tools.write_file("README.md", "cambio")
+    delete_result = tools.delete_file("README.md")
 
     assert read_result.ok is True
     assert command_result.ok is False
@@ -181,6 +241,8 @@ def test_agent_tools_safe_mode_blocks_commands_and_writes(tmp_path: Path) -> Non
     assert "permission_denied:write" in apply_result.output
     assert write_result.ok is False
     assert "permission_denied:write" in write_result.output
+    assert delete_result.ok is False
+    assert "permission_denied:write" in delete_result.output
 
 
 def test_agent_tools_full_mode_allows_dev_command(tmp_path: Path) -> None:
@@ -216,14 +278,98 @@ def test_agent_tools_full_mode_writes_files_and_records_browser_actions(
     monkeypatch.setattr("c3rnt2.agent.tools.webbrowser.open", lambda *_args, **_kwargs: False)
 
     write_result = tools.write_file("lib/main.dart", "void main() {}\n")
+    delete_result = tools.delete_file("lib/main.dart")
     browser_result = tools.open_browser("http://localhost:4173")
 
     assert write_result.ok is True
-    assert (tmp_path / "lib" / "main.dart").read_text(encoding="utf-8") == "void main() {}\n"
+    assert delete_result.ok is True
+    assert not (tmp_path / "lib" / "main.dart").exists()
     assert browser_result.ok is True
     assert tools.browser_actions == [
         {"target": "http://localhost:4173", "opened": True, "backend_opened": False}
     ]
+
+
+def test_agent_runner_direct_file_create_and_delete(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "tools_enabled": ["write_file", "delete_file"],
+        },
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+
+    create_report = run_agent(
+        "Crea el archivo notes/demo.txt con texto hola-agente. No ejecutes tests.",
+        settings,
+        tmp_path,
+        max_iters=3,
+        permissions=permissions,
+    )
+    assert create_report["ok"] is True
+    assert create_report["tools_ok"] is True
+    assert (tmp_path / "notes" / "demo.txt").read_text(encoding="utf-8") == "hola-agente"
+
+    delete_report = run_agent(
+        "Borra el archivo notes/demo.txt.",
+        settings,
+        tmp_path,
+        max_iters=3,
+        permissions=permissions,
+    )
+    assert delete_report["ok"] is True
+    assert delete_report["tools_ok"] is True
+    assert not (tmp_path / "notes" / "demo.txt").exists()
+
+
+def test_agent_runner_writes_flutter_code_when_model_returns_markdown(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {"web_allowlist": [], "json_repair_retries": 0},
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+
+    class MarkdownCodeModel:
+        tokenizer = None
+
+        def generate(self, _prompt: str, **_kwargs):
+            return (
+                "```dart\n"
+                "import 'package:flutter/material.dart';\n"
+                "void main() => runApp(const MaterialApp(home: LoginPage()));\n"
+                "class LoginPage extends StatelessWidget {\n"
+                "  const LoginPage({super.key});\n"
+                "  @override\n"
+                "  Widget build(BuildContext context) => const Scaffold(body: Text('Login'));\n"
+                "}\n"
+                "```"
+            )
+
+    report = run_agent(
+        "Crea un login basico en Flutter.",
+        settings,
+        tmp_path,
+        max_iters=3,
+        model=MarkdownCodeModel(),
+        permissions=permissions,
+    )
+
+    main_path = tmp_path / "lib" / "main.dart"
+    assert report["ok"] is True
+    assert report["tools_ok"] is True
+    assert main_path.exists()
+    assert "LoginPage" in main_path.read_text(encoding="utf-8")
+    assert str(main_path) in report["summary"]
+    assert report["tool_calls"][0]["action"] == "write_file"
 
 
 def test_agent_runner_infers_exists_summary_from_workspace(tmp_path: Path) -> None:

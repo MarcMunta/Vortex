@@ -32,7 +32,15 @@ _TORCH_TESTS = {
     "test_paged_lm_head.py",
     "test_router_training.py",
     "test_hf_weighted_sampling.py",
+    "test_hf_qlora_auto_tune.py",
+    "test_hf_qlora_dataset.py",
+    "test_hf_qlora_eval.py",
+    "test_gpu_decompress_stats.py",
+    "test_kv_compression_mock.py",
+    "test_kv_quant_integration.py",
     "test_step_block.py",
+    "test_train_once_gating.py",
+    "test_trainer_sample_weights.py",
     "test_trigger_skip.py",
 }
 

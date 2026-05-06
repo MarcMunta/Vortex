@@ -39,6 +39,9 @@ if (-not $dockerCmd) {
 }
 
 $env:VORTEX_API_PROFILE = $ApiProfile
+if (-not $env:C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT) {
+  $env:C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT = Split-Path -Parent $root
+}
 
 $spatialModelPath = Join-Path $root "vortex-chat\public\models\hand_landmarker.task"
 if (-not (Test-Path -LiteralPath $spatialModelPath)) {

@@ -65,6 +65,17 @@ def sanitize_text(
     cleaned = " ".join(" ".join(lines).split())
     if max_chars and len(cleaned) > max_chars:
         cleaned = cleaned[:max_chars]
+    if max_instruction_density > 0 and cleaned:
+        instruction_hits = len(
+            re.findall(
+                r"\b(ignore|previous instructions|system prompt|you are a system|developer message|act as)\b",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+        )
+        density = instruction_hits / max(1, len(cleaned.split()))
+        if density > max_instruction_density:
+            return ""
     return cleaned.strip()
 
 

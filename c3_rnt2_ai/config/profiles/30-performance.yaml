@@ -187,9 +187,16 @@ profiles:
   rtx4080_16gb_safe_windows_core:
     # Windows-safe RTX 4080 16GB (core backend).
     base_profile: rtx4080_16gb_safe_vortex
+    agent:
+      web_allowlist: []
     tools:
       web:
         enabled: false
+        allow_domains: []
+    security:
+      web:
+        strict: true
+        allowlist_domains: []
     continuous:
       ingest_web: false
     autopilot:
@@ -208,6 +215,83 @@ profiles:
       max_regression_pct: 15
       max_vram_peak_mb: 15500
       min_tokens_per_sec: 0
+  rtx4080_16gb_boot_fallback_core:
+    # Small local fallback used only when the requested HF model cannot boot.
+    # Keeps the API/UI responsive instead of hanging on Windows memory pressure.
+    base_profile: dev_small
+    core:
+      backend: vortex
+      precision: bf16
+      compile: false
+      compile_step: false
+      compile_local_mixer_step: false
+      hf_system_prompt: "You are Vortex fallback. Reply briefly in the user's language."
+    agent:
+      web_allowlist: []
+    tools:
+      web:
+        enabled: false
+        allow_domains: []
+    security:
+      web:
+        strict: true
+        allowlist_domains: []
+    continuous:
+      ingest_web: false
+    autolearn:
+      enabled: false
+      web_ingest: false
+      url_discovery: false
+      allow_domains: []
+    rag:
+      enabled: false
+      top_k: 0
+      max_chars: 0
+    obsidian:
+      enabled: false
+      top_k: 0
+    multimodal_context:
+      enabled: false
+      max_chars: 1
+      include_memory: false
+      include_spatial_selection: false
+      include_voice: false
+      include_gesture: false
+    context:
+      enabled: true
+      model_max_context_tokens: 512
+      default_chat_context_tokens: 512
+      default_agent_context_tokens: 512
+      max_input_tokens: 384
+      max_output_tokens: 64
+      max_agent_action_tokens: 64
+      max_agent_final_tokens: 64
+      reserve_output_tokens: 64
+      reserve_system_tokens: 64
+      reserve_tool_tokens: 0
+      compression_enabled: false
+      summarize_old_messages: false
+      rolling_summary_tokens: 0
+      recent_messages_tokens: 256
+      rag_tokens: 0
+      obsidian_tokens: 0
+      repo_context_tokens: 0
+    server:
+      use_instruction_files: false
+    autopilot:
+      enabled: false
+      autopatch_enabled: false
+    experts:
+      enabled: false
+      max_loaded: 0
+      default: null
+      paths: {}
+      router:
+        mode: hybrid
+        keyword_map: {}
+    decode:
+      max_new_tokens: 64
+      hard_max_new_tokens: 128
   rtx4080_16gb_safe_windows_llama_cpp:
     # Windows-safe RTX 4080 16GB (llama.cpp / GGUF).
     base_profile: rtx4080_16gb_safe_windows_core

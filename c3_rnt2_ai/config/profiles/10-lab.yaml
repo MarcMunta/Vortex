@@ -18,7 +18,7 @@ profiles:
     decode:
       max_new_tokens: 256
     agent:
-      tools_enabled: ["read_file", "grep", "list_tree", "run_tests", "propose_patch", "sandbox_patch", "summarize_diff"]
+      tools_enabled: ["read_file", "grep", "list_tree", "write_file", "delete_file", "run_tests", "run_command", "open_browser", "propose_patch", "sandbox_patch", "apply_patch", "summarize_diff"]
     tools:
       web:
         enabled: false
@@ -224,12 +224,13 @@ profiles:
       hf_local_files_only: true
       hf_device_map: auto
       hf_max_memory:
-        0: "12GiB"
-        cpu: "48GiB"
+        0: "15GiB"
+        cpu: "32GiB"
       hf_offload_folder: "data/hf_offload"
       hf_use_safetensors: true
       hf_load_in_4bit: true
       hf_load_in_8bit: false
+      hf_abort_if_quant_unavailable: true
       hf_device: cuda
       hf_attn_implementation: sdpa
       hf_system_prompt: "You are Vortex, a fully local Qwen Coder programming assistant for code, Flutter, Dart, and robust app architecture."
@@ -245,7 +246,7 @@ profiles:
       vram_ceil_tokens: 4096
       vram_safety_margin_mb: 768
     docker:
-      enabled: true
+      enabled: false
       compose_path: "docker-compose.yml"
       runtime_service:
       api_service: "vortex-api"
@@ -256,26 +257,28 @@ profiles:
       reload_interval_s: 15
       allow_parallel_runtime_training: false
       lazy_model_load: true
+      model_boot_fallback_profile: rtx4080_16gb_boot_fallback_core
       ctx_overflow_policy: tail_keep_last_n
+      use_instruction_files: false
     context:
       enabled: true
       model_max_context_tokens: 32768
-      default_chat_context_tokens: 16384
-      default_agent_context_tokens: 24576
-      max_input_tokens: 24576
-      max_output_tokens: 2048
-      max_agent_action_tokens: 2048
-      max_agent_final_tokens: 4096
-      reserve_output_tokens: 2048
-      reserve_system_tokens: 1500
-      reserve_tool_tokens: 4000
+      default_chat_context_tokens: 2048
+      default_agent_context_tokens: 4096
+      max_input_tokens: 4096
+      max_output_tokens: 512
+      max_agent_action_tokens: 512
+      max_agent_final_tokens: 768
+      reserve_output_tokens: 512
+      reserve_system_tokens: 256
+      reserve_tool_tokens: 512
       compression_enabled: true
       summarize_old_messages: true
-      rolling_summary_tokens: 2500
-      recent_messages_tokens: 6000
-      rag_tokens: 6000
-      obsidian_tokens: 5000
-      repo_context_tokens: 5000
+      rolling_summary_tokens: 512
+      recent_messages_tokens: 1024
+      rag_tokens: 0
+      obsidian_tokens: 0
+      repo_context_tokens: 0
     cloud_training:
       provider: gcp
       enabled: false
@@ -287,14 +290,29 @@ profiles:
       service_account_env: "GOOGLE_APPLICATION_CREDENTIALS"
     agent:
       web_allowlist: []
-      max_iters: 50
-      action_max_new_tokens: 2048
-      final_summary_max_new_tokens: 4096
-      max_wall_time_s: 1800
+      max_iters: 8
+      max_context_compactions: 64
+      action_max_new_tokens: 512
+      final_summary_max_new_tokens: 768
+      max_wall_time_s: 300
     tools:
       web:
         enabled: false
         allow_domains: []
+    rag:
+      enabled: false
+      top_k: 0
+      max_chars: 0
+    obsidian:
+      enabled: false
+      top_k: 0
+    multimodal_context:
+      enabled: false
+      max_chars: 1
+      include_memory: false
+      include_spatial_selection: false
+      include_voice: false
+      include_gesture: false
     security:
       web:
         strict: true
@@ -330,18 +348,18 @@ profiles:
       require_ollama: false
       require_external_engine:
       require_local_base_url: false
-      require_docker: true
-      disable_fallbacks: true
+      require_docker: false
+      disable_fallbacks: false
       approved_training_sources_only: false
       min_host_ram_free_mb: 4096
     decode:
-      max_new_tokens: 2048
-      default_code_max_new_tokens: 3072
-      hard_max_new_tokens: 4096
+      max_new_tokens: 512
+      default_code_max_new_tokens: 1024
+      hard_max_new_tokens: 2048
     generation:
-      default_max_tokens: 2048
-      code_max_tokens: 3072
-      hard_max_tokens: 4096
+      default_max_tokens: 512
+      code_max_tokens: 1024
+      hard_max_tokens: 2048
       allow_long_code_outputs: true
   rtx4080_16gb_programming_gemma4_local:
     # Canonical daily-use profile: fully-local Gemma 4 E4B HF runtime.
@@ -395,6 +413,7 @@ profiles:
     agent:
       web_allowlist: []
       max_iters: 50
+      max_context_compactions: 64
       action_max_new_tokens: 768
       final_summary_max_new_tokens: 2048
       max_wall_time_s: 1800
@@ -456,6 +475,7 @@ profiles:
       hf_cache_dir: "data/models/hf-cache"
     agent:
       max_iters: 8
+      max_context_compactions: 64
       action_max_new_tokens: 2048
       final_summary_max_new_tokens: 4096
     rag:

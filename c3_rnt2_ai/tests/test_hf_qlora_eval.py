@@ -183,3 +183,28 @@ def test_resolve_lora_target_modules_filters_out_multimodal_wrappers() -> None:
         "model.language_model.layers.0.self_attn.q_proj",
         "model.language_model.layers.0.self_attn.k_proj",
     ]
+
+
+def test_resolve_hf_model_source_uses_local_snapshot_when_offline(tmp_path: Path) -> None:
+    snapshot = tmp_path / "hf-cache" / "models--Qwen--Qwen2.5-Coder-7B-Instruct" / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    refs = snapshot.parent.parent / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("abc123", encoding="utf-8")
+
+    model_source, cache_dir, local_files_only = hf_qlora._resolve_hf_model_source(
+        "Qwen/Qwen2.5-Coder-7B-Instruct",
+        {
+            "core": {
+                "hf_cache_dir": "hf-cache",
+                "hf_local_files_only": True,
+            },
+            "hf_train": {},
+        },
+        tmp_path,
+    )
+
+    assert model_source == str(snapshot)
+    assert cache_dir == tmp_path / "hf-cache"
+    assert local_files_only is True

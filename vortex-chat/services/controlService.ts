@@ -10,9 +10,10 @@ import { ControlContractClient } from "../contracts.generated";
 import { parseEventData, requestJson } from "./apiClient";
 
 const resolveBaseUrl = (): string => {
-  const raw = (import.meta.env.VITE_CONTROL_BASE_URL || "").trim();
+  const env = ((import.meta as any).env || {}) as Record<string, string | undefined>;
+  const raw = (env.VITE_CONTROL_BASE_URL || "").trim();
   if (raw) return raw.replace(/\/+$/, "");
-  const port = (import.meta.env.VITE_CONTROL_PORT || "8765").trim() || "8765";
+  const port = (env.VITE_CONTROL_PORT || "8765").trim() || "8765";
   const host = typeof window !== "undefined" ? (window.location.hostname || "127.0.0.1") : "127.0.0.1";
   return `http://${host}:${port}`;
 };

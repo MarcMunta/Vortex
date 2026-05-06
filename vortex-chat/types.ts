@@ -8,8 +8,9 @@ export type ViewType = 'chat' | 'spatial';
 export type AppMode = 'ask' | 'agent';
 export type FontSize = 'small' | 'medium' | 'large';
 export type Language = 'es' | 'en';
-export type PermissionLevel = 'none' | 'full';
+export type PermissionLevel = 'none' | 'read' | 'edit' | 'full';
 export type PermissionActionMode = 'safe' | 'full';
+export type ThemeMode = 'light' | 'dark' | 'system';
 export type SpatialPanelKind = 'note' | 'presentation' | 'browser' | 'image' | 'obsidian' | 'sketch' | 'pdf';
 
 export interface WorkspacePermissions {
@@ -17,6 +18,16 @@ export interface WorkspacePermissions {
   workspaceRoot: string;
   projectPath: string;
   actionMode: PermissionActionMode;
+}
+
+export interface WorkspaceProject {
+  id: string;
+  name: string;
+  rootPath: string;
+  projectPath: string;
+  permissionLevel: PermissionLevel;
+  actionMode: PermissionActionMode;
+  lastUsedAt: number;
 }
 
 export interface BrowserAction {
@@ -193,6 +204,8 @@ export interface ChatSession {
   title: string;
   messages: Message[];
   updatedAt: number;
+  projectId?: string | null;
+  projectName?: string | null;
 }
 
 export interface UserSettings {
@@ -200,7 +213,10 @@ export interface UserSettings {
   codeTheme: 'dark' | 'light' | 'match-app';
   fontSize: FontSize;
   language: Language;
+  themeMode: ThemeMode;
   permissions: WorkspacePermissions;
+  projects: WorkspaceProject[];
+  activeProjectId: string | null;
 }
 
 export interface LogEntry {

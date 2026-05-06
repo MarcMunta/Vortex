@@ -36,5 +36,8 @@ def format_chat_sample(
             return tokenizer.apply_chat_template(full_messages, tokenize=False, add_generation_prompt=False)
         except TypeError:
             return tokenizer.apply_chat_template(full_messages, add_generation_prompt=False)
+    if backend == "vortex":
+        user_text = prompt or "\n".join(str(item.get("content") or "") for item in messages if str(item.get("role") or "").lower() == "user")
+        return f"### User\n{user_text.strip()}\n\n### Assistant\n{response}".strip()
     prompt_text = build_chat_prompt(messages, backend=backend, tokenizer=tokenizer, default_system=default_system)
     return f"{prompt_text}{response}".strip()

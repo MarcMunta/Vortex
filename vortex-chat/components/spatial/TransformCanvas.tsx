@@ -155,7 +155,7 @@ const TransformCanvas: React.FC<TransformCanvasProps> = ({
     };
   }, [onCommitPanelUpdate, onPreviewPanelUpdate, onRegionChange]);
 
-  const beginTransform = (panelId: string, mode: TransformMode, event: React.PointerEvent<HTMLDivElement>) => {
+  const beginTransform = (panelId: string, mode: TransformMode, event: React.PointerEvent<HTMLElement>) => {
     const panel = sessionRef.current.panels.find((item) => item.id === panelId);
     if (!panel) return;
     const point = getStagePoint(event.clientX, event.clientY);

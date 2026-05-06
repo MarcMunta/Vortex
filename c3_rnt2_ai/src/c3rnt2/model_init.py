@@ -22,13 +22,15 @@ def resolve_cache_dir(raw: str | None = None) -> Path:
     return Path(candidate).expanduser().resolve()
 
 
-def _repo_cache_dir(cache_dir: Path, model_id: str) -> Path:
+def _repo_cache_dirs(cache_dir: Path, model_id: str) -> list[Path]:
     repo_key = model_id.replace("/", "--")
-    return cache_dir / "hub" / f"models--{repo_key}"
+    repo_name = f"models--{repo_key}"
+    return [cache_dir / "hub" / repo_name, cache_dir / repo_name]
 
 
 def model_cache_status(model_id: str, cache_dir: Path) -> dict[str, Any]:
-    repo_dir = _repo_cache_dir(cache_dir, model_id)
+    candidate_dirs = _repo_cache_dirs(cache_dir, model_id)
+    repo_dir = next((path for path in candidate_dirs if path.exists()), candidate_dirs[0])
     snapshots_dir = repo_dir / "snapshots"
     snapshot_paths = []
     if snapshots_dir.exists():
@@ -41,6 +43,7 @@ def model_cache_status(model_id: str, cache_dir: Path) -> dict[str, Any]:
         "model_id": model_id,
         "cache_dir": str(cache_dir),
         "repo_dir": str(repo_dir),
+        "candidate_repo_dirs": [str(path) for path in candidate_dirs],
         "cached": bool(snapshot_paths),
         "snapshot_count": len(snapshot_paths),
         "snapshots": [path.name for path in snapshot_paths],

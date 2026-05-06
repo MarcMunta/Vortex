@@ -2,7 +2,7 @@ import React from "react";
 import { Layers3, MessageSquare, PanelLeft, Zap } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import VortexLogo from "../components/VortexLogo";
-import { Language, OperationalStatus, ViewType } from "../types";
+import { Language, ViewType } from "../types";
 
 type AppHeaderProps = {
   activeView: ViewType;
@@ -13,7 +13,6 @@ type AppHeaderProps = {
   onSelectView: (view: ViewType) => void;
   onSetLanguage: (language: Language) => void;
   onShowSidebar: () => void;
-  operationalStatus: OperationalStatus | null;
   springConfig: {
     type: "spring";
     damping: number;
@@ -31,11 +30,8 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   onSelectView,
   onSetLanguage,
   onShowSidebar,
-  operationalStatus,
   springConfig,
 }) => {
-  const activeEngineLabel = (operationalStatus?.engine_kind || "local").toUpperCase();
-
   return (
     <motion.header
       initial={false}
@@ -64,9 +60,6 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
           <VortexLogo size={34} alt="Vortex" />
           <div className="flex items-center gap-3">
             <h1 className="text-[17px] font-black leading-none tracking-tight">Vortex</h1>
-            <span className="rounded-full border border-border/60 bg-muted/25 px-3 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-primary">
-              {activeEngineLabel}
-            </span>
           </div>
         </div>
       </div>

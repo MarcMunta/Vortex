@@ -843,6 +843,15 @@ def _try_load(cfg: HFConfig) -> HFModel:
     return HFModel(cfg)
 
 
+def _is_windows_commit_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "os error 1455" in text
+        or "paging file is too small" in text
+        or "archivo de paginaci" in text
+    )
+
+
 def _resolve_hf_cache_settings(core: dict) -> tuple[Path, bool]:
     cache_dir = resolve_cache_dir(core.get("hf_cache_dir") or str(Path(".") / "data" / "models" / "hf-cache"))
     try:
@@ -1059,6 +1068,11 @@ def load_hf_model(settings: dict) -> HFModel:
             quant_available = True
         except Exception:
             quant_available = False
+    if quant_requested and not quant_available and bool(core.get("hf_abort_if_quant_unavailable", False)):
+        raise RuntimeError(
+            "hf quantization unavailable: bitsandbytes is required for "
+            "hf_load_in_4bit/hf_load_in_8bit on this profile"
+        )
 
     attempts: list[HFConfig] = []
     model_loader = str(core.get("hf_model_loader") or "causal_lm").strip().lower()
@@ -1077,8 +1091,12 @@ def load_hf_model(settings: dict) -> HFModel:
         )
     model_source = str(local_snapshot) if local_snapshot is not None else str(model_name)
     use_cache_lookup = local_snapshot is None
+    use_explicit_cache_lookup = use_cache_lookup and (
+        bool(core.get("hf_cache_dir"))
+        or bool(offline_forced)
+    )
     base_repo_kwargs: dict[str, Any] = {}
-    if use_cache_lookup:
+    if use_explicit_cache_lookup:
         base_repo_kwargs["cache_dir"] = str(cache_dir)
         if offline_forced:
             base_repo_kwargs["local_files_only"] = True
@@ -1114,9 +1132,9 @@ def load_hf_model(settings: dict) -> HFModel:
             offload_folder_value,
             use_safetensors,
         )
-        if use_cache_lookup:
+        if use_explicit_cache_lookup:
             load_kwargs["cache_dir"] = str(cache_dir)
-        if use_local_files_only and use_cache_lookup:
+        if use_local_files_only and use_explicit_cache_lookup:
             load_kwargs["local_files_only"] = True
         return HFConfig(
             model_name=model_source,
@@ -1242,6 +1260,8 @@ def load_hf_model(settings: dict) -> HFModel:
             break
         except Exception as exc:
             last_exc = exc
+            if sys.platform.startswith("win") and _is_windows_commit_error(exc):
+                break
             continue
     if model is None:
         raise RuntimeError(f"hf model load failed: {last_exc}")

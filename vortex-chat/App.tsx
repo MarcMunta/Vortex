@@ -7,12 +7,13 @@ import type { SettingsTab } from "./components/SettingsModal";
 import VirtualizedMessageList from "./components/VirtualizedMessageList";
 import { BrowserAction, ChatSession, Message, Role, ViewType, LogEntry, AppMode, Source } from "./types";
 import { isLikelyTruncatedCode, vortexService } from "./services/vortexService";
+import type { StreamChunk } from "./services/vortexService";
 import { translations } from "./translations";
 import { AppHeader } from "./app/AppHeader";
 import { ChatHomeState } from "./app/ChatHomeState";
 import { useSystemStatus } from "./app/useSystemStatus";
 import { useWorkspaceState } from "./app/useWorkspaceState";
-import { createEmptySession, repairMojibakeText, VIEW_INDEX } from "./app/shellUtils";
+import { createEmptySession, permissionsFromProject, repairMojibakeText, VIEW_INDEX } from "./app/shellUtils";
 
 const CommandPalette = lazy(() => import("./components/CommandPalette"));
 const SettingsModal = lazy(() => import("./components/SettingsModal"));
@@ -59,7 +60,6 @@ const App: React.FC = () => {
     handleSelectAccount: selectAccount,
     isDarkMode,
     setCurrentSessionId,
-    setIsDarkMode,
     setSessions,
     setSettings,
     sessions,
@@ -70,6 +70,7 @@ const App: React.FC = () => {
 
   const inactivityTimerRef = useRef<number | null>(null);
   const isAutoScrollingRef = useRef(false);
+  const shouldStickToBottomRef = useRef(true);
   const lastScrollYRef = useRef(0);
   const abortControllerRef = useRef(false);
   const mainScrollRef = useRef<HTMLDivElement>(null);
@@ -78,6 +79,14 @@ const App: React.FC = () => {
   const { scrollY } = useScroll({ container: mainScrollRef });
   const t = translations[settings.language];
   const hasMessages = Boolean(currentSession?.messages?.length);
+  const activeProject = useMemo(
+    () => settings.projects.find((project) => project.id === settings.activeProjectId) || null,
+    [settings.activeProjectId, settings.projects],
+  );
+  const scopedSessions = useMemo(() => {
+    const activeProjectId = activeProject?.id || null;
+    return sessions.filter((session) => (session.projectId || null) === activeProjectId);
+  }, [activeProject?.id, sessions]);
   const internetAllowlist = controlStatus?.internet?.allowlist || [];
   const stackReady = Boolean(operationalStatus?.ok);
   const rawStatusReason = operationalStatus?.chat_block_reason
@@ -90,27 +99,15 @@ const App: React.FC = () => {
   const chatMode = operationalStatus?.chat_mode || (chatReady ? "primary" : "unavailable");
   const canUseInternet = Boolean(controlStatus?.ok);
   const degradedChatAvailable = !stackReady && chatReady;
-  const sendDisabledReason = chatReady
+  const baseSendDisabledReason = chatReady
     ? undefined
-    : rawStatusReason || (settings.language === "es" ? "Stack local no listo." : "Local stack not ready.");
-  const permissionsActive = settings.permissions.level === "full";
-  const permissionScope = settings.permissions.projectPath || settings.permissions.workspaceRoot;
-  const permissionScopeLabel = permissionScope
-    ? permissionScope.split(/[\\/]/).filter(Boolean).pop() || permissionScope
-    : null;
+    : rawStatusReason || (settings.language === "es" ? "Chat local no listo." : "Local chat not ready.");
+  const sendDisabledReason = baseSendDisabledReason
+    || (mode === "agent" && !activeProject
+      ? (settings.language === "es" ? "Selecciona un proyecto para usar agente." : "Select a project to use agent mode.")
+      : undefined);
   const activeModelLabel = operationalStatus?.active_model || (settings.language === "es" ? "Modelo base pendiente" : "Base model pending");
   const activeEngineLabel = (operationalStatus?.engine_kind || "local").toUpperCase();
-  const permissionChips = permissionsActive
-    ? [
-        settings.language === "es" ? "Permisos: todo" : "Permissions: full",
-        settings.permissions.actionMode === "full"
-          ? (settings.language === "es" ? "Acciones completas" : "Full actions")
-          : (settings.language === "es" ? "Solo lectura operativa" : "Read-only ops"),
-        permissionScopeLabel
-          ? `Scope: ${permissionScopeLabel}`
-          : (settings.language === "es" ? "Scope: sin carpeta" : "Scope: no folder"),
-      ]
-    : [settings.language === "es" ? "Permisos: nada" : "Permissions: none"];
   const readyLabel = stackReady
     ? (settings.language === "es" ? "Listo" : "Ready")
     : degradedChatAvailable || chatMode === "fallback_degraded"
@@ -122,10 +119,10 @@ const App: React.FC = () => {
     </div>
   );
   const statusHeadline = stackReady
-    ? (settings.language === "es" ? "Stack local listo para trabajar." : "Local stack is ready to work.")
+    ? (settings.language === "es" ? "Chat local listo." : "Local chat ready.")
     : degradedChatAvailable || chatMode === "fallback_degraded"
       ? (settings.language === "es" ? "Chat degradado disponible." : "Degraded chat is available.")
-      : (settings.language === "es" ? "Revisa el estado antes de empezar." : "Review the stack before you start.");
+      : (settings.language === "es" ? "Chat local pendiente." : "Local chat pending.");
   const statusBody = stackReady
     ? (settings.language === "es"
       ? "Chat y agente listos. Memoria Obsidian disponible si esta configurada."
@@ -168,7 +165,7 @@ const App: React.FC = () => {
         "--ring": isDarkMode ? "203 100% 58%" : "203 92% 56%",
         "--ambient-core": isDarkMode ? "203 100% 58%" : "203 92% 56%",
         "--ambient-accent": isDarkMode ? "189 100% 68%" : "190 94% 66%",
-      }) as React.CSSProperties;
+      }) as unknown as React.CSSProperties;
 
   const activeThought = useMemo(() => {
     if (!activeThoughtMessageId || !currentSessionId) return undefined;
@@ -180,6 +177,20 @@ const App: React.FC = () => {
     const lastMessage = currentSession.messages[currentSession.messages.length - 1];
     return lastMessage?.id === activeThoughtMessageId;
   }, [activeThoughtMessageId, currentSession, isLoading]);
+
+  useEffect(() => {
+    if (sessions.length === 0) return;
+    const expectedProjectId = activeProject?.id || null;
+    if (currentSession && (currentSession.projectId || null) === expectedProjectId) return;
+    const candidate = [...scopedSessions].sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    if (candidate) {
+      setCurrentSessionId(candidate.id);
+      return;
+    }
+    const freshSession = createEmptySession(settings.language, activeProject);
+    setSessions((prev) => [freshSession, ...prev]);
+    setCurrentSessionId(freshSession.id);
+  }, [activeProject, currentSession, scopedSessions, sessions.length, setCurrentSessionId, setSessions, settings.language]);
 
   const openSettings = useCallback((tab: SettingsTab = "general") => {
     setSettingsInitialTab(tab);
@@ -295,8 +306,9 @@ const App: React.FC = () => {
     if (activeView === "chat" && currentSession?.messages.length) {
       const container = mainScrollRef.current;
       if (!container) return;
-      const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 400;
-      if (isAtBottom || isLoading) {
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      const isAtBottom = distanceFromBottom <= 120;
+      if (shouldStickToBottomRef.current || isAtBottom) {
         isAutoScrollingRef.current = true;
         container.scrollTo({ top: container.scrollHeight, behavior: isLoading ? "auto" : "smooth" });
         const timer = window.setTimeout(() => {
@@ -306,6 +318,26 @@ const App: React.FC = () => {
       }
     }
   }, [activeView, currentSession, isLoading, isSearching, sessions]);
+
+  useEffect(() => {
+    const container = mainScrollRef.current;
+    if (!container) return;
+    const handleScroll = () => {
+      if (isAutoScrollingRef.current) return;
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      shouldStickToBottomRef.current = distanceFromBottom <= 160;
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) shouldStickToBottomRef.current = false;
+    };
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    container.addEventListener("wheel", handleWheel, { passive: true });
+    handleScroll();
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      container.removeEventListener("wheel", handleWheel);
+    };
+  }, []);
 
   useMotionValueEvent(scrollY, "change", (latest) => {
     if (activeModificationFiles) return;
@@ -379,22 +411,41 @@ const App: React.FC = () => {
     setHeaderVisible(true);
   }, []);
 
+  const handleSelectProject = useCallback((projectId: string | null) => {
+    const project = settings.projects.find((item) => item.id === projectId) || null;
+    const projectSession = [...sessions]
+      .filter((session) => (session.projectId || null) === (project?.id || null))
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    setSettings({
+      ...settings,
+      activeProjectId: project?.id || null,
+      permissions: permissionsFromProject(project),
+    });
+    if (projectSession) {
+      setCurrentSessionId(projectSession.id);
+    } else {
+      const freshSession = createEmptySession(settings.language, project);
+      setSessions((prev) => [freshSession, ...prev]);
+      setCurrentSessionId(freshSession.id);
+    }
+  }, [sessions, setCurrentSessionId, setSessions, setSettings, settings]);
+
   const handleNewChat = useCallback(() => {
-    newChat();
+    newChat(activeProject);
     handleSelectView("chat");
     setHeaderVisible(false);
     setFooterVisible(false);
     addLog("SYSTEM", settings.language === "es" ? "Sincronización de núcleo completada." : "Kernel sync complete.");
-  }, [addLog, handleSelectView, newChat, settings.language]);
+  }, [activeProject, addLog, handleSelectView, newChat, settings.language]);
 
   const handleDeleteSession = useCallback((sessionId: string) => {
-    if (sessions.length <= 1) {
+    if (scopedSessions.length <= 1) {
       handleSelectView("chat");
       setHeaderVisible(false);
       setFooterVisible(false);
     }
     deleteSession(sessionId);
-  }, [deleteSession, handleSelectView, sessions.length]);
+  }, [deleteSession, handleSelectView, scopedSessions.length]);
 
   const handleClearHistory = useCallback(() => {
     clearHistory();
@@ -505,6 +556,43 @@ const VORTEX_CONFIG = {
     addLog("SYSTEM", settings.language === "es" ? "Carga de demostración completada." : "Demo load complete.");
   }, [addLog, currentSessionId, setSessions, settings.language, t.analysis_library]);
 
+  const buildInitialAssistantStatus = useCallback((
+    selectedMode: AppMode,
+    useInternet: boolean,
+  ): string => {
+    if (settings.language === "es") {
+      return selectedMode === "agent"
+        ? [
+            "Preparando agente local.",
+            "- Revisare contexto del repo y permisos activos.",
+            "- Aplicare cambios si la tarea lo requiere.",
+            "- Validare con comandos disponibles.",
+          ].join("\n")
+        : [
+            "Preparando consulta.",
+            `- Contexto: ${useInternet ? "repo + busqueda web permitida" : "repo/local sin web"}.`,
+            "- Devolvere diagnostico breve, codigo si aplica y validacion.",
+          ].join("\n");
+    }
+    return selectedMode === "agent"
+      ? [
+          "Preparing local agent.",
+          "- I will inspect repo context and active permissions.",
+          "- I will apply changes when the task requires them.",
+          "- I will validate with available commands.",
+        ].join("\n")
+      : [
+          "Preparing query.",
+          `- Context: ${useInternet ? "repo + allowed web search" : "repo/local without web"}.`,
+          "- I will return brief diagnosis, code when useful, and validation.",
+        ].join("\n");
+  }, [settings.language]);
+
+  const resolveSendPermissions = useCallback((selectedMode: AppMode, project?: typeof activeProject) => {
+    if (selectedMode === "agent" && project) return permissionsFromProject(project);
+    return settings.permissions;
+  }, [settings.permissions]);
+
   const handleSendMessageLocalFirst = async (
     content: string,
     useInternet: boolean = false,
@@ -513,15 +601,50 @@ const VORTEX_CONFIG = {
     autoTrain: boolean = false,
     options?: { preserveView?: boolean },
   ) => {
-    if (sendDisabledReason) {
-      addLog("SYSTEM", sendDisabledReason);
+    if (baseSendDisabledReason) {
+      addLog("SYSTEM", baseSendDisabledReason);
       return;
     }
 
+    let projectForSend = activeProject;
+    if (selectedMode === "agent") {
+      if (!projectForSend && settings.projects.length === 1) {
+        projectForSend = settings.projects[0];
+        setSettings((prev) => ({
+          ...prev,
+          activeProjectId: projectForSend?.id || null,
+          permissions: permissionsFromProject(projectForSend || null),
+        }));
+      }
+      if (!projectForSend) {
+        addLog("SYSTEM", settings.language === "es" ? "Selecciona un proyecto para usar agente." : "Select a project to use agent mode.");
+        openSettings("permissions");
+        return;
+      }
+      const validation = await vortexService.validateWorkspaceProjects([projectForSend]);
+      if (validation.ok && validation.invalidIds.includes(projectForSend.id)) {
+        const projectPath = projectForSend.rootPath || projectForSend.projectPath || projectForSend.name;
+        addLog(
+          "SYSTEM",
+          settings.language === "es"
+            ? `No puedo ver la carpeta desde Docker: ${projectPath}. Proyecto conservado. Selecciona una carpeta dentro de D:\\GitHub o ajusta C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT.`
+            : `Docker cannot see this folder: ${projectPath}. Project kept. Select a folder inside D:\\GitHub or adjust C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT.`,
+        );
+        return;
+      }
+    }
+    const targetProjectId = projectForSend?.id || null;
     let targetSessionId = currentSessionId;
     let targetSession = sessions.find((session) => session.id === targetSessionId);
+    if (targetSession && (targetSession.projectId || null) !== targetProjectId) {
+      targetSession = [...sessions]
+        .filter((session) => (session.projectId || null) === targetProjectId)
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+      targetSessionId = targetSession?.id || null;
+      if (targetSessionId) setCurrentSessionId(targetSessionId);
+    }
     if (!targetSession) {
-      targetSession = createEmptySession(settings.language);
+      targetSession = createEmptySession(settings.language, projectForSend);
       targetSessionId = targetSession.id;
       setSessions((prev) => [targetSession!, ...prev]);
       setCurrentSessionId(targetSessionId);
@@ -532,6 +655,7 @@ const VORTEX_CONFIG = {
     if (!options?.preserveView && activeView !== "chat") handleSelectView("chat");
     setHeaderVisible(true);
     setFooterVisible(true);
+    shouldStickToBottomRef.current = true;
     resetInactivityTimer();
     addLog("INFO", settings.language === "es" ? `Prompt enviado (${content.length} chars) · modo=${selectedMode}` : `Prompt sent (${content.length} chars) · mode=${selectedMode}`);
     if (useInternet) {
@@ -540,7 +664,16 @@ const VORTEX_CONFIG = {
 
     const userMessage: Message = { id: Date.now().toString(), role: Role.USER, content, timestamp: Date.now() };
     const aiMessageId = (Date.now() + 1).toString();
-    const initialAiMessage: Message = { id: aiMessageId, role: Role.AI, content: "", thought: "", requestId: undefined, sources: [], groundingSupports: [], timestamp: Date.now() };
+    const initialAiMessage: Message = {
+      id: aiMessageId,
+      role: Role.AI,
+      content: buildInitialAssistantStatus(selectedMode, useInternet),
+      thought: "",
+      requestId: undefined,
+      sources: [],
+      groundingSupports: [],
+      timestamp: Date.now(),
+    };
     setSessions((prev) => prev.map((session) => (
       session.id === targetSessionId
         ? { ...session, messages: [...session.messages, userMessage, initialAiMessage], updatedAt: Date.now() }
@@ -574,11 +707,58 @@ const VORTEX_CONFIG = {
         settings.language,
         internetAllowlist,
         { accountId: currentAccountId, sessionId: targetSessionId },
-        settings.permissions,
+        resolveSendPermissions(selectedMode, projectForSend),
       );
       let started = false;
       let aborted = false;
       let lastBrowserActions: BrowserAction[] = [];
+      let pendingAnimationFrame: number | null = null;
+      let pendingChunk: StreamChunk | null = null;
+
+      const applyStreamChunk = (chunk: StreamChunk) => {
+        setSessions((prev) => prev.map((session) => (
+          session.id === targetSessionId
+            ? {
+                ...session,
+                updatedAt: Date.now(),
+                messages: session.messages.map((message) => (
+                  message.id === aiMessageId
+                    ? {
+                        ...message,
+                        content: chunk.text || message.content,
+                        thought: chunk.thought || message.thought,
+                        requestId: chunk.requestId || message.requestId,
+                        finishReason: chunk.finishReason ?? message.finishReason,
+                        sources: chunk.sources.length > 0 ? chunk.sources : message.sources,
+                        fileChanges: chunk.fileChanges || message.fileChanges,
+                      }
+                    : message
+                )),
+              }
+            : session
+        )));
+      };
+
+      const scheduleStreamChunk = (chunk: StreamChunk) => {
+        pendingChunk = chunk;
+        if (pendingAnimationFrame !== null) return;
+        pendingAnimationFrame = window.requestAnimationFrame(() => {
+          pendingAnimationFrame = null;
+          const next = pendingChunk;
+          pendingChunk = null;
+          if (next) applyStreamChunk(next);
+        });
+      };
+
+      const flushStreamChunk = () => {
+        if (pendingAnimationFrame !== null) {
+          window.cancelAnimationFrame(pendingAnimationFrame);
+          pendingAnimationFrame = null;
+        }
+        const next = pendingChunk;
+        pendingChunk = null;
+        if (next) applyStreamChunk(next);
+      };
 
       for await (const chunk of stream) {
         if (abortControllerRef.current) {
@@ -591,27 +771,9 @@ const VORTEX_CONFIG = {
         }
         setIsSearching(false);
         if (chunk.browserActions?.length) lastBrowserActions = chunk.browserActions;
-        setSessions((prev) => prev.map((session) => (
-          session.id === targetSessionId
-            ? {
-                ...session,
-                messages: session.messages.map((message) => (
-                  message.id === aiMessageId
-                    ? {
-                        ...message,
-                        content: chunk.text,
-                        thought: chunk.thought || message.thought,
-                        requestId: chunk.requestId || message.requestId,
-                        finishReason: chunk.finishReason ?? message.finishReason,
-                        sources: chunk.sources.length > 0 ? chunk.sources : message.sources,
-                        fileChanges: chunk.fileChanges || message.fileChanges,
-                      }
-                    : message
-                )),
-              }
-            : session
-        )));
+        scheduleStreamChunk(chunk);
       }
+      flushStreamChunk();
 
       if (aborted) {
         addLog("SYSTEM", settings.language === "es" ? "Ejecución abortada por el usuario." : "Run aborted by user.");
@@ -666,7 +828,7 @@ const VORTEX_CONFIG = {
           <CommandPalette
             isOpen={isCommandPaletteOpen}
             onClose={() => setIsCommandPaletteOpen(false)}
-            sessions={sessions}
+            sessions={scopedSessions}
             currentSessionId={currentSessionId}
             onSelectSession={setCurrentSessionId}
             onNewChat={handleNewChat}
@@ -674,7 +836,7 @@ const VORTEX_CONFIG = {
             onClearHistory={handleClearHistory}
             onExportChat={() => {}}
             isDarkMode={isDarkMode}
-            toggleDarkMode={() => setIsDarkMode(!isDarkMode)}
+            toggleDarkMode={() => setSettings({ ...settings, themeMode: isDarkMode ? "light" : "dark" })}
             isSidebarOpen={isSidebarOpen}
             onToggleSidebar={() => {
               const next = !isSidebarOpen;
@@ -694,7 +856,7 @@ const VORTEX_CONFIG = {
         {isSidebarOpen && !activeModificationFiles && (
           <motion.div initial={{ width: 0, opacity: 0 }} animate={{ width: 280, opacity: 1 }} exit={{ width: 0, opacity: 0 }} transition={springConfig} className="h-full overflow-hidden shrink-0 z-50 flex border-r border-border/50 shadow-2xl relative">
             <Sidebar
-              sessions={sessions}
+              sessions={scopedSessions}
               currentSessionId={currentSessionId}
               activeView={activeView}
               onSelectSession={setCurrentSessionId}
@@ -702,7 +864,7 @@ const VORTEX_CONFIG = {
               onNewChat={handleNewChat}
               onDeleteSession={handleDeleteSession}
               isDarkMode={isDarkMode}
-              toggleDarkMode={() => setIsDarkMode(!isDarkMode)}
+              toggleDarkMode={() => setSettings({ ...settings, themeMode: isDarkMode ? "light" : "dark" })}
               onClose={() => setIsSidebarOpen(false)}
               onOpenSettings={openSettings}
               isOpen
@@ -731,7 +893,6 @@ const VORTEX_CONFIG = {
                 setIsSidebarOpen(true);
                 setIsReasoningOpen(false);
               }}
-              operationalStatus={operationalStatus}
               springConfig={springConfig}
             />
           )}
@@ -758,8 +919,6 @@ const VORTEX_CONFIG = {
                       activeEngineLabel={activeEngineLabel}
                       activeModelLabel={activeModelLabel}
                       language={settings.language}
-                      onLoadDemo={handleLoadDemo}
-                      operationalStatus={operationalStatus}
                       readyLabel={readyLabel}
                       sendDisabledReason={sendDisabledReason}
                       statusBody={statusBody}
@@ -824,7 +983,10 @@ const VORTEX_CONFIG = {
                     abortControllerRef.current = true;
                   }}
                   language={settings.language}
-                  permissionChips={permissionChips}
+                  projects={settings.projects}
+                  activeProjectId={settings.activeProjectId}
+                  onSelectProject={handleSelectProject}
+                  onOpenProjectSettings={() => openSettings("permissions")}
                   onInteraction={() => {
                     resetInactivityTimer();
                     if (!footerVisible) setFooterVisible(true);
@@ -872,6 +1034,7 @@ const VORTEX_CONFIG = {
             initialTab={settingsInitialTab}
             settings={settings}
             onUpdateSettings={setSettings}
+            operationalStatus={operationalStatus}
             accounts={accounts}
             currentAccountId={currentAccountId}
             onSelectAccount={handleSelectAccount}

@@ -71,7 +71,7 @@ profiles:
         quality: 1.0
     agent:
       web_allowlist: ["github.com", "docs.python.org", "pytorch.org", "duckduckgo.com"]
-      tools_enabled: ["run_tests", "search_web", "open_docs", "propose_patch", "sandbox_patch", "apply_patch", "summarize_diff", "read_file", "grep", "list_tree"]
+      tools_enabled: ["run_tests", "run_command", "search_web", "open_docs", "propose_patch", "sandbox_patch", "apply_patch", "summarize_diff", "read_file", "grep", "list_tree", "write_file", "delete_file", "open_browser"]
     tools:
       web:
         enabled: false

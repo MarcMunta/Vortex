@@ -458,8 +458,8 @@ const SpatialWorkspaceView: React.FC<SpatialWorkspaceViewProps> = ({
 
     if (gestureTickRef.current % 6 === 0 || ["swipe_left", "swipe_right", "twist", "fist", "dwell"].includes(event.gesture)) {
       void publishSemanticEvent({
-        kind: "gesture",
         ...event,
+        kind: "gesture",
         panel_id: focusedPanel?.id || undefined,
         gesture_enabled: gestureEnabled,
         camera_state: {

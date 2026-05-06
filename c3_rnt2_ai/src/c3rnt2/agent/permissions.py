@@ -9,7 +9,7 @@ from typing import Any
 
 def _normalize_level(raw: Any, default: str = "none") -> str:
     value = str(raw or default).strip().lower()
-    if value not in {"none", "full"}:
+    if value not in {"none", "read", "edit", "full"}:
         return default
     return value
 
@@ -35,12 +35,23 @@ def _resolve_workspace_base(base_dir: Path, workspace_root: str) -> Path:
         return base_dir
     shared_mount = str(os.getenv("C3RNT2_HOST_WORKSPACE_MOUNT") or "").strip()
     shared_mount_path = Path(shared_mount).resolve() if shared_mount else None
+    host_workspace_root = str(os.getenv("C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT") or "").strip()
     raw_base = Path(workspace_root)
     if raw_base.is_absolute():
         candidate = raw_base.resolve()
         if candidate.exists():
             return candidate
         if shared_mount_path and shared_mount_path.exists():
+            if host_workspace_root:
+                try:
+                    host_pure = PureWindowsPath(host_workspace_root)
+                    raw_pure = PureWindowsPath(workspace_root)
+                    rel = raw_pure.relative_to(host_pure)
+                    nested = (shared_mount_path / Path(*rel.parts)).resolve()
+                    if nested.exists():
+                        return nested
+                except Exception:
+                    pass
             nested = (shared_mount_path / raw_base.name).resolve()
             if nested.exists():
                 return nested
@@ -48,11 +59,25 @@ def _resolve_workspace_base(base_dir: Path, workspace_root: str) -> Path:
         return base_dir
     if _looks_windows_absolute(workspace_root) or _looks_posix_absolute(workspace_root):
         if shared_mount_path and shared_mount_path.exists():
+            if host_workspace_root:
+                try:
+                    host_pure = PureWindowsPath(host_workspace_root)
+                    raw_pure = PureWindowsPath(workspace_root)
+                    rel = raw_pure.relative_to(host_pure)
+                    nested = (shared_mount_path / Path(*rel.parts)).resolve()
+                    if nested.exists():
+                        return nested
+                except Exception:
+                    pass
             nested = (shared_mount_path / Path(workspace_root).name).resolve()
             if nested.exists():
                 return nested
             return shared_mount_path
         return base_dir
+    if shared_mount_path and shared_mount_path.exists():
+        nested = (shared_mount_path / raw_base).resolve()
+        if nested.exists():
+            return nested
     return (base_dir / raw_base).resolve()
 
 
@@ -155,19 +180,19 @@ class AgentPermissions:
 
     @property
     def can_read(self) -> bool:
-        return self.level == "full"
+        return self.level in {"read", "edit", "full"}
 
     @property
     def can_write(self) -> bool:
-        return self.can_read and self.action_mode == "full"
+        return self.level in {"edit", "full"} and self.action_mode == "full"
 
     @property
     def can_run_commands(self) -> bool:
-        return self.can_write
+        return self.level == "full" and self.action_mode == "full"
 
     @property
     def can_open_browser(self) -> bool:
-        return self.can_write
+        return self.level == "full" and self.action_mode == "full"
 
     @property
     def requires_tool_runner(self) -> bool:

@@ -12,10 +12,11 @@ import {
   VoiceStatus,
   VoiceTranscriptionResult,
   WorkspacePermissions,
+  WorkspaceProject,
 } from "../types";
 import { parseJsonSafely, requestJson } from "./apiClient";
 
-type StreamChunk = {
+export type StreamChunk = {
   text: string;
   thought: string;
   sources: Source[];
@@ -245,13 +246,23 @@ const buildPermissionsInstruction = (
   const projectPath = String(permissions?.projectPath || "").trim();
   const actionMode = permissions?.actionMode || "safe";
 
-  if (level !== "full") {
+  if (level === "none") {
     return language === "es"
       ? "Permisos activos: nada. Limítate a análisis, explicación y pasos. No afirmes cambios, ejecuciones ni accesos reales."
       : "Active permissions: none. Limit yourself to analysis, explanation, and steps. Do not claim real changes, executions, or access.";
   }
 
   const scopeLabel = projectPath || workspaceRoot || (language === "es" ? "scope no definido" : "scope not set");
+  if (level === "read") {
+    return language === "es"
+      ? `Permisos activos: solo lectura dentro del scope autorizado. Scope: ${scopeLabel}. Puedes usar contexto del proyecto, pero no edites, ejecutes comandos ni abras navegador.`
+      : `Active permissions: read-only inside the authorized scope. Scope: ${scopeLabel}. You may use project context, but do not edit, run commands, or open a browser.`;
+  }
+  if (level === "edit") {
+    return language === "es"
+      ? `Permisos activos: lectura y edición dentro del scope autorizado. Scope: ${scopeLabel}. Puedes leer y modificar archivos dentro de esa carpeta/proyecto. No ejecutes comandos ni abras navegador.`
+      : `Active permissions: read and edit inside the authorized scope. Scope: ${scopeLabel}. You may read and modify files inside that folder/project. Do not run commands or open a browser.`;
+  }
   return language === "es"
     ? `Permisos activos: todo dentro del scope autorizado. Scope: ${scopeLabel}. ${actionMode === "full" ? "Puedes actuar como operador técnico completo dentro de esa carpeta/proyecto: editar archivos, lanzar comandos del proyecto, abrirlo en navegador y hacer los cambios necesarios para la tarea. No asumas acceso fuera de ese scope." : "Mantén el trabajo en modo seguro: puedes analizar el proyecto y preparar cambios, pero no afirmes ejecuciones ni modificaciones reales."}`
     : `Active permissions: full inside the authorized scope. Scope: ${scopeLabel}. ${actionMode === "full" ? "You may act as a full technical operator inside that folder/project: edit files, run project commands, open it in the browser, and make the changes needed for the task. Do not assume access outside that scope." : "Keep work in safe mode: you may analyze the project and prepare changes, but do not claim real executions or modifications."}`;
@@ -298,12 +309,12 @@ const buildPromptEnvelope = (
           : "Act as a local technical assistant. Give clear, grounded answers without filler."
       );
   const codeFormat = language === "es"
-    ? "Si incluyes codigo multilinea, devuelvelo SIEMPRE dentro de bloques Markdown con triple backtick y lenguaje, por ejemplo ```dart``` o ```ts```. No dejes codigo suelto fuera del bloque. Si el usuario pide codigo, empieza directamente por el bloque de codigo, sin intro."
-    : "If you include multiline code, ALWAYS return it inside Markdown triple-backtick code blocks with a language, for example ```dart``` or ```ts```. Do not leave raw code outside the block.";
+    ? `Si incluyes codigo multilinea, devuelvelo SIEMPRE dentro de bloques Markdown con triple backtick y lenguaje, por ejemplo \`\`\`dart o \`\`\`ts. No dejes codigo suelto fuera del bloque. ${mode === "ask" && intent.wantsCode ? "En modo consulta, antes del codigo incluye contexto/diagnostico y plan breve. Luego codigo y validacion." : "En modo agente, resume acciones reales, archivos tocados y validacion."}`
+    : `If you include multiline code, ALWAYS return it inside Markdown triple-backtick code blocks with a language, for example \`\`\`dart or \`\`\`ts. Do not leave raw code outside the block. ${mode === "ask" && intent.wantsCode ? "In ask mode, include brief context/diagnosis and plan before code. Then code and validation." : "In agent mode, summarize real actions, touched files, and validation."}`;
   const flutterDartInstruction = intent.isFlutter || intent.isDart
     ? (
         language === "es"
-          ? "Para Flutter/Dart: empieza inmediatamente con ```dart, usa bloques ```dart```, incluye imports, usa widgets completos, cierra clases/metodos/llaves/parentesis, usa Form, GlobalKey<FormState>, TextFormField, validadores y dispose() cuando aplique, no hagas print(password), no entregues codigo inseguro, y anade flutter analyze y flutter test como validacion."
+          ? "Para Flutter/Dart: usa bloques ```dart```, incluye imports, usa widgets completos, cierra clases/metodos/llaves/parentesis, usa Form, GlobalKey<FormState>, TextFormField, validadores y dispose() cuando aplique, no hagas print(password), no entregues codigo inseguro, y anade flutter analyze y flutter test como validacion."
           : "For Flutter/Dart: use ```dart``` fences, include imports, use complete widgets, close classes/methods/braces/parentheses, use Form, GlobalKey<FormState>, TextFormField, validators, and dispose() when applicable, do not print(password), do not provide insecure code, and add flutter analyze and flutter test as validation."
       )
     : "";
@@ -984,15 +995,15 @@ export class VortexService {
     }
   }
 
-  async configureObsidian(payload: { enabled?: boolean; vault_path?: string }) {
-    return this.json("/v1/obsidian/config", {
+  async configureObsidian(payload: { enabled?: boolean; vault_path?: string }): Promise<ObsidianStatus> {
+    return this.json<ObsidianStatus>("/v1/obsidian/config", {
       method: "POST",
       body: JSON.stringify(payload),
     });
   }
 
-  async saveObsidianNote(payload: { note_type?: string; title: string; content: string; tags?: string[]; metadata?: Record<string, unknown> }) {
-    return this.json("/v1/obsidian/save", {
+  async saveObsidianNote(payload: { folder?: string; note_type?: string; title: string; content: string; tags?: string[]; metadata?: Record<string, unknown> }): Promise<{ ok?: boolean; path?: string | null; error?: unknown }> {
+    return this.json<{ ok?: boolean; path?: string | null; error?: unknown }>("/v1/obsidian/save", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -1024,6 +1035,49 @@ export class VortexService {
         return { ok: true };
       }
       return { ok: false, error: this.responseError(parsed, "chat_sessions_sync_failed") };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async validateWorkspaceProjects(projects: WorkspaceProject[]): Promise<{ ok: boolean; invalidIds: string[]; error?: string }> {
+    if (projects.length === 0) return { ok: true, invalidIds: [] };
+    try {
+      const parsed = await this.json<{ ok?: boolean; projects?: Array<{ id?: string; valid?: boolean }>; error?: unknown; detail?: unknown }>("/v1/workspace/projects/validate", {
+        method: "POST",
+        body: JSON.stringify({ projects }),
+      });
+      if (parsed?.ok && Array.isArray(parsed.projects)) {
+        return {
+          ok: true,
+          invalidIds: parsed.projects
+            .filter((project) => project && project.valid === false && project.id)
+            .map((project) => String(project.id)),
+        };
+      }
+      return { ok: false, invalidIds: [], error: this.responseError(parsed, "workspace_project_validation_failed") };
+    } catch (error) {
+      return { ok: false, invalidIds: [], error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async pickWorkspaceFolder(payload?: { title?: string; initialDir?: string }): Promise<{ ok: boolean; path?: string; cancelled?: boolean; error?: string }> {
+    try {
+      const parsed = await this.json<{ ok?: boolean; path?: string; cancelled?: boolean; error?: unknown; detail?: unknown }>("/v1/workspace/folder-picker", {
+        method: "POST",
+        body: JSON.stringify({
+          title: payload?.title,
+          initial_dir: payload?.initialDir,
+        }),
+      });
+      if (parsed?.ok) {
+        return {
+          ok: true,
+          path: typeof parsed.path === "string" ? parsed.path : "",
+          cancelled: Boolean(parsed.cancelled),
+        };
+      }
+      return { ok: false, error: this.responseError(parsed, "folder_picker_failed") };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }

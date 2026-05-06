@@ -49,19 +49,24 @@ class RouterState:
     last_scores: Dict[str, float] | None = None
 
 
-class RouterNet(nn.Module):
-    def __init__(self, in_dim: int, hidden: int = 16):
-        super().__init__()
-        self.backbone = nn.Sequential(
-            nn.Linear(in_dim, hidden),
-            nn.ReLU(),
-        )
-        self.backend_head = nn.Linear(hidden, 2)
-        self.mode_head = nn.Linear(hidden, 2)
+if nn is not None:
+    class RouterNet(nn.Module):
+        def __init__(self, in_dim: int, hidden: int = 16):
+            super().__init__()
+            self.backbone = nn.Sequential(
+                nn.Linear(in_dim, hidden),
+                nn.ReLU(),
+            )
+            self.backend_head = nn.Linear(hidden, 2)
+            self.mode_head = nn.Linear(hidden, 2)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        h = self.backbone(x)
-        return self.backend_head(h), self.mode_head(h)
+        def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            h = self.backbone(x)
+            return self.backend_head(h), self.mode_head(h)
+else:
+    class RouterNet:  # pragma: no cover - only used when torch is absent
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("torch_required_for_router_training")
 
 
 class Router:
