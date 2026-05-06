@@ -587,6 +587,7 @@ const VORTEX_CONFIG = {
 
   const resolveSendPermissions = useCallback((selectedMode: AppMode, project?: typeof activeProject) => {
     if (selectedMode === "agent" && project) return permissionsFromProject(project);
+    if (selectedMode === "agent") return undefined;
     return settings.permissions;
   }, [settings.permissions]);
 

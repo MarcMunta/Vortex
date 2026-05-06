@@ -234,6 +234,7 @@ class LlamaCppModel:
         top_p: float = 1.0,
         repetition_penalty: float = 1.0,
         no_repeat_ngram: int = 0,
+        **_kwargs,
     ) -> Iterable[str]:
         _ = no_repeat_ngram
         chat_messages = self._prepare_messages(messages, system)

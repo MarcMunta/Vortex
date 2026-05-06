@@ -398,6 +398,90 @@ def _extract_direct_file_action(task: str) -> Action | None:
     return None
 
 
+def _append_direct_action(
+    actions: list[tuple[int, Action]],
+    start: int,
+    action: Action,
+) -> None:
+    for existing_start, existing in actions:
+        if existing.type == action.type and (
+            existing_start == start or existing.args == action.args
+        ):
+            return
+    actions.append((start, action))
+
+
+def _clean_direct_file_content(content: str) -> str:
+    cleaned = str(content or "").strip().strip("`\"' \t\r\n")
+    cleaned = re.split(
+        r"\b(?:no\s+ejecutes|no\s+valides|do\s+not\s+run|don't\s+run|sin\s+tests)\b",
+        cleaned,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip()
+    return cleaned.rstrip(".")
+
+
+def _extract_direct_actions(task: str) -> list[Action]:
+    text = str(task or "").strip()
+    if not text:
+        return []
+    actions: list[tuple[int, Action]] = []
+    write_patterns = [
+        r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
+        r"(?:modifica|modificar|actualiza|actualizar|sobrescribe|sobrescribir|update|modify|overwrite)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
+        r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<text>[^;\n]+)",
+        r"(?:modifica|modificar|actualiza|actualizar|sobrescribe|sobrescribir|update|modify|overwrite)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<text>[^;\n]+)",
+    ]
+    for pattern in write_patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE | re.DOTALL):
+            path = str(match.group("path") or "").strip().rstrip(".,;:")
+            content = _clean_direct_file_content(str(match.group("text") or ""))
+            if path and content:
+                _append_direct_action(
+                    actions,
+                    match.start(),
+                    Action(type="write_file", args={"path": path, "text": content}),
+                )
+    delete_pattern = r"(?:borra|borrar|elimina|eliminar|delete|remove)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s,;:]+)[`\"']?"
+    for match in re.finditer(delete_pattern, text, flags=re.IGNORECASE):
+        path = str(match.group("path") or "").strip().rstrip(".,;:")
+        if path:
+            _append_direct_action(
+                actions,
+                match.start(),
+                Action(type="delete_file", args={"path": path}),
+            )
+    command_patterns = [
+        r"(?:ejecuta|ejecutar|corre|correr|run)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:comando|command)\s+(?P<quote>[`\"'])(?P<command>.*?)(?P=quote)",
+        r"(?:ejecuta|ejecutar|corre|correr|run)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:comando|command)\s+(?![`\"'])(?P<command>[^;\n]+)",
+    ]
+    for pattern in command_patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE | re.DOTALL):
+            command = str(match.group("command") or "").strip().strip("`\"'")
+            if command:
+                _append_direct_action(
+                    actions,
+                    match.start(),
+                    Action(type="run_command", args={"command": command, "cwd": ".", "timeout_s": 120}),
+                )
+    if actions:
+        return [action for _start, action in sorted(actions, key=lambda item: item[0])]
+    single = _extract_direct_file_action(task)
+    return [single] if single is not None else []
+
+
+def _direct_actions_summary(tool_calls: List[dict]) -> str:
+    relevant = [
+        str(call.get("action") or "")
+        for call in tool_calls
+        if call.get("action") in {"write_file", "delete_file", "run_command"}
+    ]
+    if not relevant:
+        return ""
+    return "Acciones directas OK: " + ", ".join(relevant)
+
+
 def _log_episode(base_dir: Path, payload: dict) -> None:
     path = base_dir / "data" / "episodes" / "agent.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -575,41 +659,56 @@ def run_agent(
     iterations_done = 0
     invalid_json_count = 0
 
-    direct_action = (
-        _extract_direct_file_action(task)
+    direct_actions = (
+        _extract_direct_actions(task)
         if action_provider is None and effective_permissions.can_write
-        else None
+        else []
     )
-    if direct_action is not None and direct_action.type in allowed_tools:
-        if direct_action.type == "write_file":
-            direct_result = tools.write_file(
-                str(direct_action.args.get("path", "")),
-                str(direct_action.args.get("text", "")),
+    if direct_actions:
+        direct_ok = True
+        for direct_action in direct_actions:
+            if direct_action.type not in allowed_tools:
+                direct_result = ToolResult(ok=False, output=f"tool_disabled:{direct_action.type}")
+            elif direct_action.type == "write_file":
+                direct_result = tools.write_file(
+                    str(direct_action.args.get("path", "")),
+                    str(direct_action.args.get("text", "")),
+                    append=bool(direct_action.args.get("append", False)),
+                )
+            elif direct_action.type == "delete_file":
+                direct_result = tools.delete_file(str(direct_action.args.get("path", "")))
+            elif direct_action.type == "run_command":
+                direct_result = tools.run_command(
+                    str(direct_action.args.get("command", "")),
+                    cwd=str(direct_action.args.get("cwd", ".")),
+                    timeout_s=int(direct_action.args.get("timeout_s", 120)),
+                    background=bool(direct_action.args.get("background", False)),
+                )
+            else:
+                direct_result = ToolResult(ok=False, output=f"tool_unsupported:{direct_action.type}")
+            tool_calls.append(
+                {
+                    "action": direct_action.type,
+                    "args": direct_action.args,
+                    "ok": direct_result.ok,
+                    "output": direct_result.output[:4000],
+                }
             )
-        elif direct_action.type == "delete_file":
-            direct_result = tools.delete_file(str(direct_action.args.get("path", "")))
-        else:
-            direct_result = ToolResult(ok=False, output=f"tool_unsupported:{direct_action.type}")
-        tool_calls.append(
-            {
-                "action": direct_action.type,
-                "args": direct_action.args,
-                "ok": direct_result.ok,
-                "output": direct_result.output[:4000],
-            }
-        )
-        tools_ok = bool(direct_result.ok)
-        summary = "file_action_done" if direct_result.ok else direct_result.output
+            direct_ok = direct_ok and bool(direct_result.ok)
+            if not direct_result.ok:
+                break
+        tools_ok = direct_ok
+        summary = "direct_actions_done" if direct_ok else tool_calls[-1]["output"]
 
     if (
-        direct_action is None
+        not direct_actions
         and action_provider is None
         and current_model is None
         and allow_model_load
     ):
         current_model = load_inference_model(settings)
 
-    if direct_action is None and action_provider is None and current_model is None:
+    if not direct_actions and action_provider is None and current_model is None:
         summary = (
             "agent_model_unavailable: no hay modelo cargado para planificar acciones; "
             "las acciones directas siguen disponibles cuando la tarea es determinista."
@@ -660,7 +759,7 @@ def run_agent(
         }
 
     while iterations_done < max_total_iters:
-        if direct_action is not None:
+        if direct_actions:
             break
         if max_wall_time_s > 0 and (time.monotonic() - start_ts) >= max_wall_time_s:
             summary = "stopped_by_wall_time_limit"
@@ -857,6 +956,8 @@ def run_agent(
         summary = _infer_exists_summary(task, workspace_dir) or summary
     if summary == "file_action_done":
         summary = _file_action_summary(tool_calls) or summary
+    if summary == "direct_actions_done":
+        summary = _direct_actions_summary(tool_calls) or summary
     if _summary_needs_fallback(summary):
         summary = _generate_final_summary(
             task,

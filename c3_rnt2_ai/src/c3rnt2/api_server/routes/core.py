@@ -18,9 +18,54 @@ def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDepend
     def _looks_host_absolute(raw_path: str) -> bool:
         return bool(re.match(r"^[A-Za-z]:[\\/]", raw_path)) or raw_path.startswith("/")
 
+    def _host_mount_candidates(raw_path: str) -> list[Path]:
+        raw = str(raw_path or "").strip()
+        if not raw:
+            return []
+        mappings = [
+            (
+                os.getenv("C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT"),
+                os.getenv("C3RNT2_HOST_WORKSPACE_MOUNT"),
+            ),
+            (
+                os.getenv("C3RNT2_HOST_C_WINDOWS_ROOT"),
+                os.getenv("C3RNT2_HOST_C_MOUNT"),
+            ),
+            (
+                os.getenv("C3RNT2_HOST_D_WINDOWS_ROOT"),
+                os.getenv("C3RNT2_HOST_D_MOUNT"),
+            ),
+            (
+                os.getenv("C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT"),
+                os.getenv("C3RNT2_HOST_DOWNLOADS_MOUNT"),
+            ),
+        ]
+        normalized = [
+            (str(host_root or "").strip(), str(mount_root or "").strip())
+            for host_root, mount_root in mappings
+        ]
+        normalized.sort(key=lambda item: len(item[0].rstrip("/\\")), reverse=True)
+        candidates: list[Path] = []
+        for host_root, mount_root in normalized:
+            if not host_root or not mount_root:
+                continue
+            try:
+                host_pure = PureWindowsPath(host_root)
+                raw_pure = PureWindowsPath(raw)
+                rel = raw_pure.relative_to(host_pure)
+            except Exception:
+                continue
+            mount_path = Path(mount_root)
+            if mount_path.exists():
+                candidates.append((mount_path / Path(*rel.parts)).resolve())
+        return candidates
+
     def _with_shared_mount_fallback(path: Path, raw_path: str) -> Path:
         if path.exists():
             return path
+        for candidate in _host_mount_candidates(raw_path):
+            if candidate.exists():
+                return candidate
         nested_name = (
             PureWindowsPath(raw_path).name
             if re.match(r"^[A-Za-z]:[\\/]", raw_path)

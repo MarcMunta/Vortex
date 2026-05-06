@@ -2074,15 +2074,13 @@ def _format_agent_report_text(report: dict[str, Any]) -> str:
     parts = [summary]
     tool_calls = report.get("tool_calls")
     ran_tests = isinstance(tool_calls, list) and any(
-        isinstance(item, dict) and item.get("action") in {"run_tests", "run_command"}
+        isinstance(item, dict) and item.get("action") == "run_tests"
         for item in tool_calls
     )
     if bool(report.get("tests_ok")):
         parts.append("Tests: ok")
     elif ran_tests:
         parts.append("Tests: fallo")
-    else:
-        parts.append("Validacion: no ejecutada")
     browser_actions = report.get("browser_actions")
     if isinstance(browser_actions, list):
         urls = []
@@ -3890,7 +3888,18 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
 
         if agent_mode:
             start = time.time()
-            if bool(getattr(selected_model, "is_external", False)) and not force_tool_runner:
+            has_explicit_agent_scope = bool(
+                agent_permissions is not None
+                and (
+                    str(agent_permissions.workspace_root or "").strip()
+                    or str(agent_permissions.project_path or "").strip()
+                )
+            )
+            direct_agent_chat = bool(getattr(selected_model, "is_external", False)) or (
+                bool(getattr(selected_model, "is_llama_cpp", False))
+                and not has_explicit_agent_scope
+            )
+            if direct_agent_chat and (not force_tool_runner or not has_explicit_agent_scope):
                 agent_messages = _build_external_agent_messages(
                     messages,
                     payload.get("prompt"),

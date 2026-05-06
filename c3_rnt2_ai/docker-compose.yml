@@ -83,11 +83,25 @@ services:
       C3RNT2_ASSUME_DOCKER_READY: "1"
       C3RNT2_HOST_WORKSPACE_MOUNT: /workspaces/root
       C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}
+      C3RNT2_HOST_C_MOUNT: /host/c
+      C3RNT2_HOST_C_WINDOWS_ROOT: ${C3RNT2_HOST_C_WINDOWS_ROOT:-C:/}
+      C3RNT2_HOST_D_MOUNT: /host/d
+      C3RNT2_HOST_D_WINDOWS_ROOT: ${C3RNT2_HOST_D_WINDOWS_ROOT:-D:/}
+      C3RNT2_HOST_DOWNLOADS_MOUNT: /workspaces/downloads
+      C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT: ${C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT:-C:\Users\marcm_kntz5zt\Downloads}
       C3RNT2_HOST_WORKSPACE_REPO_NAME: Vortex
     volumes:
       - .:/workspace
       - ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}:/workspaces/root
+      - type: bind
+        source: ${C3RNT2_HOST_C_WINDOWS_ROOT:-C:/}
+        target: /host/c
+      - type: bind
+        source: ${C3RNT2_HOST_D_WINDOWS_ROOT:-D:/}
+        target: /host/d
+      - ${C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT:-C:\Users\marcm_kntz5zt\Downloads}:/workspaces/downloads
       - ./data/models/hf-cache:/root/.cache/huggingface
+      - ${VORTEX_GGUF_DIR:-D:\AI}:/workspace/data/models/gguf
     ports:
       - "8000:8000"
     command:
@@ -134,10 +148,20 @@ services:
       C3RNT2_ASSUME_DOCKER_READY: "1"
       C3RNT2_HOST_WORKSPACE_MOUNT: /workspaces/root
       C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}
+      C3RNT2_HOST_C_MOUNT: /host/c
+      C3RNT2_HOST_C_WINDOWS_ROOT: ${C3RNT2_HOST_C_WINDOWS_ROOT:-C:/}
+      C3RNT2_HOST_D_MOUNT: /host/d
+      C3RNT2_HOST_D_WINDOWS_ROOT: ${C3RNT2_HOST_D_WINDOWS_ROOT:-D:/}
       C3RNT2_HOST_WORKSPACE_REPO_NAME: Vortex
     volumes:
       - .:/workspace
       - ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}:/workspaces/root
+      - type: bind
+        source: ${C3RNT2_HOST_C_WINDOWS_ROOT:-C:/}
+        target: /host/c
+      - type: bind
+        source: ${C3RNT2_HOST_D_WINDOWS_ROOT:-D:/}
+        target: /host/d
       - ./data/models/hf-cache:/root/.cache/huggingface
     command:
       - python
@@ -170,11 +194,25 @@ services:
       DOCKER_HOST: unix:///var/run/docker.sock
       C3RNT2_HOST_WORKSPACE_MOUNT: /workspaces/root
       C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}
+      C3RNT2_HOST_C_MOUNT: /host/c
+      C3RNT2_HOST_C_WINDOWS_ROOT: ${C3RNT2_HOST_C_WINDOWS_ROOT:-C:/}
+      C3RNT2_HOST_D_MOUNT: /host/d
+      C3RNT2_HOST_D_WINDOWS_ROOT: ${C3RNT2_HOST_D_WINDOWS_ROOT:-D:/}
+      C3RNT2_HOST_DOWNLOADS_MOUNT: /workspaces/downloads
+      C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT: ${C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT:-C:\Users\marcm_kntz5zt\Downloads}
       C3RNT2_HOST_WORKSPACE_REPO_NAME: Vortex
     volumes:
       - .:/workspace
       - ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub}:/workspaces/root
+      - type: bind
+        source: ${C3RNT2_HOST_C_WINDOWS_ROOT:-C:/}
+        target: /host/c
+      - type: bind
+        source: ${C3RNT2_HOST_D_WINDOWS_ROOT:-D:/}
+        target: /host/d
+      - ${C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT:-C:\Users\marcm_kntz5zt\Downloads}:/workspaces/downloads
       - ./data/models/hf-cache:/root/.cache/huggingface
+      - ${VORTEX_GGUF_DIR:-D:\AI}:/workspace/data/models/gguf
       - /var/run/docker.sock:/var/run/docker.sock
     command:
       - python

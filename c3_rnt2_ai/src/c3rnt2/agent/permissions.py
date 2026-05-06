@@ -41,6 +41,50 @@ def _repo_name_fallback(base_dir: Path, raw_path: str) -> Path | None:
     return None
 
 
+def _host_mount_candidates(raw_path: str) -> list[Path]:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return []
+    candidates: list[Path] = []
+    mappings = [
+        (
+            os.getenv("C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT"),
+            os.getenv("C3RNT2_HOST_WORKSPACE_MOUNT"),
+        ),
+        (
+            os.getenv("C3RNT2_HOST_C_WINDOWS_ROOT"),
+            os.getenv("C3RNT2_HOST_C_MOUNT"),
+        ),
+        (
+            os.getenv("C3RNT2_HOST_D_WINDOWS_ROOT"),
+            os.getenv("C3RNT2_HOST_D_MOUNT"),
+        ),
+        (
+            os.getenv("C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT"),
+            os.getenv("C3RNT2_HOST_DOWNLOADS_MOUNT"),
+        ),
+    ]
+    normalized_mappings = [
+        (str(host_root or "").strip(), str(mount_root or "").strip())
+        for host_root, mount_root in mappings
+    ]
+    normalized_mappings.sort(key=lambda item: len(item[0].rstrip("/\\")), reverse=True)
+    for host_root, mount_root in normalized_mappings:
+        if not host_root or not mount_root:
+            continue
+        try:
+            host_pure = PureWindowsPath(host_root)
+            raw_pure = PureWindowsPath(raw)
+            rel = raw_pure.relative_to(host_pure)
+        except Exception:
+            continue
+        mount_path = Path(mount_root)
+        if not mount_path.exists():
+            continue
+        candidates.append((mount_path / Path(*rel.parts)).resolve())
+    return candidates
+
+
 def _resolve_workspace_base(base_dir: Path, workspace_root: str) -> Path:
     base_dir = base_dir.resolve()
     if not workspace_root:
@@ -48,6 +92,9 @@ def _resolve_workspace_base(base_dir: Path, workspace_root: str) -> Path:
     repo_fallback = _repo_name_fallback(base_dir, workspace_root)
     if repo_fallback is not None:
         return repo_fallback
+    for candidate in _host_mount_candidates(workspace_root):
+        if candidate.exists():
+            return candidate
     shared_mount = str(os.getenv("C3RNT2_HOST_WORKSPACE_MOUNT") or "").strip()
     shared_mount_path = Path(shared_mount).resolve() if shared_mount else None
     host_workspace_root = str(os.getenv("C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT") or "").strip()
@@ -131,6 +178,9 @@ def _resolve_scope(base_dir: Path, workspace_root: str, project_path: str) -> Pa
         repo_fallback = _repo_name_fallback(base_dir, project_path)
         if repo_fallback is not None:
             return repo_fallback
+        for candidate in _host_mount_candidates(project_path):
+            if candidate.exists():
+                return candidate
         project_rel = _absolute_project_relative(workspace_root, project_path)
         raw_project = Path(project_rel or project_path)
         candidate = (

@@ -14,21 +14,27 @@ type ChatHomeStateProps = {
 
 export const ChatHomeState: React.FC<ChatHomeStateProps> = ({
   activeEngineLabel,
+  activeModelLabel,
   language,
   readyLabel,
   sendDisabledReason,
   statusBody,
   statusHeadline,
 }) => {
+  const modelName = activeModelLabel
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/\.gguf$/i, "")
+    || activeModelLabel;
   const cards = language === "es"
     ? [
-        { icon: Code2, label: "Chat", value: "Qwen Coder local" },
-        { icon: BrainCircuit, label: "Agente", value: "Contexto ampliado" },
+        { icon: Code2, label: "Chat", value: modelName },
+        { icon: BrainCircuit, label: "Agente", value: "Llama 2 local" },
         { icon: DatabaseZap, label: "Memoria", value: "Obsidian curado" },
       ]
     : [
-        { icon: Code2, label: "Chat", value: "Local Qwen Coder" },
-        { icon: BrainCircuit, label: "Agent", value: "Larger context" },
+        { icon: Code2, label: "Chat", value: modelName },
+        { icon: BrainCircuit, label: "Agent", value: "Local Llama 2" },
         { icon: DatabaseZap, label: "Memory", value: "Curated Obsidian" },
       ];
 
@@ -50,8 +56,8 @@ export const ChatHomeState: React.FC<ChatHomeStateProps> = ({
           </h2>
           <p className="mx-auto max-w-2xl text-[15px] leading-7 text-muted-foreground lg:text-base">
             {language === "es"
-              ? "Vortex prioriza Qwen, contexto de repo y memoria Obsidian curada. Internet y entrenamiento local no se activan por defecto."
-              : "Vortex prioritizes Qwen, repo context, and curated Obsidian memory. Internet and local training stay off by default."}
+              ? "Vortex usa Llama 2 local via llama.cpp, contexto de repo y memoria Obsidian curada. Internet y entrenamiento local no se activan por defecto."
+              : "Vortex uses local Llama 2 via llama.cpp, repo context, and curated Obsidian memory. Internet and local training stay off by default."}
           </p>
         </div>
 

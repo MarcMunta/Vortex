@@ -375,14 +375,11 @@ profiles:
       llama_cpp_model_path: "data/models/gguf/llama-2-7b-chat.Q4_K_M.gguf"
       llama_cpp_quant: "Q4_K_M"
       llama_cpp_chat_format: "llama-2"
-      llama_cpp_ctx: 8192
+      llama_cpp_ctx: 4096
       llama_cpp_n_gpu_layers: -1
       llama_cpp_threads: 8
       llama_cpp_batch: 512
       llama_cpp_flash_attn: true
-      # LLaMA 2 was trained for 4k context. 8k uses RoPE scaling; quality can
-      # drop on very long prompts, but this keeps max local context available.
-      llama_cpp_rope_freq_scale: 0.5
       hf_system_prompt: "You are Vortex, a fully local LLaMA 2 7B Chat coding agent. Be direct, inspect context, use tools when allowed, and return concrete validated changes."
       backend_fallback:
       hf_fallback:
@@ -407,30 +404,30 @@ profiles:
       use_instruction_files: false
     context:
       enabled: true
-      model_max_context_tokens: 8192
-      default_chat_context_tokens: 4096
-      default_agent_context_tokens: 8192
-      max_input_tokens: 8192
-      max_output_tokens: 1024
-      max_agent_action_tokens: 1024
-      max_agent_final_tokens: 2048
-      reserve_output_tokens: 1024
+      model_max_context_tokens: 4096
+      default_chat_context_tokens: 3072
+      default_agent_context_tokens: 4096
+      max_input_tokens: 4096
+      max_output_tokens: 512
+      max_agent_action_tokens: 256
+      max_agent_final_tokens: 512
+      reserve_output_tokens: 512
       reserve_system_tokens: 512
-      reserve_tool_tokens: 1024
+      reserve_tool_tokens: 512
       compression_enabled: true
       summarize_old_messages: true
       rolling_summary_tokens: 1024
       recent_messages_tokens: 2048
       rag_tokens: 0
       obsidian_tokens: 0
-      repo_context_tokens: 1024
+      repo_context_tokens: 512
     agent:
       web_allowlist: []
-      max_iters: 12
-      max_context_compactions: 64
-      action_max_new_tokens: 1024
-      final_summary_max_new_tokens: 2048
-      max_wall_time_s: 600
+      max_iters: 3
+      max_context_compactions: 8
+      action_max_new_tokens: 256
+      final_summary_max_new_tokens: 512
+      max_wall_time_s: 180
     tools:
       web:
         enabled: false
@@ -484,13 +481,13 @@ profiles:
       approved_training_sources_only: false
       min_host_ram_free_mb: 4096
     decode:
-      max_new_tokens: 1024
-      default_code_max_new_tokens: 1536
-      hard_max_new_tokens: 2048
+      max_new_tokens: 512
+      default_code_max_new_tokens: 768
+      hard_max_new_tokens: 1024
     generation:
-      default_max_tokens: 1024
-      code_max_tokens: 1536
-      hard_max_tokens: 2048
+      default_max_tokens: 512
+      code_max_tokens: 768
+      hard_max_tokens: 1024
       allow_long_code_outputs: true
   rtx4080_16gb_programming_gemma4_local:
     # Canonical daily-use profile: fully-local Gemma 4 E4B HF runtime.
