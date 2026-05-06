@@ -509,6 +509,15 @@ const parseSseLines = (rawEvent: string): string[] => {
     .map((l) => l.slice("data:".length).trim());
 };
 
+const isServiceUnavailableError = (error: Error | null): boolean => {
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("http 503")
+    || message.includes("service unavailable")
+    || message.includes("model_loading")
+    || message.includes("model_load_failed")
+    || message.includes("server_error");
+};
+
 export class VortexService {
   private model: string = "auto";
   private readonly baseUrl = resolveApiBaseUrl();
@@ -551,6 +560,46 @@ export class VortexService {
     return fallback;
   }
 
+  private async fetchCompletionStream(
+    payload: Record<string, unknown>,
+    abortSignal: AbortSignal,
+  ): Promise<Response> {
+    const body = JSON.stringify(payload);
+    let lastError: Error | null = null;
+    for (const endpoint of this.urls("/v1/chat/completions")) {
+      try {
+        const candidate = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
+          body,
+          signal: abortSignal,
+        });
+
+        if (!candidate.ok || !candidate.body) {
+          const text = await candidate.text().catch(() => "");
+          const parsed = parseJsonSafely<{ error?: { message?: string }; detail?: string }>(text);
+          const detail = parsed?.error?.message || parsed?.detail || text;
+          throw new Error(detail || `HTTP ${candidate.status}`);
+        }
+
+        const contentType = candidate.headers.get("content-type") || "";
+        if (!contentType.toLowerCase().includes("text/event-stream")) {
+          const text = await candidate.text().catch(() => "");
+          throw new Error(text ? `non_sse_response:${text.slice(0, 120)}` : "non_sse_response");
+        }
+
+        return candidate;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") throw error;
+        lastError = error instanceof Error ? error : new Error("network_error");
+      }
+    }
+    throw lastError || new Error("network_error");
+  }
+
   async fetchOperationalStatus(): Promise<OperationalStatus | null> {
     try {
       const data = await this.json<OperationalStatus>("/v1/status");
@@ -585,7 +634,7 @@ export class VortexService {
       const includeSources = shouldUseSources(prompt, useInternet, intent);
       const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
       const clientNowIso = new Date().toISOString();
-        const payload = {
+      const payload = {
           model: this.model,
           stream: true,
           agent_mode: mode === "agent",
@@ -617,47 +666,36 @@ export class VortexService {
           : undefined,
       };
 
-      const body = JSON.stringify(payload);
-      let resp: Response | null = null;
-      let lastError: Error | null = null;
-      for (const endpoint of this.urls("/v1/chat/completions")) {
-        try {
-          const candidate = await fetch(endpoint, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Accept: "text/event-stream",
-            },
-            body,
-            signal: abortController.signal,
-          });
-
-          if (!candidate.ok || !candidate.body) {
-            const text = await candidate.text().catch(() => "");
-            const parsed = parseJsonSafely<{ error?: { message?: string }; detail?: string }>(text);
-            const detail = parsed?.error?.message || parsed?.detail || text;
-            throw new Error(detail || `HTTP ${candidate.status}`);
-          }
-
-          const contentType = candidate.headers.get("content-type") || "";
-          if (!contentType.toLowerCase().includes("text/event-stream")) {
-            const text = await candidate.text().catch(() => "");
-            throw new Error(text ? `non_sse_response:${text.slice(0, 120)}` : "non_sse_response");
-          }
-
-          resp = candidate;
-          break;
-        } catch (error) {
-          if (error instanceof DOMException && error.name === "AbortError") throw error;
-          lastError = error instanceof Error ? error : new Error("network_error");
+      let resp: Response;
+      try {
+        resp = await this.fetchCompletionStream(payload, abortController.signal);
+      } catch (error) {
+        const lastError = error instanceof Error ? error : new Error("network_error");
+        if (mode !== "agent" || !isServiceUnavailableError(lastError)) {
+          throw lastError;
         }
+        const fallbackMessages = [
+          ...promptEnvelope.messages.slice(0, -1),
+          {
+            role: "user" as const,
+            content: language === "es"
+              ? `Modo agente degradado: responde como operador tecnico, sin ejecutar herramientas reales. Tarea:\n${prompt}`
+              : `Degraded agent mode: answer as a technical operator without running real tools. Task:\n${prompt}`,
+          },
+        ];
+        resp = await this.fetchCompletionStream(
+          {
+            ...payload,
+            agent_mode: false,
+            vortex_mode: "chat",
+            include_perf: false,
+            messages: fallbackMessages,
+          },
+          abortController.signal,
+        );
       }
 
-      if (!resp?.body) {
-        throw lastError || new Error("network_error");
-      }
-
-      const reader = resp.body.getReader();
+      const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
 
       let buffer = "";

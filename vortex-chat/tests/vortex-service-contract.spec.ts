@@ -139,3 +139,41 @@ test('status falls back to direct backend when proxy returns non-json', async ()
     globalThis.fetch = originalFetch;
   }
 });
+
+test('agent stream falls back to degraded chat when agent backend returns 503', async () => {
+  const originalFetch = globalThis.fetch;
+  const seenPayloads: any[] = [];
+
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const payload = JSON.parse(String(init?.body || '{}'));
+    seenPayloads.push(payload);
+    if (payload.agent_mode) {
+      return new Response(JSON.stringify({ error: { message: 'model_load_failed:runtime unavailable' } }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const body = [
+      'data: {"choices":[{"index":0,"delta":{"content":"degraded-agent-ok"},"finish_reason":null}],"request_id":"req-3"}\n\n',
+      'data: [DONE]\n\n',
+    ].join('');
+    return new Response(body, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  }) as typeof fetch;
+
+  try {
+    const chunks = [];
+    for await (const chunk of new VortexService().generateResponseStream([], 'haz algo', false, true, 'agent', 'es')) {
+      chunks.push(chunk);
+    }
+
+    expect(seenPayloads.some((payload) => payload.agent_mode === true)).toBeTruthy();
+    expect(seenPayloads.some((payload) => payload.agent_mode === false && payload.vortex_mode === 'chat')).toBeTruthy();
+    expect(String(seenPayloads.at(-1)?.messages?.at(-1)?.content || '')).toContain('Modo agente degradado');
+    expect(chunks.at(-1)?.text).toBe('degraded-agent-ok');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
