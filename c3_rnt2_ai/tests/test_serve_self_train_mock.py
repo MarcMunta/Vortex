@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -31,7 +32,7 @@ def test_serve_self_train_mock_loop(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(main_mod, "_load_and_validate", _fake_load_and_validate)
     monkeypatch.setattr(main_mod, "ingest_sources", lambda base_dir, allowlist, settings: 1)
 
-    args = SimpleNamespace(
+    args = argparse.Namespace(
         profile=None,
         backend=None,
         model=None,
@@ -59,7 +60,7 @@ def test_self_train_tick_sets_and_clears_training_active(tmp_path: Path, monkeyp
 
     app = SimpleNamespace(state=SimpleNamespace())
 
-    def _fake_train(_settings, _base_dir, reuse_dataset=False):
+    def _fake_train(settings, base_dir, reuse_dataset=False):
         assert app.state.training_active is True
         return SimpleNamespace(
             ok=True,
@@ -94,7 +95,7 @@ def test_self_train_tick_skips_when_vram_insufficient(tmp_path: Path, monkeypatc
     app = SimpleNamespace(state=SimpleNamespace())
     train_calls: list[int] = []
 
-    def _fake_train(_settings, _base_dir, reuse_dataset=False):
+    def _fake_train(settings, base_dir, reuse_dataset=False):
         train_calls.append(1)
         return SimpleNamespace(ok=True, ok_eval=True, ok_train=True, eval_ok=True)
 
@@ -128,7 +129,7 @@ def test_self_train_tick_skips_when_host_ram_insufficient(tmp_path: Path, monkey
     app = SimpleNamespace(state=SimpleNamespace())
     train_calls: list[int] = []
 
-    def _fake_train(_settings, _base_dir, reuse_dataset=False):
+    def _fake_train(settings, base_dir, reuse_dataset=False):
         train_calls.append(1)
         return SimpleNamespace(ok=True, ok_eval=True, ok_train=True, eval_ok=True)
 

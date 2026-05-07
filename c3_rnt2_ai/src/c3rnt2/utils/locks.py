@@ -27,7 +27,7 @@ class FileLock:
         if blocking:
             try:
                 if timeout_s is not None:
-                    timeout_val = float(timeout_s)
+                    timeout_val = timeout_s
                     if timeout_val <= 0:
                         timeout_val = 0.0
                     deadline = time.monotonic() + timeout_val
@@ -56,7 +56,7 @@ class FileLock:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise LockUnavailable("timeout")
                 try:
-                    sleep_s = max(0.01, float(poll_interval_s))
+                    sleep_s = max(0.01, poll_interval_s)
                 except Exception:
                     sleep_s = 0.1
                 time.sleep(sleep_s)

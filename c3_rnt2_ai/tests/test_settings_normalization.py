@@ -4,6 +4,7 @@ from __future__ import annotations
 # pylint: disable=import-error,no-name-in-module
 
 from pathlib import Path
+import typing
 
 import yaml
 
@@ -24,7 +25,7 @@ def _read_all_settings_text() -> str:
 
 
 def _assert_profile(profile: str) -> None:
-    settings = load_settings(profile)
+    settings = typing.cast(typing.Any, load_settings(profile))
     validate_profile(settings, base_dir=BASE_DIR)
     tok = settings.get("tokenizer", {})
     assert tok.get("vortex_tok_path")
@@ -58,7 +59,7 @@ def test_settings_normalization_profiles() -> None:
 
 
 def test_settings_safety_defaults() -> None:
-    settings = load_settings("dev_small")
+    settings = typing.cast(typing.Any, load_settings("dev_small"))
     autopilot = settings.get("autopilot", {}) or {}
     autolearn = settings.get("autolearn", {}) or {}
     assert bool(autopilot.get("autopatch_require_approval", False)) is True
@@ -77,7 +78,7 @@ def test_settings_manifest_loads_fragmented_profiles() -> None:
 
 
 def _assert_security_lab_profile_is_local_and_safe(profile: str) -> None:
-    settings = load_settings(profile)
+    settings = typing.cast(typing.Any, load_settings(profile))
     core = settings.get("core", {}) or {}
     tools = settings.get("tools", {}) or {}
     web = tools.get("web", {}) or {}
@@ -114,14 +115,14 @@ def test_legacy_offensive_profile_name_removed() -> None:
 
 
 def test_programming_profiles_are_local_and_offline() -> None:
-    daily = load_settings("rtx4080_16gb_llama2_7b_q4_local")
-    qwen_daily = load_settings("rtx4080_16gb_programming_qwen_coder_local")
-    gemma_legacy = load_settings("rtx4080_16gb_programming_gemma4_local")
-    legacy = load_settings("rtx4080_16gb_programming_local")
-    sglang = load_settings("rtx4080_16gb_programming_qwen_coder_sglang")
-    train = load_settings("rtx4080_16gb_programming_qwen_coder_train_docker")
-    train_alias = load_settings("rtx4080_16gb_programming_train_docker")
-    train_wsl = load_settings("rtx4080_16gb_programming_train_wsl")
+    daily = typing.cast(typing.Any, load_settings("rtx4080_16gb_llama2_7b_q4_local"))
+    qwen_daily = typing.cast(typing.Any, load_settings("rtx4080_16gb_programming_qwen_coder_local"))
+    gemma_legacy = typing.cast(typing.Any, load_settings("rtx4080_16gb_programming_gemma4_local"))
+    legacy = typing.cast(typing.Any, load_settings("rtx4080_16gb_programming_local"))
+    sglang = typing.cast(typing.Any, load_settings("rtx4080_16gb_programming_qwen_coder_sglang"))
+    train = typing.cast(typing.Any, load_settings("rtx4080_16gb_programming_qwen_coder_train_docker"))
+    train_alias = typing.cast(typing.Any, load_settings("rtx4080_16gb_programming_train_docker"))
+    train_wsl = typing.cast(typing.Any, load_settings("rtx4080_16gb_programming_train_wsl"))
 
     assert daily["core"]["backend"] == "llama_cpp"
     assert daily["core"]["llama_cpp_model_path"] == "data/models/gguf/llama-2-7b-chat.Q4_K_M.gguf"
