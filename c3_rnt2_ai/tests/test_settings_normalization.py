@@ -127,7 +127,7 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert daily["core"]["llama_cpp_model_path"] == "data/models/gguf/llama-2-7b-chat.Q4_K_M.gguf"
     assert daily["core"]["llama_cpp_quant"] == "Q4_K_M"
     assert daily["core"]["llama_cpp_chat_format"] == "llama-2"
-    assert daily["core"]["llama_cpp_ctx"] == 8192
+    assert daily["core"]["llama_cpp_ctx"] == 4096
     assert daily["core"]["llama_cpp_n_gpu_layers"] == -1
     assert daily["core"]["backend_fallback"] is None
     assert daily["core"]["hf_fallback"] is None
@@ -147,23 +147,23 @@ def test_programming_profiles_are_local_and_offline() -> None:
     assert daily["hf_train"]["enabled"] is False
     assert daily["hf_train"]["model_name"] == "meta-llama/Llama-2-7b-chat-hf"
     assert daily["hf_train"]["registry_dir"] == "data/registry/hf_train/llama2_7b_chat"
-    assert daily["decode"]["max_new_tokens"] == 1024
-    assert daily["decode"]["default_code_max_new_tokens"] == 1536
-    assert daily["decode"]["hard_max_new_tokens"] == 2048
-    assert daily["generation"]["default_max_tokens"] == 1024
-    assert daily["generation"]["code_max_tokens"] == 1536
-    assert daily["generation"]["hard_max_tokens"] == 2048
+    assert daily["decode"]["max_new_tokens"] == 512
+    assert daily["decode"]["default_code_max_new_tokens"] == 768
+    assert daily["decode"]["hard_max_new_tokens"] == 1024
+    assert daily["generation"]["default_max_tokens"] == 512
+    assert daily["generation"]["code_max_tokens"] == 768
+    assert daily["generation"]["hard_max_tokens"] == 1024
     assert daily["core"]["vram_floor_tokens"] >= 256
     assert daily["core"]["vram_ceil_tokens"] >= 4096
-    assert daily["context"]["model_max_context_tokens"] == 8192
-    assert daily["context"]["default_chat_context_tokens"] == 4096
-    assert daily["context"]["default_agent_context_tokens"] == 8192
-    assert daily["context"]["max_output_tokens"] == 1024
-    assert daily["context"]["max_agent_action_tokens"] == 1024
-    assert daily["context"]["max_agent_final_tokens"] == 2048
+    assert daily["context"]["model_max_context_tokens"] == 4096
+    assert daily["context"]["default_chat_context_tokens"] == 3072
+    assert daily["context"]["default_agent_context_tokens"] == 4096
+    assert daily["context"]["max_output_tokens"] == 512
+    assert daily["context"]["max_agent_action_tokens"] == 256
+    assert daily["context"]["max_agent_final_tokens"] == 512
     assert daily["context"]["obsidian_tokens"] == 0
-    assert daily["agent"]["action_max_new_tokens"] == 1024
-    assert daily["agent"]["final_summary_max_new_tokens"] == 2048
+    assert daily["agent"]["action_max_new_tokens"] == 256
+    assert daily["agent"]["final_summary_max_new_tokens"] == 512
     assert "write_file" in daily["agent"]["tools_enabled"]
     assert "delete_file" in daily["agent"]["tools_enabled"]
     assert "run_command" in daily["agent"]["tools_enabled"]

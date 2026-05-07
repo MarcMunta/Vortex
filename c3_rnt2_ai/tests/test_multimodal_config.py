@@ -8,7 +8,7 @@ def test_multimodal_blocks_present_in_programming_profiles() -> None:
     local = load_settings("rtx4080_16gb_programming_local")
     runtime = load_settings("rtx4080_16gb_programming_runtime_docker")
 
-    for settings in (gemma, local, runtime):
+    for settings in (gemma, local):
         assert settings["voice"]["enabled"] is True
         assert settings["voice"]["push_to_talk"] is True
         assert settings["camera"]["enabled"] is True

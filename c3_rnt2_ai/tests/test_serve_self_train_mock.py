@@ -46,9 +46,9 @@ def test_serve_self_train_mock_loop(tmp_path: Path, monkeypatch) -> None:
     )
     main_mod.cmd_serve_self_train(args)
 
-    lock_path = tmp_path / "data" / "locks" / "train.lock"
+    lock_path = tmp_path / "data" / "locks" / "train.db"
     assert lock_path.exists()
-    gpu_lock_path = tmp_path / "data" / "locks" / "gpu.lock"
+    gpu_lock_path = tmp_path / "data" / "locks" / "gpu.db"
     assert gpu_lock_path.exists()
 
 
@@ -115,7 +115,7 @@ def test_self_train_tick_skips_when_vram_insufficient(tmp_path: Path, monkeypatc
     assert result.get("ok") is True
     assert result.get("skipped") == "vram_insufficient"
     assert train_calls == []
-    assert (tmp_path / "data" / "locks" / "gpu.lock").exists()
+    assert (tmp_path / "data" / "locks" / "gpu.db").exists()
 
 
 def test_self_train_tick_skips_when_host_ram_insufficient(tmp_path: Path, monkeypatch) -> None:
