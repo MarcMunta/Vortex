@@ -12,8 +12,6 @@ _OFFENSIVE_TERMS = (
     "bypass",
     "phish",
     "payload",
-    "credential",
-    "token",
     "dump",
     "harvest",
     "exfil",
@@ -49,6 +47,17 @@ def _looks_offensive(text: str) -> bool:
     return any(term in lower for term in _OFFENSIVE_TERMS)
 
 
+def _guard_text(text: str) -> str:
+    marker = "Objetivo principal:"
+    if marker not in text:
+        return text
+    objective = text.split(marker, 1)[1]
+    for end_marker in ("\n\nContexto reciente:", "\n\nPermisos locales:"):
+        if end_marker in objective:
+            objective = objective.split(end_marker, 1)[0]
+    return objective.strip() or text
+
+
 def _contains_high_risk_request(text: str) -> bool:
     return any(pattern.search(text) for pattern in _HIGH_RISK_PATTERNS)
 
@@ -65,6 +74,25 @@ def _is_private_host(value: str) -> bool:
     except ValueError:
         return False
     return bool(addr.is_private or addr.is_loopback or addr.is_link_local)
+
+
+def _looks_like_file_host(host: str) -> bool:
+    suffix = host.rsplit(".", 1)[-1].lower() if "." in host else ""
+    return suffix in {
+        "dart",
+        "py",
+        "ts",
+        "tsx",
+        "js",
+        "jsx",
+        "json",
+        "md",
+        "txt",
+        "yaml",
+        "yml",
+        "toml",
+        "lock",
+    }
 
 
 def _extract_targets(text: str) -> tuple[list[str], list[str]]:
@@ -86,6 +114,8 @@ def _extract_targets(text: str) -> tuple[list[str], list[str]]:
             target_list.append(host)
 
     for host in _HOST_RE.findall(text):
+        if _looks_like_file_host(host):
+            continue
         if host.endswith((".local", ".test")) or host == "localhost":
             if host not in private_targets:
                 private_targets.append(host)
@@ -101,7 +131,7 @@ def evaluate_lab_request(messages: Iterable[dict], settings: dict) -> dict[str, 
     if not bool(local_lab.get("guardrails_enabled", False)):
         return {"action": "allow"}
 
-    text = _user_text(messages).strip()
+    text = _guard_text(_user_text(messages)).strip()
     if not text:
         return {"action": "allow"}
 

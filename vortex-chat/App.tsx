@@ -553,6 +553,210 @@ const VORTEX_CONFIG = {
     return settings.permissions;
   }, [settings.permissions]);
 
+  const mergeFileChangesLocal = (
+    left: { path: string; diff: string }[] = [],
+    right: { path: string; diff: string }[] = [],
+  ) => {
+    const merged: { path: string; diff: string }[] = [];
+    const seen = new Set<string>();
+    for (const change of [...left, ...right]) {
+      const path = String(change?.path || "").trim();
+      const diff = String(change?.diff || "").trim();
+      if (!path || !diff) continue;
+      const key = `${path}\n${diff}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push({ path, diff });
+    }
+    return merged;
+  };
+
+  const detectAutoContinuationReason = (chunk: StreamChunk | null, selectedMode: AppMode): string => {
+    const finalText = chunk?.text || "";
+    if (chunk?.finishReason === "length") return "finish_reason_length";
+    if (isLikelyTruncatedCode(finalText)) return "truncated_code";
+    if (
+      selectedMode === "agent"
+      && /stopped_by_context_compaction_limit|stopped_by_wall_time_limit|stream_first_chunk_timeout|stream_connect_timeout|No se pudo completar la ejecucion del agente|Agent run could not complete/i.test(finalText)
+    ) {
+      return "agent_incomplete";
+    }
+    return "";
+  };
+
+  const buildHiddenContinuationPrompt = (
+    originalTask: string,
+    previousText: string,
+    selectedMode: AppMode,
+    reason: string,
+  ): string => {
+    const tail = previousText.slice(-6000);
+    if (settings.language === "es") {
+      return [
+        "Continua automaticamente la misma tarea en este mismo mensaje.",
+        "No saludes. No pidas datos ya dados. No cambies de idioma: responde solo en espanol.",
+        "Escribe solo la continuacion literal de la respuesta anterior. No repitas texto ya emitido.",
+        selectedMode === "agent"
+          ? "Si estabas en modo agente, conserva el estado, inspecciona el workspace si hace falta, termina acciones pendientes y valida cuando sea posible."
+          : "Si la respuesta anterior quedo cortada, continua desde el ultimo punto coherente y cierra bloques de codigo o diff.",
+        `Motivo: ${reason}.`,
+        `Tarea original:\n${originalTask}`,
+        `Final ya emitido:\n${tail}`,
+      ].join("\n\n");
+    }
+    return [
+      "Continue the same task automatically in this same message.",
+      "Do not greet. Do not ask for information already provided. Keep the same language as the original answer.",
+      "Write only the literal continuation of the previous answer. Do not repeat already emitted text.",
+      selectedMode === "agent"
+        ? "If this was agent mode, preserve state, inspect the workspace when needed, finish pending actions, and validate when possible."
+        : "If the previous answer was cut off, continue from the last coherent point and close code or diff blocks.",
+      `Reason: ${reason}.`,
+      `Original task:\n${originalTask}`,
+      `Already emitted tail:\n${tail}`,
+    ].join("\n\n");
+  };
+
+  const streamContinuationIntoMessage = async (
+    params: {
+      targetSessionId: string;
+      aiMessageId: string;
+      baseHistory: Message[];
+      originalTask: string;
+      previousText: string;
+      previousFileChanges?: { path: string; diff: string }[];
+      useInternet: boolean;
+      selectedMode: AppMode;
+      useThinking: boolean;
+      projectForSend?: typeof activeProject;
+      reason: string;
+    },
+  ) => {
+    let carriedText = params.previousText;
+    let carriedFileChanges = params.previousFileChanges || [];
+    let reason = params.reason;
+
+    while (reason && autoContinueDepthRef.current < 20 && !abortControllerRef.current) {
+      const signature = `${params.targetSessionId}:${params.aiMessageId}:${params.selectedMode}:${reason}:${carriedText.length}`;
+      if (signature === lastAutoContinueSignatureRef.current) break;
+      autoContinueDepthRef.current += 1;
+      lastAutoContinueSignatureRef.current = signature;
+      addLog(
+        "SYSTEM",
+        settings.language === "es"
+          ? `Auto-continuacion ${autoContinueDepthRef.current}: ${reason}`
+          : `Auto-continuation ${autoContinueDepthRef.current}: ${reason}`,
+      );
+
+      setIsLoading(true);
+      setIsSearching(params.useInternet);
+      const continuationPrompt = buildHiddenContinuationPrompt(
+        params.originalTask,
+        carriedText,
+        params.selectedMode,
+        reason,
+      );
+      const continuationHistory: Message[] = [
+        ...params.baseHistory,
+        {
+          id: params.aiMessageId,
+          role: Role.AI,
+          content: carriedText,
+          timestamp: Date.now(),
+          mode: params.selectedMode,
+          fileChanges: carriedFileChanges,
+        },
+      ];
+      const stream = vortexService.generateResponseStream(
+        continuationHistory,
+        continuationPrompt,
+        params.useInternet,
+        params.useThinking,
+        params.selectedMode,
+        settings.language,
+        internetAllowlist,
+        { accountId: currentAccountId, sessionId: params.targetSessionId },
+        resolveSendPermissions(params.selectedMode, params.projectForSend || undefined),
+      );
+
+      let lastContinuationChunk: StreamChunk | null = null;
+      let pendingAnimationFrame: number | null = null;
+      let pendingChunk: StreamChunk | null = null;
+
+      const applyContinuationChunk = (chunk: StreamChunk) => {
+        const addition = chunk.text || "";
+        const nextText = addition ? `${carriedText}\n\n${addition}` : carriedText;
+        const nextFileChanges = mergeFileChangesLocal(carriedFileChanges, chunk.fileChanges || []);
+        setSessions((prev) => prev.map((session) => (
+          session.id === params.targetSessionId
+            ? {
+                ...session,
+                updatedAt: Date.now(),
+                messages: session.messages.map((message) => (
+                  message.id === params.aiMessageId
+                    ? {
+                        ...message,
+                        content: nextText,
+                        thought: chunk.thought || message.thought,
+                        requestId: chunk.requestId || message.requestId,
+                        finishReason: chunk.finishReason ?? message.finishReason,
+                        sources: chunk.sources.length > 0 ? chunk.sources : message.sources,
+                        fileChanges: nextFileChanges,
+                      }
+                    : message
+                )),
+              }
+            : session
+        )));
+        lastContinuationChunk = { ...chunk, text: nextText, fileChanges: nextFileChanges };
+      };
+
+      const scheduleContinuationChunk = (chunk: StreamChunk) => {
+        pendingChunk = chunk;
+        if (pendingAnimationFrame !== null) return;
+        pendingAnimationFrame = window.requestAnimationFrame(() => {
+          pendingAnimationFrame = null;
+          const next = pendingChunk;
+          pendingChunk = null;
+          if (next) applyContinuationChunk(next);
+        });
+      };
+
+      const flushContinuationChunk = () => {
+        if (pendingAnimationFrame !== null) {
+          window.cancelAnimationFrame(pendingAnimationFrame);
+          pendingAnimationFrame = null;
+        }
+        const next = pendingChunk;
+        pendingChunk = null;
+        if (next) applyContinuationChunk(next);
+      };
+
+      try {
+        for await (const chunk of stream) {
+          if (abortControllerRef.current) break;
+          setIsSearching(false);
+          scheduleContinuationChunk(chunk);
+        }
+        flushContinuationChunk();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "continuation_failed";
+        addLog("SYSTEM", repairMojibakeText(detail));
+        reason = params.selectedMode === "agent" ? "agent_stream_error" : "";
+        continue;
+      } finally {
+        setIsLoading(false);
+        setIsSearching(false);
+        resetInactivityTimer();
+      }
+
+      if (!lastContinuationChunk) break;
+      carriedText = lastContinuationChunk.text;
+      carriedFileChanges = lastContinuationChunk.fileChanges || carriedFileChanges;
+      reason = detectAutoContinuationReason(lastContinuationChunk, params.selectedMode);
+    }
+  };
+
   const handleSendMessageLocalFirst = async (
     content: string,
     useInternet: boolean = false,
@@ -761,7 +965,7 @@ const VORTEX_CONFIG = {
         }
         if (autoContinuationReason) {
           autoContinuationPrompt = settings.language === "es"
-            ? "Continua la misma tarea exactamente desde el estado actual. No repitas lo ya hecho. Inspecciona el workspace, termina acciones pendientes, valida cuando sea posible y devuelve cambios completos. Si la respuesta quedo cortada, continua desde el ultimo token y cierra bloques de codigo o diff."
+            ? "Continua la misma tarea exactamente desde el estado actual. No repitas lo ya hecho. Inspecciona el workspace, termina acciones pendientes, valida cuando sea posible y devuelve cambios completos. Si la respuesta quedo cortada, continua desde el ultimo punto y cierra bloques de codigo o diff."
             : "Continue the same task from the current state. Do not repeat completed work. Inspect the workspace, finish pending actions, validate when possible, and return complete changes. If the response was cut off, continue from the last token and close code or diff blocks.";
         }
       }
@@ -811,42 +1015,47 @@ const VORTEX_CONFIG = {
       resetInactivityTimer();
     }
     if (autoContinuationPrompt && !abortControllerRef.current) {
-      const signature = `${targetSessionId}:${selectedMode}:${autoContinuationReason}:${(lastStreamChunk?.text || "").length}`;
-      if (autoContinueDepthRef.current < 20 && signature !== lastAutoContinueSignatureRef.current) {
-        autoContinueDepthRef.current += 1;
-        lastAutoContinueSignatureRef.current = signature;
-        addLog(
-          "SYSTEM",
-          settings.language === "es"
-            ? `Auto-continuacion ${autoContinueDepthRef.current}: ${autoContinuationReason}`
-            : `Auto-continuation ${autoContinueDepthRef.current}: ${autoContinuationReason}`,
-        );
-        void handleSendMessageLocalFirst(
-          autoContinuationPrompt,
-          useInternet,
-          selectedMode,
-          useThinking,
-          autoTrain,
-          { preserveView: true, autoContinuation: true },
-        );
-      }
+      const previousText = lastStreamChunk?.text || "";
+      void streamContinuationIntoMessage({
+        targetSessionId,
+        aiMessageId,
+        baseHistory: [...(targetSession.messages || []), userMessage],
+        originalTask: content,
+        previousText,
+        previousFileChanges: lastStreamChunk?.fileChanges || [],
+        useInternet,
+        selectedMode,
+        useThinking,
+        projectForSend,
+        reason: autoContinuationReason,
+      });
     }
   };
 
   const handleContinueResponse = useCallback((messageId: string) => {
     const session = currentSession;
-    const message = session?.messages.find((item) => item.id === messageId);
+    const messageIndex = session?.messages.findIndex((item) => item.id === messageId) ?? -1;
+    const message = messageIndex >= 0 ? session?.messages[messageIndex] : undefined;
     if (!message || message.role !== Role.AI) return;
     if (message.finishReason !== "length" && !isLikelyTruncatedCode(message.content)) return;
-    void handleSendMessageLocalFirst(
-      "Continua exactamente desde donde lo dejaste. No repitas el codigo anterior. Cierra cualquier bloque de codigo abierto.",
-      false,
-      mode,
-      true,
-      false,
-      { preserveView: true, autoContinuation: true },
-    );
-  }, [currentSession, handleSendMessageLocalFirst, mode]);
+    autoContinueDepthRef.current = 0;
+    lastAutoContinueSignatureRef.current = "";
+    const baseHistory = session?.messages.slice(0, messageIndex) || [];
+    const previousUser = [...baseHistory].reverse().find((item) => item.role === Role.USER);
+    void streamContinuationIntoMessage({
+      targetSessionId: session!.id,
+      aiMessageId: message.id,
+      baseHistory,
+      originalTask: previousUser?.content || "",
+      previousText: message.content,
+      previousFileChanges: message.fileChanges || [],
+      useInternet: false,
+      selectedMode: message.mode || mode,
+      useThinking: true,
+      projectForSend: activeProject,
+      reason: message.finishReason === "length" ? "finish_reason_length" : "truncated_code",
+    });
+  }, [activeProject, currentSession, mode]);
 
   const handleOpenModificationExplorer = useCallback((files: { path: string; diff: string }[]) => {
     setActiveModificationFiles(files);

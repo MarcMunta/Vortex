@@ -7,6 +7,7 @@ from pathlib import Path
 from c3rnt2.agent.permissions import AgentPermissions
 from c3rnt2.agent.runner import run_agent, Action
 from c3rnt2.agent.tools import AgentTools
+from c3rnt2.lab_guard import evaluate_lab_request
 
 
 def test_agent_runner_dry(tmp_path: Path, monkeypatch):
@@ -50,6 +51,25 @@ def test_agent_runner_blocks_public_security_target(tmp_path: Path, monkeypatch)
     assert report["ok"] is False
     assert report["blocked"] is True
     assert "public" in report["summary"].lower() or "third-party" in report["summary"].lower()
+
+
+def test_lab_guard_allows_programming_login_with_file_context() -> None:
+    settings = {
+        "local_lab": {
+            "guardrails_enabled": True,
+            "lab_confirmation_token": "LAB_CONFIRMED",
+        },
+    }
+    task = (
+        "Resuelve la peticion del usuario como operador tecnico.\n\n"
+        "Objetivo principal:\nCrea un login basico en Flutter.\n\n"
+        "Contexto reciente:\n[assistant]\nArchivo escrito: lib/main.dart\n"
+        "Continua desde el ultimo punto y cierra bloques de codigo."
+    )
+
+    result = evaluate_lab_request([{"role": "user", "content": task}], settings)
+
+    assert result["action"] == "allow"
 
 
 def test_agent_runner_uses_fresh_model_lock_context_per_generation(tmp_path: Path, monkeypatch):
