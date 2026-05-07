@@ -42,7 +42,7 @@ export type PromptIntent = {
 export const DEFAULT_CHAT_MAX_TOKENS = 2048;
 export const CODE_CHAT_MAX_TOKENS = 3072;
 export const COMPLETE_CODE_MAX_TOKENS = 4096;
-export const DEFAULT_STREAM_CONNECT_TIMEOUT_MS = 20000;
+export const DEFAULT_STREAM_CONNECT_TIMEOUT_MS = 120000;
 
 export const resolveApiBaseUrl = (): string => {
   const env = ((import.meta as any).env || {}) as Record<string, string | undefined>;
