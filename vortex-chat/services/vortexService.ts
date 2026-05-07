@@ -21,12 +21,14 @@ export type StreamChunk = {
   thought: string;
   sources: Source[];
   groundingSupports: GroundingSupport[];
-  fileChanges?: { path: string; diff: string }[];
+  fileChanges?: FileChange[];
   browserActions?: BrowserAction[];
   requestId?: string;
   finishReason?: string | null;
   done: boolean;
 };
+
+type FileChange = { path: string; diff: string };
 
 export type PromptIntent = {
   wantsCode: boolean;
@@ -197,8 +199,8 @@ const toSources = (refs: unknown): Source[] => {
   return results;
 };
 
-const extractFileChanges = (content: string): { path: string; diff: string }[] => {
-  const changes: { path: string; diff: string }[] = [];
+const extractFileChanges = (content: string): FileChange[] => {
+  const changes: FileChange[] = [];
   const codeBlockRegex = /```file:([^\n]+)\n([\s\S]*?)```/g;
   let match: RegExpExecArray | null;
 
@@ -209,6 +211,33 @@ const extractFileChanges = (content: string): { path: string; diff: string }[] =
     });
   }
   return changes;
+};
+
+const toFileChanges = (raw: unknown): FileChange[] => {
+  if (!Array.isArray(raw)) return [];
+  const changes: FileChange[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const path = String((item as { path?: unknown }).path || "").trim();
+    const diff = String((item as { diff?: unknown }).diff || "").trim();
+    if (!path || !diff) continue;
+    changes.push({ path, diff });
+  }
+  return changes;
+};
+
+const mergeFileChanges = (...groups: FileChange[][]): FileChange[] => {
+  const merged: FileChange[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    for (const change of group) {
+      const key = `${change.path}\n${change.diff}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(change);
+    }
+  }
+  return merged;
 };
 
 const toBrowserActions = (raw: unknown): BrowserAction[] => {
@@ -740,6 +769,7 @@ export class VortexService {
       let finishReason: string | null | undefined;
       let sources: Source[] = [];
       let browserActions: BrowserAction[] = [];
+      let perfFileChanges: FileChange[] = [];
       let receivedFirstBytes = false;
       let firstChunkTimedOut = false;
       const firstChunkTimeoutId = globalThis.setTimeout(() => {
@@ -778,7 +808,7 @@ export class VortexService {
                   thought,
                   sources: includeSources ? sources : [],
                   groundingSupports: [],
-                  fileChanges: extractFileChanges(fullText),
+                  fileChanges: mergeFileChanges(extractFileChanges(fullText), perfFileChanges),
                   browserActions,
                   requestId,
                   finishReason,
@@ -799,6 +829,9 @@ export class VortexService {
               }
               if (parsed?.perf?.browser_actions) {
                 browserActions = toBrowserActions(parsed.perf.browser_actions);
+              }
+              if (parsed?.perf?.file_changes) {
+                perfFileChanges = toFileChanges(parsed.perf.file_changes);
               }
               const parsedFinishReason = parsed?.choices?.[0]?.finish_reason;
               if (typeof parsedFinishReason === "string") {
@@ -823,7 +856,7 @@ export class VortexService {
                   thought,
                   sources: includeSources ? sources : [],
                   groundingSupports: [],
-                  fileChanges: extractFileChanges(fullText),
+                  fileChanges: mergeFileChanges(extractFileChanges(fullText), perfFileChanges),
                   browserActions,
                   requestId,
                   finishReason,
@@ -852,7 +885,7 @@ export class VortexService {
         thought,
         sources: includeSources ? sources : [],
         groundingSupports: [],
-        fileChanges: extractFileChanges(fullText),
+        fileChanges: mergeFileChanges(extractFileChanges(fullText), perfFileChanges),
         browserActions,
         requestId,
         finishReason,

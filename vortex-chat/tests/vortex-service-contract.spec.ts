@@ -50,6 +50,7 @@ test('agent stream uses same-origin API proxy by default', async () => {
     const body = [
       'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"request_id":"req-1"}\n\n',
       'data: {"choices":[{"index":0,"delta":{"content":"agent-ok"},"finish_reason":null}],"request_id":"req-1"}\n\n',
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"request_id":"req-1","perf":{"file_changes":[{"path":"lib/main.dart","diff":"--- /dev/null\\n+++ b/lib/main.dart\\n@@\\n+void main() {}"}]}}\n\n',
       'data: [DONE]\n\n',
     ].join('');
     return new Response(body, {
@@ -68,6 +69,8 @@ test('agent stream uses same-origin API proxy by default', async () => {
     expect(seenPayload.agent_mode).toBeTruthy();
     expect(seenPayload.vortex_mode).toBe('agent');
     expect(chunks.at(-1)?.text).toBe('agent-ok');
+    expect(chunks.at(-1)?.fileChanges?.[0]?.path).toBe('lib/main.dart');
+    expect(chunks.at(-1)?.fileChanges?.[0]?.diff).toContain('+void main()');
     expect(chunks.at(-1)?.done).toBeTruthy();
   } finally {
     globalThis.fetch = originalFetch;

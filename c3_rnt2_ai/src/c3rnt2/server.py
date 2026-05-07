@@ -2095,8 +2095,24 @@ def _format_agent_report_text(report: dict[str, Any]) -> str:
     patch_id = str(report.get("patch_id") or "").strip()
     if patch_id:
         parts.append(f"Patch: {patch_id}")
+    file_changes = report.get("file_changes")
+    rendered_file_changes = False
+    if isinstance(file_changes, list):
+        remaining_chars = 12000
+        for item in file_changes:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "").strip()
+            diff = str(item.get("diff") or "").strip()
+            if not path or not diff or remaining_chars <= 0:
+                continue
+            if len(diff) > remaining_chars:
+                diff = diff[:remaining_chars].rstrip() + "\n...diff truncated..."
+            parts.append(f"```file:{path}\n{diff}\n```")
+            rendered_file_changes = True
+            remaining_chars -= len(diff)
     patch_text = str(report.get("patch") or "").strip()
-    if patch_text:
+    if patch_text and not rendered_file_changes:
         if len(patch_text) > 12000:
             patch_text = patch_text[:12000].rstrip() + "\n...diff truncated..."
         parts.append(f"```diff\n{patch_text}\n```")
@@ -4110,6 +4126,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                 "vram_peak_mb": vram_peak,
                                 "tests_ok": bool(report.get("tests_ok")),
                                 "patch_id": report.get("patch_id"),
+                                "file_changes": report.get("file_changes") or [],
                                 "permissions": report.get("permissions"),
                                 "browser_actions": report.get("browser_actions") or [],
                             }
@@ -4169,6 +4186,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                 "latency_ms": float(elapsed * 1000.0),
                                 "agent_error": str(exc),
                                 "tests_ok": False,
+                                "file_changes": [],
                                 "browser_actions": [],
                             }
                         )
@@ -4262,6 +4280,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 "tests_ok": bool(report.get("tests_ok")),
                 "tools_ok": bool(report.get("tools_ok")),
                 "patch_id": report.get("patch_id"),
+                "file_changes": report.get("file_changes") or [],
                 "permissions": report.get("permissions"),
                 "browser_actions": report.get("browser_actions") or [],
             }

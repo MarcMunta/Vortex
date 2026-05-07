@@ -83,6 +83,12 @@ def test_chat_completions_agent_mode_non_stream(tmp_path: Path, monkeypatch) -> 
             "summary": "agent-ok",
             "patch_id": "patch-1",
             "patch": "--- a/lib/main.dart\n+++ b/lib/main.dart\n@@\n-old\n+new\n",
+            "file_changes": [
+                {
+                    "path": "lib/main.dart",
+                    "diff": "--- a/lib/main.dart\n+++ b/lib/main.dart\n@@\n-old\n+new\n",
+                }
+            ],
             "tests_ok": True,
             "browser_actions": [{"target": "http://localhost:4173", "opened": False}],
         }
@@ -114,11 +120,12 @@ def test_chat_completions_agent_mode_non_stream(tmp_path: Path, monkeypatch) -> 
     assert "agent-ok" in content
     assert "Tests: ok" in content
     assert "Patch: patch-1" in content
-    assert "```diff" in content
+    assert "```file:lib/main.dart" in content
     assert data["sources"] == []
     assert data["perf"]["agent_mode"] is True
     assert data["perf"]["agent_strategy"] == "tool_runner"
     assert data["perf"]["tests_ok"] is True
+    assert data["perf"]["file_changes"][0]["path"] == "lib/main.dart"
     assert data["perf"]["browser_actions"][0]["target"] == "http://localhost:4173"
     assert seen["model"] is dummy
     assert callable(seen["model_lock"])
@@ -137,6 +144,12 @@ def test_chat_completions_agent_mode_stream(tmp_path: Path, monkeypatch) -> None
             "summary": "agent-stream",
             "patch_id": None,
             "patch": "",
+            "file_changes": [
+                {
+                    "path": "app.py",
+                    "diff": "--- /dev/null\n+++ b/app.py\n@@\n+print('ok')\n",
+                }
+            ],
             "tests_ok": False,
         },
     )
@@ -148,6 +161,7 @@ def test_chat_completions_agent_mode_stream(tmp_path: Path, monkeypatch) -> None
             "messages": [{"role": "user", "content": "haz streaming del modo agente"}],
             "agent_mode": True,
             "stream": True,
+            "include_perf": True,
         },
     )
 
@@ -155,6 +169,8 @@ def test_chat_completions_agent_mode_stream(tmp_path: Path, monkeypatch) -> None
     assert resp.headers.get("content-type", "").startswith("text/event-stream")
     assert "Agente iniciado" in resp.text
     assert "agent-stream" in resp.text
+    assert "file_changes" in resp.text
+    assert "```file:app.py" in resp.text
     assert "data: [DONE]" in resp.text
 
 

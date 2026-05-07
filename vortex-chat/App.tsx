@@ -74,6 +74,8 @@ const App: React.FC = () => {
   const lastScrollYRef = useRef(0);
   const abortControllerRef = useRef(false);
   const mainScrollRef = useRef<HTMLDivElement>(null);
+  const autoContinueDepthRef = useRef(0);
+  const lastAutoContinueSignatureRef = useRef("");
 
   const AUTO_APPLY_SELF_EDITS = false;
   const { scrollY } = useScroll({ container: mainScrollRef });
@@ -557,8 +559,12 @@ const VORTEX_CONFIG = {
     selectedMode: AppMode = "ask",
     useThinking: boolean = true,
     autoTrain: boolean = false,
-    options?: { preserveView?: boolean },
+    options?: { preserveView?: boolean; autoContinuation?: boolean },
   ) => {
+    if (!options?.autoContinuation) {
+      autoContinueDepthRef.current = 0;
+      lastAutoContinueSignatureRef.current = "";
+    }
     let agentStartupWarning: string | null = null;
     let projectForSend = activeProject;
     if (selectedMode === "agent") {
@@ -653,6 +659,9 @@ const VORTEX_CONFIG = {
     setIsLoading(true);
     setIsSearching(useInternet);
     abortControllerRef.current = false;
+    let lastStreamChunk: StreamChunk | null = null;
+    let autoContinuationPrompt: string | null = null;
+    let autoContinuationReason = "";
     try {
       const history = targetSession.messages || [];
       const stream = vortexService.generateResponseStream(
@@ -722,6 +731,7 @@ const VORTEX_CONFIG = {
           aborted = true;
           break;
         }
+        lastStreamChunk = chunk;
         if (!started) {
           started = true;
           addLog("INFO", settings.language === "es" ? "Stream SSE conectado." : "SSE stream connected.");
@@ -738,11 +748,36 @@ const VORTEX_CONFIG = {
         if (lastBrowserActions.length > 0) {
           openBrowserActions(lastBrowserActions);
         }
+        const finalText = lastStreamChunk?.text || "";
+        if (lastStreamChunk?.finishReason === "length") {
+          autoContinuationReason = "finish_reason_length";
+        } else if (isLikelyTruncatedCode(finalText)) {
+          autoContinuationReason = "truncated_code";
+        } else if (
+          selectedMode === "agent"
+          && /stopped_by_context_compaction_limit|stopped_by_wall_time_limit|stream_first_chunk_timeout|stream_connect_timeout|No se pudo completar la ejecucion del agente|Agent run could not complete/i.test(finalText)
+        ) {
+          autoContinuationReason = "agent_incomplete";
+        }
+        if (autoContinuationReason) {
+          autoContinuationPrompt = settings.language === "es"
+            ? "Continua la misma tarea exactamente desde el estado actual. No repitas lo ya hecho. Inspecciona el workspace, termina acciones pendientes, valida cuando sea posible y devuelve cambios completos. Si la respuesta quedo cortada, continua desde el ultimo token y cierra bloques de codigo o diff."
+            : "Continue the same task from the current state. Do not repeat completed work. Inspect the workspace, finish pending actions, validate when possible, and return complete changes. If the response was cut off, continue from the last token and close code or diff blocks.";
+        }
       }
     } catch (error) {
       const detail = error instanceof Error ? error.message : (settings.language === "es" ? "Interrupción de flujo." : "Flow interrupted.");
       const cleanedDetail = repairMojibakeText(detail);
       addLog("SYSTEM", cleanedDetail);
+      if (
+        selectedMode === "agent"
+        && /stream_first_chunk_timeout|stream_connect_timeout|network_error|Failed to fetch|No se pudo completar/i.test(cleanedDetail)
+      ) {
+        autoContinuationReason = "agent_stream_error";
+        autoContinuationPrompt = settings.language === "es"
+          ? "Continua la misma tarea de modo agente desde el estado actual. Reintenta la ejecucion, inspecciona el workspace, termina acciones pendientes y devuelve cambios completos."
+          : "Continue the same agent task from the current state. Retry execution, inspect the workspace, finish pending actions, and return complete changes.";
+      }
       setSessions((prev) => prev.map((session) => (
         session.id === targetSessionId
           ? {
@@ -775,6 +810,27 @@ const VORTEX_CONFIG = {
       setIsSearching(false);
       resetInactivityTimer();
     }
+    if (autoContinuationPrompt && !abortControllerRef.current) {
+      const signature = `${targetSessionId}:${selectedMode}:${autoContinuationReason}:${(lastStreamChunk?.text || "").length}`;
+      if (autoContinueDepthRef.current < 20 && signature !== lastAutoContinueSignatureRef.current) {
+        autoContinueDepthRef.current += 1;
+        lastAutoContinueSignatureRef.current = signature;
+        addLog(
+          "SYSTEM",
+          settings.language === "es"
+            ? `Auto-continuacion ${autoContinueDepthRef.current}: ${autoContinuationReason}`
+            : `Auto-continuation ${autoContinueDepthRef.current}: ${autoContinuationReason}`,
+        );
+        void handleSendMessageLocalFirst(
+          autoContinuationPrompt,
+          useInternet,
+          selectedMode,
+          useThinking,
+          autoTrain,
+          { preserveView: true, autoContinuation: true },
+        );
+      }
+    }
   };
 
   const handleContinueResponse = useCallback((messageId: string) => {
@@ -788,7 +844,7 @@ const VORTEX_CONFIG = {
       mode,
       true,
       false,
-      { preserveView: true },
+      { preserveView: true, autoContinuation: true },
     );
   }, [currentSession, handleSendMessageLocalFirst, mode]);
 
