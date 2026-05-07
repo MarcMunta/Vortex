@@ -13,7 +13,9 @@ const resolveBaseUrl = (): string => {
   const env = ((import.meta as any).env || {}) as Record<string, string | undefined>;
   const raw = (env.VITE_CONTROL_BASE_URL || "").trim();
   if (raw) return raw.replace(/\/+$/, "");
-  const port = (env.VITE_CONTROL_PORT || "8765").trim() || "8765";
+  const explicitPort = (env.VITE_CONTROL_PORT || "").trim();
+  if (!explicitPort) return "";
+  const port = explicitPort || "8765";
   const host = typeof window !== "undefined" ? (window.location.hostname || "127.0.0.1") : "127.0.0.1";
   return `http://${host}:${port}`;
 };
@@ -21,11 +23,16 @@ const resolveBaseUrl = (): string => {
 class ControlService {
   private readonly baseUrl = resolveBaseUrl();
   private readonly client = new ControlContractClient(this.baseUrl, requestJson);
+  private statusRetryAfter = 0;
 
   async fetchStatus() {
+    if (Date.now() < this.statusRetryAfter) return null;
     try {
-      return await this.client.get("GET /control/status");
+      const status = await this.client.get("GET /control/status");
+      this.statusRetryAfter = 0;
+      return status;
     } catch {
+      this.statusRetryAfter = Date.now() + 15000;
       return null;
     }
   }

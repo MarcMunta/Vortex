@@ -40,6 +40,7 @@ export type PromptIntent = {
 export const DEFAULT_CHAT_MAX_TOKENS = 2048;
 export const CODE_CHAT_MAX_TOKENS = 3072;
 export const COMPLETE_CODE_MAX_TOKENS = 4096;
+export const DEFAULT_STREAM_CONNECT_TIMEOUT_MS = 20000;
 
 export const resolveApiBaseUrl = (): string => {
   const env = ((import.meta as any).env || {}) as Record<string, string | undefined>;
@@ -515,7 +516,19 @@ const isServiceUnavailableError = (error: Error | null): boolean => {
     || message.includes("service unavailable")
     || message.includes("model_loading")
     || message.includes("model_load_failed")
-    || message.includes("server_error");
+    || message.includes("server_error")
+    || message.includes("stream_connect_timeout")
+    || message.includes("stream_first_chunk_timeout")
+    || message.includes("failed to fetch")
+    || message.includes("networkerror")
+    || message.includes("connection refused")
+    || message.includes("net::err");
+};
+
+const resolveStreamConnectTimeoutMs = (): number => {
+  const env = ((import.meta as any).env || {}) as Record<string, string | undefined>;
+  const raw = Number(env.VITE_STREAM_CONNECT_TIMEOUT_MS || "");
+  return Number.isFinite(raw) && raw >= 1000 ? raw : DEFAULT_STREAM_CONNECT_TIMEOUT_MS;
 };
 
 export class VortexService {
@@ -566,7 +579,20 @@ export class VortexService {
   ): Promise<Response> {
     const body = JSON.stringify(payload);
     let lastError: Error | null = null;
+    const connectTimeoutMs = resolveStreamConnectTimeoutMs();
     for (const endpoint of this.urls("/v1/chat/completions")) {
+      const endpointController = new AbortController();
+      let timedOut = false;
+      const timeoutId = globalThis.setTimeout(() => {
+        timedOut = true;
+        endpointController.abort();
+      }, connectTimeoutMs);
+      const abortEndpoint = () => endpointController.abort();
+      if (abortSignal.aborted) {
+        abortEndpoint();
+      } else {
+        abortSignal.addEventListener("abort", abortEndpoint, { once: true });
+      }
       try {
         const candidate = await fetch(endpoint, {
           method: "POST",
@@ -575,8 +601,9 @@ export class VortexService {
             Accept: "text/event-stream",
           },
           body,
-          signal: abortSignal,
+          signal: endpointController.signal,
         });
+        globalThis.clearTimeout(timeoutId);
 
         if (!candidate.ok || !candidate.body) {
           const text = await candidate.text().catch(() => "");
@@ -593,8 +620,14 @@ export class VortexService {
 
         return candidate;
       } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") throw error;
-        lastError = error instanceof Error ? error : new Error("network_error");
+        globalThis.clearTimeout(timeoutId);
+        abortSignal.removeEventListener("abort", abortEndpoint);
+        if (abortSignal.aborted && !timedOut) {
+          throw error instanceof Error ? error : new Error("aborted");
+        }
+        lastError = timedOut
+          ? new Error(`stream_connect_timeout:${connectTimeoutMs}ms`)
+          : error instanceof Error ? error : new Error("network_error");
       }
     }
     throw lastError || new Error("network_error");
@@ -697,6 +730,7 @@ export class VortexService {
 
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
+      const streamTimeoutMs = resolveStreamConnectTimeoutMs();
 
       let buffer = "";
       let rawText = "";
@@ -706,85 +740,106 @@ export class VortexService {
       let finishReason: string | null | undefined;
       let sources: Source[] = [];
       let browserActions: BrowserAction[] = [];
+      let receivedFirstBytes = false;
+      let firstChunkTimedOut = false;
+      const firstChunkTimeoutId = globalThis.setTimeout(() => {
+        if (!receivedFirstBytes) {
+          firstChunkTimedOut = true;
+          abortController.abort();
+        }
+      }, streamTimeoutMs);
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
+      try {
         while (true) {
-          const sepIndex = buffer.indexOf("\n\n");
-          if (sepIndex === -1) break;
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!receivedFirstBytes) {
+            receivedFirstBytes = true;
+            globalThis.clearTimeout(firstChunkTimeoutId);
+          }
+          buffer += decoder.decode(value, { stream: true });
 
-          const rawEvent = buffer.slice(0, sepIndex);
-          buffer = buffer.slice(sepIndex + 2);
+          while (true) {
+            const sepIndex = buffer.indexOf("\n\n");
+            if (sepIndex === -1) break;
 
-          for (const data of parseSseLines(rawEvent)) {
-            if (!data) continue;
-            if (data === "[DONE]") {
-              // Final cleanup before finishing
-              const finalExtracted = extractReasoning(rawText, false);
-              fullText = finalExtracted.cleanText;
-              if (finalExtracted.thought) thought = finalExtracted.thought;
-              yield {
-                text: fullText,
-                thought,
-                sources: includeSources ? sources : [],
-                groundingSupports: [],
-                fileChanges: extractFileChanges(fullText),
-                browserActions,
-                requestId,
-                finishReason,
-                done: true,
-              };
-              return;
-            }
+            const rawEvent = buffer.slice(0, sepIndex);
+            buffer = buffer.slice(sepIndex + 2);
 
-            const parsed = parseJsonSafely<any>(data);
-            if (!parsed) continue;
+            for (const data of parseSseLines(rawEvent)) {
+              if (!data) continue;
+              if (data === "[DONE]") {
+                // Final cleanup before finishing
+                const finalExtracted = extractReasoning(rawText, false);
+                fullText = finalExtracted.cleanText;
+                if (finalExtracted.thought) thought = finalExtracted.thought;
+                yield {
+                  text: fullText,
+                  thought,
+                  sources: includeSources ? sources : [],
+                  groundingSupports: [],
+                  fileChanges: extractFileChanges(fullText),
+                  browserActions,
+                  requestId,
+                  finishReason,
+                  done: true,
+                };
+                return;
+              }
 
-            if (typeof parsed?.request_id === "string") {
-              requestId = parsed.request_id;
-            }
+              const parsed = parseJsonSafely<any>(data);
+              if (!parsed) continue;
 
-            if (includeSources && parsed?.sources) {
-              sources = toSources(parsed.sources);
-            }
-            if (parsed?.perf?.browser_actions) {
-              browserActions = toBrowserActions(parsed.perf.browser_actions);
-            }
-            const parsedFinishReason = parsed?.choices?.[0]?.finish_reason;
-            if (typeof parsedFinishReason === "string") {
-              finishReason = parsedFinishReason;
-            }
+              if (typeof parsed?.request_id === "string") {
+                requestId = parsed.request_id;
+              }
 
-            const delta = parsed?.choices?.[0]?.delta?.content;
-            if (typeof delta === "string" && delta.length > 0) {
-              rawText += delta;
-            }
+              if (includeSources && parsed?.sources) {
+                sources = toSources(parsed.sources);
+              }
+              if (parsed?.perf?.browser_actions) {
+                browserActions = toBrowserActions(parsed.perf.browser_actions);
+              }
+              const parsedFinishReason = parsed?.choices?.[0]?.finish_reason;
+              if (typeof parsedFinishReason === "string") {
+                finishReason = parsedFinishReason;
+              }
 
-            // Streaming: extract reasoning + clean leaked content on every chunk
-            const extracted = extractReasoning(rawText, /* isStreaming */ true);
-            fullText = extracted.cleanText;
-            if (extracted.thought) {
-              thought = extracted.thought;
-            }
+              const delta = parsed?.choices?.[0]?.delta?.content;
+              if (typeof delta === "string" && delta.length > 0) {
+                rawText += delta;
+              }
 
-            if (typeof fullText === "string") {
-              yield {
-                text: fullText,
-                thought,
-                sources: includeSources ? sources : [],
-                groundingSupports: [],
-                fileChanges: extractFileChanges(fullText),
-                browserActions,
-                requestId,
-                finishReason,
-                done: false,
-              };
+              // Streaming: extract reasoning + clean leaked content on every chunk
+              const extracted = extractReasoning(rawText, /* isStreaming */ true);
+              fullText = extracted.cleanText;
+              if (extracted.thought) {
+                thought = extracted.thought;
+              }
+
+              if (typeof fullText === "string") {
+                yield {
+                  text: fullText,
+                  thought,
+                  sources: includeSources ? sources : [],
+                  groundingSupports: [],
+                  fileChanges: extractFileChanges(fullText),
+                  browserActions,
+                  requestId,
+                  finishReason,
+                  done: false,
+                };
+              }
             }
           }
         }
+      } catch (error) {
+        if (firstChunkTimedOut) {
+          throw new Error(`stream_first_chunk_timeout:${streamTimeoutMs}ms`);
+        }
+        throw error;
+      } finally {
+        globalThis.clearTimeout(firstChunkTimeoutId);
       }
 
       // Final pass: full cleanup including leaked system content stripping

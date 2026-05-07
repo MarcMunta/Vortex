@@ -82,10 +82,13 @@ const AgentMessageWrapper: React.FC<AgentMessageWrapperProps> = ({
   const finalAnswerText = useMemo(() => {
     if (isStreaming) return '';
     const content = message.content || '';
-    // If content is very short, it's likely just the summary
-    if (content.length < 50 && !content.includes('```')) return content;
-    // Return the full content as the final answer for markdown rendering
-    return content;
+    const cleaned = content
+      .replace(/^Preparando agente local\.[\s\S]*?(?=(Agente iniciado\.|No se pudo|```|$))/i, '')
+      .replace(/^Preparing local agent\.[\s\S]*?(?=(Agent started\.|Agent run could not|```|$))/i, '')
+      .replace(/^Agente iniciado\. Analizando el repo\.\s*/i, '')
+      .replace(/^Agent started\. Analyzing the repo\.\s*/i, '')
+      .trim();
+    return cleaned;
   }, [isStreaming, message.content]);
 
   return (
@@ -114,8 +117,8 @@ const AgentMessageWrapper: React.FC<AgentMessageWrapperProps> = ({
           )}
 
           {/* Final Answer (markdown rendered) */}
-          {!isStreaming && finalAnswerText && !hasTimelineEvents && (
-            <div className={`${fontSizeClass} leading-[1.45] max-w-full markdown-content`}>
+          {!isStreaming && finalAnswerText && (
+            <div className={`${fontSizeClass} leading-[1.45] max-w-full markdown-content ${hasTimelineEvents ? 'mt-3 rounded-xl border border-border/50 bg-background/35 px-4 py-3' : ''}`}>
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {finalAnswerText}
               </ReactMarkdown>
