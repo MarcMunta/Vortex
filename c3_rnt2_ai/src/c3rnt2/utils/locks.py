@@ -12,72 +12,73 @@ class LockUnavailable(RuntimeError):
 
 class FileLock:
     def __init__(self, path: str | Path):
-        self.path = Path(path)
-        self._fd: Optional[int] = None
+        # Usamos sqlite3 como manejador robusto de locks.
+        # Cambiamos la extensión a .db para reflejar su nueva naturaleza.
+        original_path = Path(path)
+        self.path = original_path.with_suffix('.db')
+        self._conn: Optional[sqlite3.Connection] = None
         self._held: bool = False
 
     def acquire(self, blocking: bool = False, timeout_s: float | None = None, poll_interval_s: float = 0.1) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_RDWR | os.O_CREAT
-        self._fd = os.open(self.path, flags)
-        self._held = False
-        try:
-            deadline = None
-            if blocking:
-                try:
-                    if timeout_s is not None:
-                        timeout_val = float(timeout_s)
-                        if timeout_val <= 0:
-                            timeout_val = 0.0
-                        deadline = time.monotonic() + timeout_val
-                except Exception:
-                    deadline = None
+        import sqlite3
+        
+        deadline = None
+        if blocking:
+            try:
+                if timeout_s is not None:
+                    timeout_val = float(timeout_s)
+                    if timeout_val <= 0:
+                        timeout_val = 0.0
+                    deadline = time.monotonic() + timeout_val
+            except Exception:
+                deadline = None
 
-            while True:
-                try:
-                    if os.name == "nt":
-                        import msvcrt
-
-                        msvcrt.locking(self._fd, msvcrt.LK_NBLCK, 1)
-                    else:
-                        import fcntl
-
-                        fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    self._held = True
-                    return
-                except OSError as exc:
-                    if not blocking:
-                        raise LockUnavailable(str(exc))
-                    if deadline is not None and time.monotonic() >= deadline:
-                        raise LockUnavailable("timeout")
+        while True:
+            try:
+                self._conn = sqlite3.connect(str(self.path), timeout=0.01, isolation_level="EXCLUSIVE")
+                # Crear tabla dummy si no existe
+                self._conn.execute("CREATE TABLE IF NOT EXISTS _lock (id INTEGER PRIMARY KEY)")
+                self._conn.execute("PRAGMA locking_mode = EXCLUSIVE")
+                self._conn.execute("BEGIN EXCLUSIVE")
+                self._held = True
+                return
+            except sqlite3.OperationalError as exc:
+                if self._conn is not None:
                     try:
-                        sleep_s = max(0.01, float(poll_interval_s))
+                        self._conn.close()
                     except Exception:
-                        sleep_s = 0.1
-                    time.sleep(sleep_s)
-        except Exception:
-            self.release()
-            raise
+                        pass
+                    self._conn = None
+                    
+                if not blocking:
+                    raise LockUnavailable(str(exc))
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise LockUnavailable("timeout")
+                try:
+                    sleep_s = max(0.01, float(poll_interval_s))
+                except Exception:
+                    sleep_s = 0.1
+                time.sleep(sleep_s)
+            except Exception:
+                self.release()
+                raise
 
     def release(self) -> None:
-        if self._fd is None:
+        if self._conn is None:
             return
         try:
             if self._held:
-                if os.name == "nt":
-                    import msvcrt
-
-                    msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(self._fd, fcntl.LOCK_UN)
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
         finally:
             try:
-                os.close(self._fd)
+                self._conn.close()
             except Exception:
                 pass
-            self._fd = None
+            self._conn = None
             self._held = False
 
     def __enter__(self) -> "FileLock":
@@ -90,6 +91,7 @@ class FileLock:
 
 
 def acquire_exclusive_lock(base_dir: Path, role: str) -> FileLock:
+    base_dir = Path(base_dir)
     role = role.lower()
     roles = {"serve", "serve_fallback", "train", "self_patch"}
     if role not in roles:
@@ -117,6 +119,7 @@ def acquire_exclusive_lock(base_dir: Path, role: str) -> FileLock:
 
 
 def is_lock_held(base_dir: Path, role: str) -> bool:
+    base_dir = Path(base_dir)
     role = role.lower()
     roles = {"serve", "serve_fallback", "train", "self_patch"}
     if role not in roles:

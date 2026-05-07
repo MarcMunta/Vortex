@@ -611,3 +611,55 @@ export interface ControlStatus {
   active_run_id?: string | null;
   runs?: TrainingRunSummary[];
 }
+
+// ─── Agent Event System ───────────────────────────────────────────────────────
+
+export type AgentEventType =
+  | 'thought'
+  | 'step'
+  | 'command'
+  | 'stdout'
+  | 'stderr'
+  | 'tool_call'
+  | 'tool_result'
+  | 'file_read'
+  | 'file_write'
+  | 'file_change'
+  | 'status'
+  | 'token_usage'
+  | 'error'
+  | 'done';
+
+export type AgentEvent =
+  | { type: 'thought'; text: string; ts: number }
+  | { type: 'step'; title: string; index: number; ts: number }
+  | { type: 'command'; command: string; cwd?: string; ts: number }
+  | { type: 'stdout'; chunk: string; ts: number }
+  | { type: 'stderr'; chunk: string; ts: number }
+  | { type: 'tool_call'; tool: string; args: Record<string, unknown>; ts: number }
+  | { type: 'tool_result'; tool: string; ok: boolean; output: string; ts: number }
+  | { type: 'file_read'; path: string; ts: number }
+  | { type: 'file_write'; path: string; bytes?: number; ts: number }
+  | { type: 'file_change'; path: string; diff: string; ts: number }
+  | { type: 'status'; value: 'running' | 'completed' | 'failed' | 'cancelled'; ts: number }
+  | { type: 'token_usage'; input: number; output: number; ts: number }
+  | { type: 'error'; message: string; ts: number }
+  | { type: 'done'; ts: number };
+
+export type AgentRunStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface AgentRun {
+  id: string;
+  messageId: string;
+  status: AgentRunStatus;
+  events: AgentEvent[];
+  startedAt: number;
+  completedAt?: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  stepCount: number;
+  toolCallCount: number;
+  filesChanged: string[];
+  commandsRun: string[];
+  summary?: string;
+}

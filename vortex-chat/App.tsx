@@ -967,6 +967,7 @@ const VORTEX_CONFIG = {
                         isLoading={isLoading}
                         language={settings.language}
                         containerRef={mainScrollRef}
+                        mode={mode}
                       />
                       {isSearching && (
                         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass-card mt-6 flex w-fit items-center gap-3 rounded-full border border-primary/20 px-4 py-2.5 text-primary accelerated">

@@ -108,6 +108,25 @@ def propose_patch(
         if not ok:
             meta.status = "blocked"
             meta.error = message
+        elif meta.status == "proposed":
+            # Task 3: Sandbox validation
+            try:
+                from ..agent.sandbox_evaluator import SandboxEvaluator
+                evaluator = SandboxEvaluator()
+                sandbox_res = evaluator.evaluate_patch(
+                    repo_root, 
+                    diff_payload, 
+                    test_cmd="pytest && cd vortex-chat && npm run build"
+                )
+                if sandbox_res.get("ok"):
+                    meta.status = "approved_by_sandbox"
+                else:
+                    # Si falla, podemos dejarlo en 'proposed' para revisión manual o en un estado de fallo
+                    # Lo dejamos en proposed para no romper el flujo manual
+                    pass
+            except Exception as e:
+                pass
+
     meta_path = queue_dir / "meta.json"
     meta_path.write_text(json.dumps(meta.__dict__, ensure_ascii=True), encoding="utf-8")
     return PatchProposal(

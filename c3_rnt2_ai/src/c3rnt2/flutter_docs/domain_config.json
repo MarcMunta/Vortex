@@ -1,0 +1,27 @@
+{
+  "system_prompt": "You are Vortex, a local master programming assistant specialized in robust application architecture.",
+  "domain_name": "flutter",
+  "dataset_files": {
+    "general": "official_docs_sft.jsonl",
+    "code": "official_docs_code_sft.jsonl",
+    "debugging": "official_docs_debugging_sft.jsonl",
+    "architecture": "official_docs_architecture_sft.jsonl"
+  },
+  "topics": {
+    "debugging": ["constraints", "layout", "debugging", "rendering", "performance", "error_handling"],
+    "code": ["widgets", "forms_validation", "navigation", "async_futures_streams", "networking", "assets_images", "animations", "gestures", "testing_unit_widget_integration", "golden_tests", "adaptive_responsive"],
+    "architecture": ["architecture", "clean_architecture", "state_management", "persistence", "security", "packages"]
+  },
+  "hard_eval_templates": [
+    {
+      "prompt": "Mi `ListView` dentro de `Column` lanza `RenderBox was not laid out`. Dame causa, fix y test.",
+      "topics": ["constraints", "layout", "RenderBox"],
+      "rubric": ["mentions bounded constraints", "uses Expanded/Flexible or SizedBox", "warns about scrollables"]
+    },
+    {
+      "prompt": "Tengo `RenderFlex overflowed by 42 pixels` en un Row con texto largo. Corrige robusto.",
+      "topics": ["layout", "RenderFlex"],
+      "rubric": ["explains main-axis overflow", "uses Expanded/Flexible", "handles long text"]
+    }
+  ]
+}

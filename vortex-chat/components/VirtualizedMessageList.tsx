@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import MessageBubble from './MessageBubble';
-import { Message, Role, FontSize, Language } from '../types';
+import AgentMessageWrapper from './agent/AgentMessageWrapper';
+import { Message, Role, FontSize, Language, AppMode } from '../types';
 
 interface VirtualizedMessageListProps {
   messages: Message[];
@@ -15,6 +16,7 @@ interface VirtualizedMessageListProps {
   isLoading: boolean;
   language: Language;
   containerRef: React.RefObject<HTMLDivElement | null>;
+  mode?: AppMode;
 }
 
 const BUFFER_COUNT = 5; 
@@ -30,7 +32,8 @@ const VirtualizedMessageList: React.FC<VirtualizedMessageListProps> = ({
   onContinueResponse,
   isLoading,
   language,
-  containerRef
+  containerRef,
+  mode
 }) => {
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
@@ -137,17 +140,26 @@ const VirtualizedMessageList: React.FC<VirtualizedMessageListProps> = ({
             const isStreaming = isLoading && absoluteIndex === messages.length - 1 && msg.role === Role.AI;
             return (
               <div key={msg.id} ref={(el) => registerItem(msg.id, el)} className="w-full">
-                <MessageBubble 
-                  message={msg} 
-                  fontSize={fontSize} 
-                  codeTheme={codeTheme}
-                  onShowReasoning={onShowReasoning} 
-                  onOpenModificationExplorer={onOpenModificationExplorer} 
-                  onSuggestPatch={onSuggestPatch}
-                  onContinueResponse={onContinueResponse}
-                  isStreaming={isStreaming} 
-                  language={language} 
-                />
+                {mode === 'agent' && msg.role === Role.AI ? (
+                  <AgentMessageWrapper
+                    message={msg}
+                    isStreaming={isStreaming}
+                    language={language}
+                    fontSize={fontSize}
+                  />
+                ) : (
+                  <MessageBubble 
+                    message={msg} 
+                    fontSize={fontSize} 
+                    codeTheme={codeTheme}
+                    onShowReasoning={onShowReasoning} 
+                    onOpenModificationExplorer={onOpenModificationExplorer} 
+                    onSuggestPatch={onSuggestPatch}
+                    onContinueResponse={onContinueResponse}
+                    isStreaming={isStreaming} 
+                    language={language} 
+                  />
+                )}
               </div>
             );
           })}
