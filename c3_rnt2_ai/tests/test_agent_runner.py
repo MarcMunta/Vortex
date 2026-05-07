@@ -393,6 +393,41 @@ def test_agent_runner_scaffolds_flutter_login_project_without_model(tmp_path: Pa
     }
 
 
+def test_agent_runner_scaffolds_basic_flutter_project_without_model(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "tools_enabled": ["write_file"],
+        },
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+
+    report = run_agent(
+        "Haz un codigo basico de Flutter en mi proyecto, que se pueda ejecutar.",
+        settings,
+        tmp_path,
+        max_iters=1,
+        permissions=permissions,
+        allow_model_load=False,
+    )
+
+    assert report["ok"] is True
+    assert report["tools_ok"] is True
+    assert "VortexFlutterApp" in (tmp_path / "lib" / "main.dart").read_text(encoding="utf-8")
+    assert "vortex_flutter_app" in (tmp_path / "pubspec.yaml").read_text(encoding="utf-8")
+    assert {change["path"] for change in report["file_changes"]} >= {
+        "pubspec.yaml",
+        "lib/main.dart",
+        "test/widget_test.dart",
+        "README.md",
+    }
+
+
 def test_agent_runner_does_not_scaffold_flutter_project_when_model_is_available(
     tmp_path: Path,
     monkeypatch,

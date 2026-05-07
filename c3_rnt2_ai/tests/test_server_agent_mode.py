@@ -220,6 +220,62 @@ def test_chat_completions_agent_mode_does_not_503_when_model_failed(tmp_path: Pa
     assert seen["allow_model_load"] is False
 
 
+def test_chat_completions_agent_mode_does_not_hot_load_model_for_tool_runner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, _dummy, server_mod = _setup_app(tmp_path, monkeypatch)
+    seen: dict[str, object] = {}
+    client.app.state.models = {}
+    client.app.state.model = None
+    client.app.state.model_loading = False
+    client.app.state.model_load_error = None
+
+    def _fail_hot_load(*_args, **_kwargs):
+        raise AssertionError("agent_mode should not hot-load a model before tool runner")
+
+    def _fake_run_agent(task, settings, base_dir, **kwargs):
+        seen["model"] = kwargs.get("model")
+        seen["allow_model_load"] = kwargs.get("allow_model_load")
+        return {
+            "ok": True,
+            "summary": "agent-tools-ok",
+            "patch_id": None,
+            "patch": "",
+            "file_changes": [],
+            "tests_ok": False,
+            "tools_ok": True,
+            "browser_actions": [],
+            "tool_calls": [],
+        }
+
+    monkeypatch.setattr(server_mod, "_get_or_load_backend", _fail_hot_load)
+    monkeypatch.setattr(server_mod, "run_agent", _fake_run_agent)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "core",
+            "messages": [{"role": "user", "content": "haz codigo en mi proyecto"}],
+            "agent_mode": True,
+            "stream": False,
+            "include_perf": True,
+            "permissions": {
+                "level": "full",
+                "workspace_root": str(tmp_path),
+                "project_path": ".",
+            },
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "agent-tools-ok" in data["choices"][0]["message"]["content"]
+    assert data["perf"]["agent_model_unavailable_reason"] == "model_not_loaded"
+    assert seen["model"] is None
+    assert seen["allow_model_load"] is False
+
+
 def test_chat_completions_agent_mode_external_runtime_uses_direct_generate(
     tmp_path: Path, monkeypatch
 ) -> None:

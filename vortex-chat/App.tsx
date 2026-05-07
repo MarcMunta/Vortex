@@ -6,7 +6,7 @@ import ChatInput from "./components/ChatInput";
 import type { SettingsTab } from "./components/SettingsModal";
 import VirtualizedMessageList from "./components/VirtualizedMessageList";
 import { BrowserAction, ChatSession, Message, Role, ViewType, LogEntry, AppMode, Source } from "./types";
-import { isLikelyTruncatedCode, vortexService } from "./services/vortexService";
+import { hasAssistantCompletionClosure, isLikelyTruncatedCode, vortexService } from "./services/vortexService";
 import type { StreamChunk } from "./services/vortexService";
 import { translations } from "./translations";
 import { AppHeader } from "./app/AppHeader";
@@ -588,6 +588,7 @@ const VORTEX_CONFIG = {
 
   const detectAutoContinuationReason = (chunk: StreamChunk | null, selectedMode: AppMode): string => {
     const finalText = chunk?.text || "";
+    if (hasAssistantCompletionClosure(finalText)) return "";
     if (chunk?.finishReason === "length") return "finish_reason_length";
     if (isLikelyTruncatedCode(finalText)) return "truncated_code";
     if (
@@ -602,7 +603,7 @@ const VORTEX_CONFIG = {
   const looksLikeBadContinuation = (text: string): boolean => {
     const normalized = String(text || "").trim().toLowerCase();
     if (!normalized) return true;
-    return /please provide|could you please|to get started|necessary information|happy to help|what programming language|what task|can you clarify|provide the necessary/i.test(normalized);
+    return /please provide|could you please|to get started|necessary information|happy to help|what programming language|what task|can you clarify|provide the necessary|claro[,.! ]+aqu[ií] tienes la continuaci[oó]n|aqu[ií] tienes la continuaci[oó]n del c[oó]digo|contin[uú]o con el c[oó]digo/i.test(normalized);
   };
 
   const buildHiddenContinuationPrompt = (

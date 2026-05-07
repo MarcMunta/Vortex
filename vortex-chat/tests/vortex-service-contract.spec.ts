@@ -29,6 +29,7 @@ test('isLikelyTruncatedCode detects Dart truncation', () => {
   expect(isLikelyTruncatedCode('```dart\nvoid main() {\n  runApp(const App());')).toBeTruthy();
   expect(isLikelyTruncatedCode('class A {\n  void f() {\n')).toBeTruthy();
   expect(isLikelyTruncatedCode('Texto normal sin código.')).toBeFalsy();
+  expect(isLikelyTruncatedCode('class A {\n  void f() {\n\nEspero que esto te ayude. Buena suerte.')).toBeFalsy();
 });
 
 test('token constants keep code budget long', () => {

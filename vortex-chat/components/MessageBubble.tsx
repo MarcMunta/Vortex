@@ -10,7 +10,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from 'framer-motion';
 import { Message, Role, Source, FontSize, Language } from '../types';
-import { isLikelyTruncatedCode } from '../services/vortexService';
+import { hasAssistantCompletionClosure, isLikelyTruncatedCode } from '../services/vortexService';
 
 interface MessageBubbleProps {
   message: Message;
@@ -598,8 +598,9 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, fontSize = 'medi
   }), [collapsedPaths, togglePath, codeTheme, isUser, language]);
 
   const isThinking = isStreaming && !message.content && !!message.thought;
+  const hasCompletionClosure = hasAssistantCompletionClosure(message.content || '');
   const showTruncatedCodeWarning = !isUser && !isStreaming && Boolean(message.content) && (
-    message.finishReason === 'length' || isLikelyTruncatedCode(message.content)
+    (message.finishReason === 'length' && !hasCompletionClosure) || isLikelyTruncatedCode(message.content)
   );
   const processingLabel = language === 'es' ? 'Procesando...' : 'Processing...';
   const hasDiffBlock = useMemo(() => /```(?:diff|patch)\n[\s\S]*?```/i.test(renderedContent || ''), [renderedContent]);

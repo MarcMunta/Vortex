@@ -3864,7 +3864,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                     ),
                     headers={"Retry-After": "30"},
                 )
-        if selected_model is None and agent_model_unavailable_reason is None:
+        if selected_model is None and agent_model_unavailable_reason is None and not agent_mode:
             try:
                 selected_model = _get_or_load_backend(
                     models, settings, base_dir, chosen_backend
@@ -3874,6 +3874,8 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                     agent_model_unavailable_reason = f"model_load_failed:{exc}"
                 else:
                     raise
+        if selected_model is None and agent_mode and agent_model_unavailable_reason is None:
+            agent_model_unavailable_reason = "model_not_loaded"
         if selected_model is None and not agent_mode:
             raise HTTPException(
                 status_code=400,

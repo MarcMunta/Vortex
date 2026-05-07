@@ -132,6 +132,7 @@ const balanceOf = (text: string, open: string, close: string): number => {
 export function isLikelyTruncatedCode(text: string): boolean {
   const value = String(text || "").trim();
   if (!value) return false;
+  if (hasAssistantCompletionClosure(value)) return false;
   const fenceCount = (value.match(/```/g) || []).length;
   if (fenceCount % 2 === 1) return true;
   const hasCodeSignal = /```|class\s+\w+|void\s+main\(|Widget\s+build\(|State<|Scaffold\(|MaterialApp\(|TextFormField\(|=>|;\s*$/m.test(value);
@@ -145,6 +146,13 @@ export function isLikelyTruncatedCode(text: string): boolean {
   if (/(:\s*_[A-Za-z0-9_]*|=>|\.|,)$/.test(tail)) return true;
   if (/\b(class|Widget build|State<|Scaffold|MaterialApp)\b[\s\S]*$/.test(code) && balanceOf(code, "{", "}") !== 0) return true;
   return false;
+}
+
+export function hasAssistantCompletionClosure(text: string): boolean {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const tail = value.slice(-1600).toLowerCase();
+  return /(?:espero que (?:esto|te) (?:sea util|sea útil|ayude)|buena suerte|respuesta final|tarea completada|archivos actualizados|tests?: ok|validaci[oó]n|listo\b|hecho\b|done\b|completed\b)/i.test(tail);
 }
 
 const repairMojibakeText = (value: string): string => {
