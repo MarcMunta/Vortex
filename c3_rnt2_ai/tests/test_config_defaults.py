@@ -15,6 +15,6 @@ def test_default_llama2_profile_uses_local_llama_cpp_quant() -> None:
     assert core.get("backend") == "llama_cpp"
     assert core.get("llama_cpp_model_path") == "data/models/gguf/llama-2-7b-chat.Q4_K_M.gguf"
     assert core.get("llama_cpp_quant") == "Q4_K_M"
-    assert core.get("llama_cpp_ctx") == 8192
+    assert core.get("llama_cpp_ctx") == 4096
     assert core.get("backend_fallback") is None
     assert core.get("allow_implicit_hf_fallback") is False

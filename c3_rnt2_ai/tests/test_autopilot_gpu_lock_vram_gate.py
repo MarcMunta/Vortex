@@ -10,13 +10,13 @@ def test_autopilot_skips_training_when_gpu_lock_unavailable(tmp_path: Path, monk
     from c3rnt2.utils.locks import FileLock as RealFileLock, LockUnavailable
 
     # Create the lock file path up-front so the test doesn't depend on lock acquisition creating it.
-    gpu_lock_path = tmp_path / "data" / "locks" / "gpu.lock"
+    gpu_lock_path = tmp_path / "data" / "locks" / "gpu.db"
     gpu_lock_path.parent.mkdir(parents=True, exist_ok=True)
     gpu_lock_path.write_text("", encoding="utf-8")
 
     class _FailGpuLock(RealFileLock):
         def acquire(self, blocking: bool = False, timeout_s: float | None = None) -> None:  # type: ignore[override]
-            if self.path.name == "gpu.lock":
+            if self.path.name == "gpu.db":
                 raise LockUnavailable("busy")
             return super().acquire(blocking=blocking)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 from pathlib import Path
 from typing import Optional
@@ -21,7 +22,6 @@ class FileLock:
 
     def acquire(self, blocking: bool = False, timeout_s: float | None = None, poll_interval_s: float = 0.1) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        import sqlite3
         
         deadline = None
         if blocking:
