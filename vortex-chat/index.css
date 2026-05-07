@@ -41,14 +41,14 @@
     --ambient-shadow: 227 38% 5%;
   }
 
-  :root[data-app-mode='ask'] {
+  [data-app-mode='ask'] {
     --primary: 203 100% 58%;
     --ring: 203 100% 58%;
     --ambient-core: 203 100% 58%;
     --ambient-accent: 189 100% 68%;
   }
 
-  :root:not(.dark)[data-app-mode='ask'] {
+  :root:not(.dark) [data-app-mode='ask'], :root:not(.dark)[data-app-mode='ask'] {
     --surface-elevated: 0 0% 100%;
     --surface-glass: 210 36% 98%;
     --border: 214 30% 82%;
@@ -56,14 +56,14 @@
     --ambient-shadow: 213 43% 90%;
   }
 
-  :root[data-app-mode='agent'] {
+  [data-app-mode='agent'] {
     --primary: 270 95% 68%;
     --ring: 270 95% 68%;
     --ambient-core: 272 100% 70%;
     --ambient-accent: 312 96% 71%;
   }
 
-  :root:not(.dark)[data-app-mode='agent'] {
+  :root:not(.dark) [data-app-mode='agent'], :root:not(.dark)[data-app-mode='agent'] {
     --accent: 278 42% 95%;
     --accent-foreground: 278 30% 18%;
     --surface-elevated: 284 60% 98%;
@@ -73,7 +73,7 @@
     --ambient-shadow: 283 58% 91%;
   }
 
-  :root.dark[data-app-mode='agent'] {
+  .dark [data-app-mode='agent'], :root.dark[data-app-mode='agent'] {
     --accent: 274 33% 18%;
     --accent-foreground: 210 20% 98%;
     --surface-elevated: 261 28% 12%;

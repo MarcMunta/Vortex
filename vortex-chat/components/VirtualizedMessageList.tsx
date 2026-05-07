@@ -139,8 +139,8 @@ const VirtualizedMessageList: React.FC<VirtualizedMessageListProps> = ({
             const absoluteIndex = startIndex + index;
             const isStreaming = isLoading && absoluteIndex === messages.length - 1 && msg.role === Role.AI;
             return (
-              <div key={msg.id} ref={(el) => registerItem(msg.id, el)} className="w-full">
-                {mode === 'agent' && msg.role === Role.AI ? (
+              <div key={msg.id} ref={(el) => registerItem(msg.id, el)} className="w-full" data-app-mode={msg.mode || 'ask'}>
+                {msg.mode === 'agent' && msg.role === Role.AI ? (
                   <AgentMessageWrapper
                     message={msg}
                     isStreaming={isStreaming}

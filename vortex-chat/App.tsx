@@ -129,40 +129,7 @@ const App: React.FC = () => {
         ? "El chat sigue disponible mientras el runtime principal se recupera."
         : "Chat stays available while the primary runtime recovers.")
       : rawStatusReason || chatStatusReason;
-  const modeThemeStyle = (mode === "agent"
-    ? (isDarkMode
-      ? {
-          "--primary": "272 100% 72%",
-          "--ring": "272 100% 72%",
-          "--accent": "274 33% 18%",
-          "--accent-foreground": "210 20% 98%",
-          "--ambient-core": "272 100% 72%",
-          "--ambient-accent": "314 100% 72%",
-          "--surface-elevated": "260 29% 12%",
-          "--surface-glass": "259 26% 14%",
-          "--border": "270 30% 26%",
-          "--input": "262 25% 16%",
-          "--ambient-shadow": "254 46% 6%",
-        }
-      : {
-          "--primary": "270 95% 68%",
-          "--ring": "270 95% 68%",
-          "--accent": "278 42% 95%",
-          "--accent-foreground": "278 30% 18%",
-          "--ambient-core": "272 100% 70%",
-          "--ambient-accent": "312 96% 71%",
-          "--surface-elevated": "284 60% 98%",
-          "--surface-glass": "282 44% 97%",
-          "--border": "278 46% 83%",
-          "--input": "278 42% 89%",
-          "--ambient-shadow": "283 58% 91%",
-        })
-    : {
-        "--primary": isDarkMode ? "203 100% 58%" : "203 92% 56%",
-        "--ring": isDarkMode ? "203 100% 58%" : "203 92% 56%",
-        "--ambient-core": isDarkMode ? "203 100% 58%" : "203 92% 56%",
-        "--ambient-accent": isDarkMode ? "189 100% 68%" : "190 94% 66%",
-      }) as unknown as React.CSSProperties;
+
 
   const activeThought = useMemo(() => {
     if (!activeThoughtMessageId || !currentSessionId) return undefined;
@@ -290,14 +257,7 @@ const App: React.FC = () => {
     };
   }, [resetInactivityTimer]);
 
-  useEffect(() => {
-    document.documentElement.dataset.appMode = mode;
-    document.body.dataset.appMode = mode;
-    return () => {
-      delete document.documentElement.dataset.appMode;
-      delete document.body.dataset.appMode;
-    };
-  }, [mode]);
+
 
   useEffect(() => {
     if (activeView === "chat" && currentSession?.messages.length) {
@@ -658,7 +618,7 @@ const VORTEX_CONFIG = {
       addLog("SEARCH", settings.language === "es" ? "Internet activado para este prompt." : "Internet enabled for this prompt.");
     }
 
-    const userMessage: Message = { id: Date.now().toString(), role: Role.USER, content, timestamp: Date.now() };
+    const userMessage: Message = { id: Date.now().toString(), role: Role.USER, content, timestamp: Date.now(), mode: selectedMode };
     const aiMessageId = (Date.now() + 1).toString();
     const initialAiMessage: Message = {
       id: aiMessageId,
@@ -669,6 +629,7 @@ const VORTEX_CONFIG = {
       sources: [],
       groundingSupports: [],
       timestamp: Date.now(),
+      mode: selectedMode,
     };
     setSessions((prev) => prev.map((session) => (
       session.id === targetSessionId
@@ -841,7 +802,7 @@ const VORTEX_CONFIG = {
   const direction = VIEW_INDEX[activeView] > VIEW_INDEX[prevView] ? 1 : -1;
 
   return (
-    <div style={modeThemeStyle} className={`relative flex h-screen w-full overflow-hidden bg-background text-foreground accelerated ${mode === "agent" ? "agent-shell" : "ask-shell"}`}>
+    <div className={`relative flex h-screen w-full overflow-hidden bg-background text-foreground accelerated ask-shell`}>
       <div className="pointer-events-none absolute inset-0">
         <div className="mode-ambient absolute inset-0 transition-all duration-500" />
         <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.12),transparent)] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.03),transparent)]" />
@@ -995,7 +956,7 @@ const VORTEX_CONFIG = {
 
           {!activeModificationFiles && activeView === "chat" && (
             <motion.div initial={false} animate={{ y: footerVisible ? 0 : 200, opacity: footerVisible ? 1 : 0 }} transition={{ type: "spring", damping: 30, stiffness: 200 }} className="absolute bottom-0 left-0 right-0 z-30 bg-gradient-to-t from-background via-background/95 to-transparent pt-6 pb-6 pointer-events-auto accelerated">
-              <div className="pointer-events-auto">
+              <div className="pointer-events-auto" data-app-mode={mode}>
                 <ChatInput
                   onSend={handleSendMessageLocalFirst}
                   isLoading={isLoading}

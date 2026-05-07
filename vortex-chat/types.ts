@@ -197,6 +197,7 @@ export interface Message {
   groundingSupports?: GroundingSupport[];
   timestamp: number;
   fileChanges?: { path: string; diff: string }[];
+  mode?: AppMode;
 }
 
 export interface ChatSession {
