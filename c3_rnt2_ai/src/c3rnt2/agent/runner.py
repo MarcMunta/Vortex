@@ -482,6 +482,45 @@ def _direct_actions_summary(tool_calls: List[dict]) -> str:
     return "Acciones directas OK: " + ", ".join(relevant)
 
 
+def _tool_call_record(
+    action_type: str,
+    args: dict,
+    result: ToolResult,
+    *,
+    max_output_chars: int,
+) -> dict:
+    record = {
+        "action": action_type,
+        "args": args,
+        "ok": result.ok,
+        "output": result.output[:max_output_chars],
+    }
+    if result.meta:
+        record["meta"] = dict(result.meta)
+    return record
+
+
+def _file_changes_from_tool_calls(tool_calls: List[dict]) -> list[dict[str, str]]:
+    changes: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for call in tool_calls:
+        if call.get("action") not in {"write_file", "delete_file", "apply_patch", "propose_patch"}:
+            continue
+        meta = call.get("meta")
+        if not isinstance(meta, dict):
+            continue
+        path = str(meta.get("path") or "").strip()
+        diff = str(meta.get("diff") or "").strip()
+        if not path or not diff:
+            continue
+        key = (path, diff)
+        if key in seen:
+            continue
+        seen.add(key)
+        changes.append({"path": path, "diff": diff})
+    return changes
+
+
 def _log_episode(base_dir: Path, payload: dict) -> None:
     path = base_dir / "data" / "episodes" / "agent.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -627,7 +666,7 @@ def run_agent(
                 "blocked": True,
             },
         )
-        return {"ok": False, "patch_id": None, "tests_ok": False, "summary": summary, "blocked": True}
+        return {"ok": False, "patch_id": None, "tests_ok": False, "summary": summary, "blocked": True, "file_changes": []}
     tools_cfg = settings.get("tools", {}) or {}
     allowlist = resolve_web_allowlist(settings)
     sandbox_root = Path(settings.get("selfimprove", {}).get("sandbox_root", "data/workspaces"))
@@ -687,12 +726,12 @@ def run_agent(
             else:
                 direct_result = ToolResult(ok=False, output=f"tool_unsupported:{direct_action.type}")
             tool_calls.append(
-                {
-                    "action": direct_action.type,
-                    "args": direct_action.args,
-                    "ok": direct_result.ok,
-                    "output": direct_result.output[:4000],
-                }
+                _tool_call_record(
+                    direct_action.type,
+                    direct_action.args,
+                    direct_result,
+                    max_output_chars=4000,
+                )
             )
             direct_ok = direct_ok and bool(direct_result.ok)
             if not direct_result.ok:
@@ -722,6 +761,7 @@ def run_agent(
             "permissions": effective_permissions.to_dict(),
             "patch_id": None,
             "patch": "",
+            "file_changes": [],
             "tests_ok": False,
             "tools_ok": False,
             "summary": summary,
@@ -748,6 +788,7 @@ def run_agent(
             "ok": False,
             "patch_id": None,
             "patch": "",
+            "file_changes": [],
             "tests_ok": False,
             "tools_ok": False,
             "summary": summary,
@@ -877,7 +918,14 @@ def run_agent(
             if bool(action.args.get("_finish_after_write")):
                 summary = "file_action_done" if result.ok else result.output
                 tool_chars = max(2000, int(context_cfg.get("reserve_tool_tokens") or 4000) * 4)
-                tool_calls.append({"action": action.type, "args": action.args, "ok": result.ok, "output": result.output[: min(4000, tool_chars)]})
+                tool_calls.append(
+                    _tool_call_record(
+                        action.type,
+                        action.args,
+                        result,
+                        max_output_chars=min(4000, tool_chars),
+                    )
+                )
                 messages.append({"role": "tool", "content": result.output[:tool_chars]})
                 break
         elif action.type == "delete_file":
@@ -943,7 +991,14 @@ def run_agent(
                 result = ToolResult(ok=False, output="unknown action")
 
         tool_chars = max(2000, int(context_cfg.get("reserve_tool_tokens") or 4000) * 4)
-        tool_calls.append({"action": action.type, "args": action.args, "ok": result.ok, "output": result.output[: min(4000, tool_chars)]})
+        tool_calls.append(
+            _tool_call_record(
+                action.type,
+                action.args,
+                result,
+                max_output_chars=min(4000, tool_chars),
+            )
+        )
         messages.append({"role": "tool", "content": result.output[:tool_chars]})
         if max_wall_time_s > 0 and (time.monotonic() - start_ts) >= max_wall_time_s:
             summary = "stopped_by_wall_time_limit"
@@ -969,6 +1024,13 @@ def run_agent(
         ) or summary
     if patch_id and not patch_text:
         patch_text = _load_patch_from_queue(workspace_dir, settings, patch_id)
+    file_changes = _file_changes_from_tool_calls(tool_calls)
+    if not patch_text and file_changes:
+        patch_text = "\n\n".join(
+            str(change.get("diff") or "").strip()
+            for change in file_changes
+            if str(change.get("diff") or "").strip()
+        )
     browser_actions = _dedupe_browser_actions(browser_actions or tools.browser_actions)
     prompt_text = _build_prompt(task, tool_calls)
     episode = {
@@ -980,6 +1042,7 @@ def run_agent(
         "permissions": effective_permissions.to_dict(),
         "patch_id": patch_id,
         "patch": patch_text,
+        "file_changes": file_changes,
         "tests_ok": tests_ok,
         "tools_ok": tools_ok,
         "summary": summary,
@@ -1005,6 +1068,7 @@ def run_agent(
         "ok": True,
         "patch_id": patch_id,
         "patch": patch_text,
+        "file_changes": file_changes,
         "tests_ok": tests_ok,
         "tools_ok": tools_ok,
         "summary": summary,

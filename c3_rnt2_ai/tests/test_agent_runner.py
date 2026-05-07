@@ -282,7 +282,11 @@ def test_agent_tools_full_mode_writes_files_and_records_browser_actions(
     browser_result = tools.open_browser("http://localhost:4173")
 
     assert write_result.ok is True
+    assert write_result.meta["path"] == "lib/main.dart"
+    assert "+void main() {}" in write_result.meta["diff"]
     assert delete_result.ok is True
+    assert delete_result.meta["path"] == "lib/main.dart"
+    assert "-void main() {}" in delete_result.meta["diff"]
     assert not (tmp_path / "lib" / "main.dart").exists()
     assert browser_result.ok is True
     assert tools.browser_actions == [
@@ -314,6 +318,8 @@ def test_agent_runner_direct_file_create_and_delete(tmp_path: Path, monkeypatch)
     assert create_report["ok"] is True
     assert create_report["tools_ok"] is True
     assert (tmp_path / "notes" / "demo.txt").read_text(encoding="utf-8") == "hola-agente"
+    assert create_report["file_changes"][0]["path"] == "notes/demo.txt"
+    assert "+hola-agente" in create_report["file_changes"][0]["diff"]
 
     delete_report = run_agent(
         "Borra el archivo notes/demo.txt.",
@@ -325,6 +331,8 @@ def test_agent_runner_direct_file_create_and_delete(tmp_path: Path, monkeypatch)
     assert delete_report["ok"] is True
     assert delete_report["tools_ok"] is True
     assert not (tmp_path / "notes" / "demo.txt").exists()
+    assert delete_report["file_changes"][0]["path"] == "notes/demo.txt"
+    assert "-hola-agente" in delete_report["file_changes"][0]["diff"]
 
 
 def test_agent_runner_writes_flutter_code_when_model_returns_markdown(tmp_path: Path, monkeypatch) -> None:
@@ -370,6 +378,8 @@ def test_agent_runner_writes_flutter_code_when_model_returns_markdown(tmp_path: 
     assert "LoginPage" in main_path.read_text(encoding="utf-8")
     assert str(main_path) in report["summary"]
     assert report["tool_calls"][0]["action"] == "write_file"
+    assert report["file_changes"][0]["path"] == "lib/main.dart"
+    assert "+class LoginPage" in report["file_changes"][0]["diff"]
 
 
 def test_agent_runner_infers_exists_summary_from_workspace(tmp_path: Path) -> None:

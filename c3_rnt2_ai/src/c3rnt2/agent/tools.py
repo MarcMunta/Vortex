@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import difflib
 import json
 import os
 import re
@@ -474,21 +475,50 @@ class AgentTools:
             target = self._resolve_safe_path(path)
             if target is None:
                 return ToolResult(ok=False, output="path not allowed")
+            existed = target.exists()
+            old_text = ""
+            if existed and target.is_file():
+                try:
+                    old_text = target.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    old_text = ""
             target.parent.mkdir(parents=True, exist_ok=True)
             if append:
                 with target.open("a", encoding="utf-8", errors="ignore") as handle:
                     handle.write(text)
+                new_text = old_text + text
             else:
                 target.write_text(text, encoding="utf-8")
+                new_text = text
+            rel_path = target.name
+            if self.repo_root:
+                try:
+                    rel_path = target.resolve().relative_to(self.repo_root).as_posix()
+                except Exception:
+                    rel_path = target.as_posix()
+            old_lines = old_text.splitlines()
+            new_lines = new_text.splitlines()
+            diff = "\n".join(
+                difflib.unified_diff(
+                    old_lines,
+                    new_lines,
+                    fromfile=f"a/{rel_path}" if existed else "/dev/null",
+                    tofile=f"b/{rel_path}",
+                    lineterm="",
+                )
+            )
             return ToolResult(
                 ok=True,
                 output=json.dumps(
                     {
                         "path": str(target),
+                        "relative_path": rel_path,
                         "bytes": len(text.encode("utf-8", errors="ignore")),
                         "append": bool(append),
+                        "created": not existed,
                     }
                 ),
+                meta={"path": rel_path, "absolute_path": str(target), "diff": diff},
             )
         except Exception as exc:
             return ToolResult(ok=False, output=f"write failed: {exc}")
@@ -505,8 +535,28 @@ class AgentTools:
                 return ToolResult(ok=False, output="path missing")
             if not target.is_file():
                 return ToolResult(ok=False, output="path is not a file")
+            old_text = target.read_text(encoding="utf-8", errors="ignore")
+            rel_path = target.name
+            if self.repo_root:
+                try:
+                    rel_path = target.resolve().relative_to(self.repo_root).as_posix()
+                except Exception:
+                    rel_path = target.as_posix()
+            diff = "\n".join(
+                difflib.unified_diff(
+                    old_text.splitlines(),
+                    [],
+                    fromfile=f"a/{rel_path}",
+                    tofile="/dev/null",
+                    lineterm="",
+                )
+            )
             target.unlink()
-            return ToolResult(ok=True, output=json.dumps({"path": str(target), "deleted": True}))
+            return ToolResult(
+                ok=True,
+                output=json.dumps({"path": str(target), "relative_path": rel_path, "deleted": True}),
+                meta={"path": rel_path, "absolute_path": str(target), "diff": diff},
+            )
         except Exception as exc:
             return ToolResult(ok=False, output=f"delete failed: {exc}")
 
