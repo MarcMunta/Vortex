@@ -393,6 +393,41 @@ def test_agent_runner_scaffolds_flutter_login_project_without_model(tmp_path: Pa
     }
 
 
+def test_agent_runner_does_not_scaffold_flutter_project_when_model_is_available(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {"web_allowlist": [], "json_repair_retries": 0},
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+
+    class PlanningModel:
+        tokenizer = None
+
+        def generate(self, _prompt: str, **_kwargs):
+            return json.dumps({"action": "finish", "args": {"summary": "modelo planifico"}})
+
+    report = run_agent(
+        "Hazme un proyecto Flutter que se pueda ejecutar con un login basico.",
+        settings,
+        tmp_path,
+        max_iters=1,
+        model=PlanningModel(),
+        permissions=permissions,
+    )
+
+    assert report["ok"] is True
+    assert report["summary"] == "modelo planifico"
+    assert report["file_changes"] == []
+    assert not (tmp_path / "pubspec.yaml").exists()
+
+
 def test_agent_runner_writes_flutter_code_when_model_returns_markdown(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("C3RNT2_NO_NET", "1")
     settings = {
@@ -438,6 +473,52 @@ def test_agent_runner_writes_flutter_code_when_model_returns_markdown(tmp_path: 
     assert report["tool_calls"][0]["action"] == "write_file"
     assert report["file_changes"][0]["path"] == "lib/main.dart"
     assert "+class LoginPage" in report["file_changes"][0]["diff"]
+
+
+def test_agent_runner_completes_flutter_project_when_model_returns_only_main_dart(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {"web_allowlist": [], "json_repair_retries": 0},
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+
+    class MarkdownCodeModel:
+        tokenizer = None
+
+        def generate(self, _prompt: str, **_kwargs):
+            return (
+                "```dart\n"
+                "import 'package:flutter/material.dart';\n"
+                "void main() => runApp(const MaterialApp(home: Text('Login')));\n"
+                "```"
+            )
+
+    report = run_agent(
+        "Hazme un proyecto Flutter que se pueda ejecutar con un login basico.",
+        settings,
+        tmp_path,
+        max_iters=3,
+        model=MarkdownCodeModel(),
+        permissions=permissions,
+    )
+
+    assert report["ok"] is True
+    assert (tmp_path / "lib" / "main.dart").exists()
+    assert (tmp_path / "pubspec.yaml").exists()
+    assert (tmp_path / "test" / "widget_test.dart").exists()
+    assert {change["path"] for change in report["file_changes"]} >= {
+        "lib/main.dart",
+        "pubspec.yaml",
+        "test/widget_test.dart",
+        "README.md",
+    }
 
 
 def test_agent_runner_infers_exists_summary_from_workspace(tmp_path: Path) -> None:

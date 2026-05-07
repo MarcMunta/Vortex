@@ -2096,23 +2096,24 @@ def _format_agent_report_text(report: dict[str, Any]) -> str:
     if patch_id:
         parts.append(f"Patch: {patch_id}")
     file_changes = report.get("file_changes")
-    rendered_file_changes = False
+    changed_paths: list[str] = []
     if isinstance(file_changes, list):
-        remaining_chars = 12000
         for item in file_changes:
             if not isinstance(item, dict):
                 continue
             path = str(item.get("path") or "").strip()
-            diff = str(item.get("diff") or "").strip()
-            if not path or not diff or remaining_chars <= 0:
+            if not path or path in changed_paths:
                 continue
-            if len(diff) > remaining_chars:
-                diff = diff[:remaining_chars].rstrip() + "\n...diff truncated..."
-            parts.append(f"```file:{path}\n{diff}\n```")
-            rendered_file_changes = True
-            remaining_chars -= len(diff)
+            changed_paths.append(path)
+        if changed_paths:
+            visible_paths = changed_paths[:8]
+            suffix = f" (+{len(changed_paths) - len(visible_paths)} mas)" if len(changed_paths) > len(visible_paths) else ""
+            parts.append("Archivos: " + ", ".join(visible_paths) + suffix)
+    workspace_root = str(report.get("workspace_root") or "").strip()
+    if workspace_root and changed_paths:
+        parts.append(f"Workspace: {workspace_root}")
     patch_text = str(report.get("patch") or "").strip()
-    if patch_text and not rendered_file_changes:
+    if patch_text and not changed_paths:
         if len(patch_text) > 12000:
             patch_text = patch_text[:12000].rstrip() + "\n...diff truncated..."
         parts.append(f"```diff\n{patch_text}\n```")
@@ -4125,6 +4126,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                 "tokens_per_sec": float(tokens_out) / max(1e-6, elapsed),
                                 "vram_peak_mb": vram_peak,
                                 "tests_ok": bool(report.get("tests_ok")),
+                                "tools_ok": bool(report.get("tools_ok")),
                                 "patch_id": report.get("patch_id"),
                                 "file_changes": report.get("file_changes") or [],
                                 "permissions": report.get("permissions"),

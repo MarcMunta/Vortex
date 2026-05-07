@@ -1,16 +1,24 @@
 {
   "roots": [
-    "test_flutter"
+    "vortex_login_app"
   ],
   "packages": [
     {
-      "name": "test_flutter",
+      "name": "vortex_login_app",
       "version": "1.0.0+1",
       "dependencies": [
         "flutter"
       ],
       "devDependencies": [
+        "flutter_lints",
         "flutter_test"
+      ]
+    },
+    {
+      "name": "flutter_lints",
+      "version": "4.0.0",
+      "dependencies": [
+        "lints"
       ]
     },
     {
@@ -42,6 +50,11 @@
         "sky_engine",
         "vector_math"
       ]
+    },
+    {
+      "name": "lints",
+      "version": "4.0.0",
+      "dependencies": []
     },
     {
       "name": "stream_channel",

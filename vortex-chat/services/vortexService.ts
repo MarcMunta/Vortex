@@ -335,8 +335,8 @@ const buildPromptEnvelope = (
   const behavior = mode === "agent"
     ? (
         language === "es"
-          ? "Actua como operador tecnico. Prioriza diagnostico, pasos concretos y cambios de codigo. Usa bloques ```diff``` o ```file:path``` solo cuando ayuden."
-          : "Act as a technical operator. Prioritize diagnosis, concrete steps, and code changes. Use ```diff``` or ```file:path``` blocks only when they help."
+          ? "Actua como operador tecnico. Prioriza diagnostico, acciones reales, archivos tocados y validacion. No inventes diffs ni bloques ```file:path```; los cambios reales se muestran desde las herramientas."
+          : "Act as a technical operator. Prioritize diagnosis, real actions, touched files, and validation. Do not invent diffs or ```file:path``` blocks; real changes are shown from tools."
       )
     : (
         language === "es"

@@ -82,14 +82,22 @@ const AgentMessageWrapper: React.FC<AgentMessageWrapperProps> = ({
   const finalAnswerText = useMemo(() => {
     if (isStreaming) return '';
     const content = message.content || '';
-    const cleaned = content
+    let cleaned = content
       .replace(/^Preparando agente local\.[\s\S]*?(?=(Agente iniciado\.|No se pudo|```|$))/i, '')
       .replace(/^Preparing local agent\.[\s\S]*?(?=(Agent started\.|Agent run could not|```|$))/i, '')
       .replace(/^Agente iniciado\. Analizando el repo\.\s*/i, '')
       .replace(/^Agent started\. Analyzing the repo\.\s*/i, '')
       .trim();
+    if (hasTimelineEvents || (message.fileChanges?.length || 0) > 0) {
+      cleaned = cleaned
+        .replace(/```file:[^\n]*\n[\s\S]*?```/gi, '')
+        .replace(/```(?:diff|patch)\n[\s\S]*?```/gi, '')
+        .replace(/^\s*\.\.\s*/g, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    }
     return cleaned;
-  }, [isStreaming, message.content]);
+  }, [hasTimelineEvents, isStreaming, message.content, message.fileChanges?.length]);
 
   return (
     <motion.div

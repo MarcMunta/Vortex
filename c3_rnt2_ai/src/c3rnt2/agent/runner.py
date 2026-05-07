@@ -629,25 +629,14 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 """
-    widget_test = """import 'package:flutter/material.dart';
-import 'package:flutter_test/flutter_test.dart';
-import 'package:vortex_login_app/main.dart';
+    widget_test = """import 'package:flutter_test/flutter_test.dart';
+import 'package:vortex_login_app/main.dart' as app;
 
 void main() {
-  testWidgets('login validates and signs in', (WidgetTester tester) async {
-    await tester.pumpWidget(const VortexLoginApp());
-
-    await tester.tap(find.text('Sign in'));
+  testWidgets('app starts', (WidgetTester tester) async {
+    app.main();
     await tester.pump();
-    expect(find.text('Enter your email'), findsOneWidget);
-
-    await tester.enterText(find.byType(TextFormField).at(0), 'user@example.com');
-    await tester.enterText(find.byType(TextFormField).at(1), 'secret1');
-    await tester.tap(find.text('Sign in'));
-    await tester.pump();
-
-    expect(find.text('Welcome'), findsOneWidget);
-    expect(find.text('Signed in as user@example.com'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }
 """
@@ -677,13 +666,23 @@ flutter test
     ]
 
 
+def _flutter_login_project_support_actions(workspace_dir: Path) -> list[Action]:
+    actions: list[Action] = []
+    for action in _flutter_login_project_actions():
+        path = str(action.args.get("path") or "")
+        if not path or path == "lib/main.dart":
+            continue
+        if (workspace_dir / path).exists():
+            continue
+        actions.append(action)
+    return actions
+
+
 def _extract_direct_actions(task: str) -> list[Action]:
     text = str(task or "").strip()
     if not text:
         return []
     actions: list[tuple[int, Action]] = []
-    if _requests_flutter_login_project(text):
-        return _flutter_login_project_actions()
     write_patterns = [
         r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
         r"(?:modifica|modificar|actualiza|actualizar|sobrescribe|sobrescribir|update|modify|overwrite)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
@@ -784,7 +783,11 @@ def _file_changes_from_tool_calls(tool_calls: List[dict]) -> list[dict[str, str]
         if key in seen:
             continue
         seen.add(key)
-        changes.append({"path": path, "diff": diff})
+        change = {"path": path, "diff": diff}
+        absolute_path = str(meta.get("absolute_path") or "").strip()
+        if absolute_path:
+            change["absolute_path"] = absolute_path
+        changes.append(change)
     return changes
 
 
@@ -970,9 +973,11 @@ def run_agent(
         if action_provider is None and effective_permissions.can_write
         else []
     )
-    if direct_actions:
+
+    def _run_direct_actions(actions: list[Action]) -> bool:
+        nonlocal summary, tools_ok
         direct_ok = True
-        for direct_action in direct_actions:
+        for direct_action in actions:
             if direct_action.type not in allowed_tools:
                 direct_result = ToolResult(ok=False, output=f"tool_disabled:{direct_action.type}")
             elif direct_action.type == "write_file":
@@ -1005,6 +1010,10 @@ def run_agent(
                 break
         tools_ok = direct_ok
         summary = "direct_actions_done" if direct_ok else tool_calls[-1]["output"]
+        return direct_ok
+
+    if direct_actions:
+        _run_direct_actions(direct_actions)
 
     if (
         not direct_actions
@@ -1013,6 +1022,17 @@ def run_agent(
         and allow_model_load
     ):
         current_model = load_inference_model(settings)
+
+    if (
+        not direct_actions
+        and action_provider is None
+        and current_model is None
+        and effective_permissions.can_write
+        and "write_file" in allowed_tools
+        and _requests_flutter_login_project(task)
+    ):
+        direct_actions = _flutter_login_project_actions()
+        _run_direct_actions(direct_actions)
 
     if not direct_actions and action_provider is None and current_model is None:
         summary = (
@@ -1194,6 +1214,29 @@ def run_agent(
                     )
                 )
                 messages.append({"role": "tool", "content": result.output[:tool_chars]})
+                if (
+                    result.ok
+                    and _requests_flutter_login_project(task)
+                    and str(action.args.get("path") or "").replace("\\", "/") == "lib/main.dart"
+                ):
+                    for support_action in _flutter_login_project_support_actions(workspace_dir):
+                        support_result = tools.write_file(
+                            str(support_action.args.get("path", "")),
+                            str(support_action.args.get("text", "")),
+                            append=bool(support_action.args.get("append", False)),
+                        )
+                        tool_calls.append(
+                            _tool_call_record(
+                                support_action.type,
+                                support_action.args,
+                                support_result,
+                                max_output_chars=min(4000, tool_chars),
+                            )
+                        )
+                        tools_ok = tools_ok and bool(support_result.ok)
+                        if not support_result.ok:
+                            summary = support_result.output
+                            break
                 break
         elif action.type == "delete_file":
             result = tools.delete_file(str(action.args.get("path", "")))

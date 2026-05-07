@@ -44,6 +44,12 @@
       "languageVersion": "3.8"
     },
     {
+      "name": "flutter_lints",
+      "rootUri": "file:///C:/Users/Marc/AppData/Local/Pub/Cache/hosted/pub.dev/flutter_lints-4.0.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.1"
+    },
+    {
       "name": "flutter_test",
       "rootUri": "file:///C:/Users/Marc/dev/flutter/packages/flutter_test",
       "packageUri": "lib/",
@@ -66,6 +72,12 @@
       "rootUri": "file:///C:/Users/Marc/AppData/Local/Pub/Cache/hosted/pub.dev/leak_tracker_testing-3.0.2",
       "packageUri": "lib/",
       "languageVersion": "3.2"
+    },
+    {
+      "name": "lints",
+      "rootUri": "file:///C:/Users/Marc/AppData/Local/Pub/Cache/hosted/pub.dev/lints-4.0.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.1"
     },
     {
       "name": "matcher",
@@ -146,10 +158,10 @@
       "languageVersion": "3.5"
     },
     {
-      "name": "test_flutter",
+      "name": "vortex_login_app",
       "rootUri": "../",
       "packageUri": "lib/",
-      "languageVersion": "2.12"
+      "languageVersion": "3.3"
     }
   ],
   "generator": "pub",

@@ -571,6 +571,21 @@ const VORTEX_CONFIG = {
     return merged;
   };
 
+  const trimContinuationOverlap = (previous: string, addition: string): string => {
+    const cleanAddition = String(addition || "").trim();
+    if (!cleanAddition) return "";
+    const cleanPrevious = String(previous || "").trimEnd();
+    if (!cleanPrevious) return cleanAddition;
+    const maxOverlap = Math.min(4000, cleanPrevious.length, cleanAddition.length);
+    for (let size = maxOverlap; size >= 80; size -= 1) {
+      if (cleanPrevious.endsWith(cleanAddition.slice(0, size))) {
+        return cleanAddition.slice(size).trimStart();
+      }
+    }
+    if (cleanPrevious.includes(cleanAddition)) return "";
+    return cleanAddition;
+  };
+
   const detectAutoContinuationReason = (chunk: StreamChunk | null, selectedMode: AppMode): string => {
     const finalText = chunk?.text || "";
     if (chunk?.finishReason === "length") return "finish_reason_length";
@@ -688,9 +703,25 @@ const VORTEX_CONFIG = {
 
       let lastContinuationChunk: StreamChunk | null = null;
       const applyContinuationChunk = (chunk: StreamChunk): StreamChunk | null => {
-        const addition = chunk.text || "";
-        if (!addition.trim() || looksLikeBadContinuation(addition)) {
+        const rawAddition = chunk.text || "";
+        if (!rawAddition.trim() || looksLikeBadContinuation(rawAddition)) {
           return null;
+        }
+        const addition = trimContinuationOverlap(carriedText, rawAddition);
+        if (!addition.trim()) {
+          setSessions((prev) => prev.map((session) => (
+            session.id === params.targetSessionId
+              ? {
+                  ...session,
+                  messages: session.messages.map((message) => (
+                    message.id === params.aiMessageId
+                      ? { ...message, finishReason: "stop" }
+                      : message
+                  )),
+                }
+              : session
+          )));
+          return { ...chunk, text: carriedText, fileChanges: carriedFileChanges, finishReason: "stop" };
         }
         const nextText = addition ? `${carriedText}\n\n${addition}` : carriedText;
         const nextFileChanges = mergeFileChangesLocal(carriedFileChanges, chunk.fileChanges || []);
@@ -706,7 +737,7 @@ const VORTEX_CONFIG = {
                         content: nextText,
                         thought: chunk.thought || message.thought,
                         requestId: chunk.requestId || message.requestId,
-                        finishReason: chunk.finishReason ?? message.finishReason,
+                        finishReason: chunk.finishReason ?? "stop",
                         sources: chunk.sources.length > 0 ? chunk.sources : message.sources,
                         fileChanges: nextFileChanges,
                       }

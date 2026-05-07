@@ -120,7 +120,8 @@ def test_chat_completions_agent_mode_non_stream(tmp_path: Path, monkeypatch) -> 
     assert "agent-ok" in content
     assert "Tests: ok" in content
     assert "Patch: patch-1" in content
-    assert "```file:lib/main.dart" in content
+    assert "Archivos: lib/main.dart" in content
+    assert "```file:lib/main.dart" not in content
     assert data["sources"] == []
     assert data["perf"]["agent_mode"] is True
     assert data["perf"]["agent_strategy"] == "tool_runner"
@@ -170,7 +171,8 @@ def test_chat_completions_agent_mode_stream(tmp_path: Path, monkeypatch) -> None
     assert "Agente iniciado" in resp.text
     assert "agent-stream" in resp.text
     assert "file_changes" in resp.text
-    assert "```file:app.py" in resp.text
+    assert "Archivos: app.py" in resp.text
+    assert "```file:app.py" not in resp.text
     assert "data: [DONE]" in resp.text
 
 
