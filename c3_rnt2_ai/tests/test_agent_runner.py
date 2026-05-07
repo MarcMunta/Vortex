@@ -355,6 +355,44 @@ def test_agent_runner_direct_file_create_and_delete(tmp_path: Path, monkeypatch)
     assert "-hola-agente" in delete_report["file_changes"][0]["diff"]
 
 
+def test_agent_runner_scaffolds_flutter_login_project_without_model(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "tools_enabled": ["write_file"],
+        },
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+
+    report = run_agent(
+        "Hazme un proyecto Flutter que se pueda ejecutar con un login basico.",
+        settings,
+        tmp_path,
+        max_iters=1,
+        permissions=permissions,
+        allow_model_load=False,
+    )
+
+    assert report["ok"] is True
+    assert report["tools_ok"] is True
+    assert (tmp_path / "pubspec.yaml").exists()
+    assert (tmp_path / "lib" / "main.dart").exists()
+    assert (tmp_path / "test" / "widget_test.dart").exists()
+    assert "VortexLoginApp" in (tmp_path / "lib" / "main.dart").read_text(encoding="utf-8")
+    assert "pubspec.yaml" in report["summary"]
+    assert {change["path"] for change in report["file_changes"]} >= {
+        "pubspec.yaml",
+        "lib/main.dart",
+        "test/widget_test.dart",
+        "README.md",
+    }
+
+
 def test_agent_runner_writes_flutter_code_when_model_returns_markdown(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("C3RNT2_NO_NET", "1")
     settings = {

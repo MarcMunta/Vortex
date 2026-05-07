@@ -584,6 +584,12 @@ const VORTEX_CONFIG = {
     return "";
   };
 
+  const looksLikeBadContinuation = (text: string): boolean => {
+    const normalized = String(text || "").trim().toLowerCase();
+    if (!normalized) return true;
+    return /please provide|could you please|to get started|necessary information|happy to help|what programming language|what task|can you clarify|provide the necessary/i.test(normalized);
+  };
+
   const buildHiddenContinuationPrompt = (
     originalTask: string,
     previousText: string,
@@ -593,12 +599,13 @@ const VORTEX_CONFIG = {
     const tail = previousText.slice(-6000);
     if (settings.language === "es") {
       return [
-        "Continua automaticamente la misma tarea en este mismo mensaje.",
-        "No saludes. No pidas datos ya dados. No cambies de idioma: responde solo en espanol.",
+        "CONTINUA. Mismo mensaje. Mismo chat. Misma tarea.",
+        "IDIOMA OBLIGATORIO: ESPANOL.",
+        "No saludes. No digas que necesitas mas informacion. No preguntes el lenguaje ni la tarea: ya estan abajo.",
         "Escribe solo la continuacion literal de la respuesta anterior. No repitas texto ya emitido.",
         selectedMode === "agent"
           ? "Si estabas en modo agente, conserva el estado, inspecciona el workspace si hace falta, termina acciones pendientes y valida cuando sea posible."
-          : "Si la respuesta anterior quedo cortada, continua desde el ultimo punto coherente y cierra bloques de codigo o diff.",
+          : "Si la respuesta anterior quedo cortada, continua desde el ultimo punto coherente y cierra bloques de codigo o diff. Si dudas, termina la tarea original directamente.",
         `Motivo: ${reason}.`,
         `Tarea original:\n${originalTask}`,
         `Final ya emitido:\n${tail}`,
@@ -680,11 +687,11 @@ const VORTEX_CONFIG = {
       );
 
       let lastContinuationChunk: StreamChunk | null = null;
-      let pendingAnimationFrame: number | null = null;
-      let pendingChunk: StreamChunk | null = null;
-
-      const applyContinuationChunk = (chunk: StreamChunk) => {
+      const applyContinuationChunk = (chunk: StreamChunk): StreamChunk | null => {
         const addition = chunk.text || "";
+        if (!addition.trim() || looksLikeBadContinuation(addition)) {
+          return null;
+        }
         const nextText = addition ? `${carriedText}\n\n${addition}` : carriedText;
         const nextFileChanges = mergeFileChangesLocal(carriedFileChanges, chunk.fileChanges || []);
         setSessions((prev) => prev.map((session) => (
@@ -708,37 +715,18 @@ const VORTEX_CONFIG = {
               }
             : session
         )));
-        lastContinuationChunk = { ...chunk, text: nextText, fileChanges: nextFileChanges };
-      };
-
-      const scheduleContinuationChunk = (chunk: StreamChunk) => {
-        pendingChunk = chunk;
-        if (pendingAnimationFrame !== null) return;
-        pendingAnimationFrame = window.requestAnimationFrame(() => {
-          pendingAnimationFrame = null;
-          const next = pendingChunk;
-          pendingChunk = null;
-          if (next) applyContinuationChunk(next);
-        });
-      };
-
-      const flushContinuationChunk = () => {
-        if (pendingAnimationFrame !== null) {
-          window.cancelAnimationFrame(pendingAnimationFrame);
-          pendingAnimationFrame = null;
-        }
-        const next = pendingChunk;
-        pendingChunk = null;
-        if (next) applyContinuationChunk(next);
+        return { ...chunk, text: nextText, fileChanges: nextFileChanges };
       };
 
       try {
         for await (const chunk of stream) {
           if (abortControllerRef.current) break;
           setIsSearching(false);
-          scheduleContinuationChunk(chunk);
+          lastContinuationChunk = chunk;
         }
-        flushContinuationChunk();
+        if (lastContinuationChunk) {
+          lastContinuationChunk = applyContinuationChunk(lastContinuationChunk);
+        }
       } catch (error) {
         const detail = error instanceof Error ? error.message : "continuation_failed";
         addLog("SYSTEM", repairMojibakeText(detail));
@@ -750,7 +738,11 @@ const VORTEX_CONFIG = {
         resetInactivityTimer();
       }
 
-      if (!lastContinuationChunk) break;
+      if (!lastContinuationChunk) {
+        reason = reason === "bad_continuation" ? "" : "bad_continuation";
+        continue;
+      }
+      if (lastContinuationChunk.text === carriedText) break;
       carriedText = lastContinuationChunk.text;
       carriedFileChanges = lastContinuationChunk.fileChanges || carriedFileChanges;
       reason = detectAutoContinuationReason(lastContinuationChunk, params.selectedMode);
