@@ -30,6 +30,32 @@ export interface WorkspaceProject {
   lastUsedAt: number;
 }
 
+export interface SkillSafety {
+  network: boolean;
+  filesystem_write: boolean;
+  shell: boolean;
+}
+
+export interface SkillSummary {
+  id: string;
+  name: string;
+  version: string;
+  tags: string[];
+  enabled: boolean;
+  trusted: boolean;
+  token_budget: number;
+  priority: number;
+  safety: SkillSafety;
+  install?: Record<string, unknown>;
+}
+
+export interface SkillsConfig {
+  enabled: boolean;
+  max_k: number;
+  token_budget_total: number;
+  strict: boolean;
+}
+
 export interface BrowserAction {
   target: string;
   opened?: boolean;
@@ -197,6 +223,7 @@ export interface Message {
   groundingSupports?: GroundingSupport[];
   timestamp: number;
   fileChanges?: { path: string; diff: string }[];
+  agentEvents?: AgentEvent[];
   mode?: AppMode;
 }
 

@@ -8,10 +8,12 @@ interface FileDiffBlockProps {
   diff: string;
   language: Language;
   defaultExpanded?: boolean;
+  forceExpanded?: boolean;
 }
 
-const FileDiffBlock: React.FC<FileDiffBlockProps> = ({ path, diff, language, defaultExpanded = false }) => {
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+const FileDiffBlock: React.FC<FileDiffBlockProps> = ({ path, diff, language, defaultExpanded = false, forceExpanded = false }) => {
+  const [isExpandedState, setIsExpanded] = useState(defaultExpanded);
+  const isExpanded = forceExpanded || isExpandedState;
 
   const { lines, stats } = useMemo(() => {
     const rawLines = diff.split('\n');
@@ -45,8 +47,10 @@ const FileDiffBlock: React.FC<FileDiffBlockProps> = ({ path, diff, language, def
     >
       {/* File Header */}
       <div
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="flex items-center justify-between px-4 py-2.5 bg-zinc-800/50 border-b border-zinc-700/30 cursor-pointer hover:bg-zinc-800/70 transition-colors"
+        onClick={() => {
+          if (!forceExpanded) setIsExpanded(!isExpanded);
+        }}
+        className={`flex items-center justify-between px-4 py-2.5 bg-zinc-800/50 border-b border-zinc-700/30 transition-colors ${forceExpanded ? '' : 'cursor-pointer hover:bg-zinc-800/70'}`}
       >
         <div className="flex items-center gap-3 min-w-0">
           <FileCode size={14} className="text-primary/70 shrink-0" />
@@ -66,9 +70,11 @@ const FileDiffBlock: React.FC<FileDiffBlockProps> = ({ path, diff, language, def
               <Minus size={9} strokeWidth={4} /> {stats.removed}
             </span>
           </div>
-          <div className="text-zinc-600">
-            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </div>
+          {!forceExpanded && (
+            <div className="text-zinc-600">
+              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </div>
+          )}
         </div>
       </div>
 

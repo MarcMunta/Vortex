@@ -1,6 +1,7 @@
 import {
   AppMode,
   BrowserAction,
+  AgentEvent,
   ChatSession,
   GroundingSupport,
   Message,
@@ -11,10 +12,13 @@ import {
   SpatialSessionState,
   VoiceStatus,
   VoiceTranscriptionResult,
+  SkillSummary,
+  SkillsConfig,
   WorkspacePermissions,
   WorkspaceProject,
 } from "../types";
 import { parseJsonSafely, requestJson } from "./apiClient";
+import { parseNativeAgentEvent } from "./agentEventParser";
 
 export type StreamChunk = {
   text: string;
@@ -23,6 +27,7 @@ export type StreamChunk = {
   groundingSupports: GroundingSupport[];
   fileChanges?: FileChange[];
   browserActions?: BrowserAction[];
+  agentEvents?: AgentEvent[];
   requestId?: string;
   finishReason?: string | null;
   done: boolean;
@@ -43,6 +48,7 @@ export const DEFAULT_CHAT_MAX_TOKENS = 2048;
 export const CODE_CHAT_MAX_TOKENS = 3072;
 export const COMPLETE_CODE_MAX_TOKENS = 4096;
 export const DEFAULT_STREAM_CONNECT_TIMEOUT_MS = 120000;
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300000;
 
 export const resolveApiBaseUrl = (): string => {
   const env = ((import.meta as any).env || {}) as Record<string, string | undefined>;
@@ -261,6 +267,31 @@ const toBrowserActions = (raw: unknown): BrowserAction[] => {
     });
   }
   return actions;
+};
+
+const toAgentEvents = (raw: unknown): AgentEvent[] => {
+  if (!Array.isArray(raw)) return [];
+  const events: AgentEvent[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const parsed = parseNativeAgentEvent({ agent_event: item as Record<string, unknown> });
+    if (parsed) events.push(parsed);
+  }
+  return events;
+};
+
+const mergeAgentEvents = (...groups: AgentEvent[][]): AgentEvent[] => {
+  const merged: AgentEvent[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    for (const event of group) {
+      const key = JSON.stringify(event);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(event);
+    }
+  }
+  return merged;
 };
 
 const MAX_PROMPT_HISTORY_MESSAGES = 24;
@@ -568,6 +599,12 @@ const resolveStreamConnectTimeoutMs = (): number => {
   return Number.isFinite(raw) && raw >= 1000 ? raw : DEFAULT_STREAM_CONNECT_TIMEOUT_MS;
 };
 
+const resolveStreamIdleTimeoutMs = (): number => {
+  const env = ((import.meta as any).env || {}) as Record<string, string | undefined>;
+  const raw = Number(env.VITE_STREAM_IDLE_TIMEOUT_MS || "");
+  return Number.isFinite(raw) && raw >= 1000 ? raw : DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+};
+
 export class VortexService {
   private model: string = "auto";
   private readonly baseUrl = resolveApiBaseUrl();
@@ -768,6 +805,7 @@ export class VortexService {
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       const streamTimeoutMs = resolveStreamConnectTimeoutMs();
+      const streamIdleTimeoutMs = resolveStreamIdleTimeoutMs();
 
       let buffer = "";
       let rawText = "";
@@ -780,12 +818,31 @@ export class VortexService {
       let perfFileChanges: FileChange[] = [];
       let receivedFirstBytes = false;
       let firstChunkTimedOut = false;
+      let idleTimedOut = false;
+      let idleTimeoutId: number | null = null;
+      let agentEvents: AgentEvent[] = [];
       const firstChunkTimeoutId = globalThis.setTimeout(() => {
         if (!receivedFirstBytes) {
           firstChunkTimedOut = true;
           abortController.abort();
         }
       }, streamTimeoutMs);
+
+      const clearIdleTimeout = () => {
+        if (idleTimeoutId !== null) {
+          globalThis.clearTimeout(idleTimeoutId);
+          idleTimeoutId = null;
+        }
+      };
+
+      const armIdleTimeout = () => {
+        if (streamIdleTimeoutMs <= 0) return;
+        clearIdleTimeout();
+        idleTimeoutId = globalThis.setTimeout(() => {
+          idleTimedOut = true;
+          abortController.abort();
+        }, streamIdleTimeoutMs);
+      };
 
       try {
         while (true) {
@@ -795,6 +852,7 @@ export class VortexService {
             receivedFirstBytes = true;
             globalThis.clearTimeout(firstChunkTimeoutId);
           }
+          armIdleTimeout();
           buffer += decoder.decode(value, { stream: true });
 
           while (true) {
@@ -818,6 +876,7 @@ export class VortexService {
                   groundingSupports: [],
                   fileChanges: mergeFileChanges(extractFileChanges(fullText), perfFileChanges),
                   browserActions,
+                  agentEvents,
                   requestId,
                   finishReason,
                   done: true,
@@ -840,6 +899,13 @@ export class VortexService {
               }
               if (parsed?.perf?.file_changes) {
                 perfFileChanges = toFileChanges(parsed.perf.file_changes);
+              }
+              if (parsed?.agent_event) {
+                const parsedEvent = parseNativeAgentEvent(parsed);
+                if (parsedEvent) agentEvents = mergeAgentEvents(agentEvents, [parsedEvent]);
+              }
+              if (parsed?.perf?.agent_events) {
+                agentEvents = mergeAgentEvents(agentEvents, toAgentEvents(parsed.perf.agent_events));
               }
               const parsedFinishReason = parsed?.choices?.[0]?.finish_reason;
               if (typeof parsedFinishReason === "string") {
@@ -866,6 +932,7 @@ export class VortexService {
                   groundingSupports: [],
                   fileChanges: mergeFileChanges(extractFileChanges(fullText), perfFileChanges),
                   browserActions,
+                  agentEvents,
                   requestId,
                   finishReason,
                   done: false,
@@ -878,9 +945,13 @@ export class VortexService {
         if (firstChunkTimedOut) {
           throw new Error(`stream_first_chunk_timeout:${streamTimeoutMs}ms`);
         }
+        if (idleTimedOut) {
+          throw new Error(`stream_idle_timeout:${streamIdleTimeoutMs}ms`);
+        }
         throw error;
       } finally {
         globalThis.clearTimeout(firstChunkTimeoutId);
+        clearIdleTimeout();
       }
 
       // Final pass: full cleanup including leaked system content stripping
@@ -895,6 +966,7 @@ export class VortexService {
         groundingSupports: [],
         fileChanges: mergeFileChanges(extractFileChanges(fullText), perfFileChanges),
         browserActions,
+        agentEvents,
         requestId,
         finishReason,
         done: true,
@@ -1238,6 +1310,65 @@ export class VortexService {
       return { ok: false, invalidIds: [], error: this.responseError(parsed, "workspace_project_validation_failed") };
     } catch (error) {
       return { ok: false, invalidIds: [], error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async listSkills(): Promise<{ ok: boolean; skills: SkillSummary[]; error?: string }> {
+    try {
+      const parsed = await this.json<{ object?: string; data?: SkillSummary[]; error?: unknown; detail?: unknown }>("/v1/skills");
+      if (parsed && Array.isArray(parsed.data)) {
+        return { ok: true, skills: parsed.data };
+      }
+      return { ok: false, skills: [], error: this.responseError(parsed, "skills_list_failed") };
+    } catch (error) {
+      return { ok: false, skills: [], error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async getSkillsConfig(): Promise<{ ok: boolean; config?: SkillsConfig; error?: string }> {
+    try {
+      const parsed = await this.json<{ ok?: boolean; config?: SkillsConfig; error?: unknown; detail?: unknown }>("/v1/skills/config");
+      if (parsed?.config) {
+        return { ok: Boolean(parsed.ok ?? true), config: parsed.config };
+      }
+      return { ok: false, error: this.responseError(parsed, "skills_config_failed") };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async updateSkillsConfig(payload: Partial<SkillsConfig>): Promise<{ ok: boolean; config?: SkillsConfig; error?: string }> {
+    try {
+      const body: Record<string, unknown> = {};
+      if (typeof payload.enabled === "boolean") body.enabled = payload.enabled;
+      if (typeof payload.strict === "boolean") body.strict = payload.strict;
+      if (typeof payload.max_k === "number") body.max_k = payload.max_k;
+      if (typeof payload.token_budget_total === "number") body.token_budget_total = payload.token_budget_total;
+      const parsed = await this.json<{ ok?: boolean; config?: SkillsConfig; error?: unknown; detail?: unknown }>("/v1/skills/config", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (parsed?.config) {
+        return { ok: Boolean(parsed.ok ?? true), config: parsed.config };
+      }
+      return { ok: false, error: this.responseError(parsed, "skills_config_update_failed") };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
+
+  async toggleSkill(ref: string, enabled: boolean): Promise<{ ok: boolean; skill?: SkillSummary; error?: string }> {
+    try {
+      const parsed = await this.json<{ ok?: boolean; skill?: SkillSummary; error?: unknown; detail?: unknown }>("/v1/skills/toggle", {
+        method: "POST",
+        body: JSON.stringify({ ref, enabled }),
+      });
+      if (parsed?.skill) {
+        return { ok: Boolean(parsed.ok ?? true), skill: parsed.skill };
+      }
+      return { ok: false, error: this.responseError(parsed, "skills_toggle_failed") };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
   }
 

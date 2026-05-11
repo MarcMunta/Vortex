@@ -108,12 +108,15 @@ class ChatContextService:
         if rag_disabled:
             rag = {"enabled": False, "refs": [], "disabled_by_request": True}
         else:
-            messages, _prompt_override, rag = self.inject_rag_context(
-                self.base_dir,
-                self.settings,
-                messages,
-                None,
-            )
+            try:
+                messages, _prompt_override, rag = self.inject_rag_context(
+                    self.base_dir,
+                    self.settings,
+                    messages,
+                    None,
+                )
+            except Exception as exc:
+                rag = {"enabled": False, "refs": [], "error": str(exc)}
         if live_web_refs:
             rag["refs"] = live_web_refs
         refs = multimodal.get("refs")

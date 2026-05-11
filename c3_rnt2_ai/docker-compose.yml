@@ -235,7 +235,7 @@ services:
       - --runtime-url
       - http://vortex-api:8000
       - --frontend-url
-      - http://vortex-frontend:4173
+      - http://vortex-frontend:5173
       - --assume-docker-ready
     ports:
       - "8765:8765"
@@ -254,7 +254,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "4173:4173"
+      - "5173:5173"
     depends_on:
       vortex-control:
         condition: service_healthy
@@ -263,7 +263,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - wget -q -O /dev/null http://127.0.0.1:4173/ || exit 1
+        - wget -q -O /dev/null http://127.0.0.1:5173/ || exit 1
       interval: 15s
       timeout: 5s
       retries: 10

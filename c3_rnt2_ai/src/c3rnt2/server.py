@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# pylint: disable=broad-exception-caught,redefined-builtin,raise-missing-from,unused-argument
+# pylint: disable=broad-exception-caught,redefined-builtin,raise-missing-from,unused-argument,invalid-name,too-many-lines
 # ruff: noqa: BLE001,ARG001,B904,A002
 
 import asyncio
@@ -67,10 +67,7 @@ from .multimodal import (
     VoiceService,
 )
 from .config import load_settings, resolve_web_allowlist
-from .agent.permissions import (
-    build_agent_permission_context,
-    permissions_from_request,
-)
+from .agent.permissions import build_agent_permission_context, permissions_from_request
 from .agent.runner import run_agent
 from .lab_guard import evaluate_lab_request
 from .local_lab import (
@@ -990,7 +987,7 @@ def _external_model_aliases(settings: dict, model_obj: object | None = None) -> 
             continue
         aliases.add(text)
         if "/" in text:
-            aliases.add(text.split("/")[-1])
+            aliases.add(text.rsplit("/", maxsplit=1)[-1])
     return aliases
 
 
@@ -1013,7 +1010,7 @@ def _resolve_requested_backend(
         return normalized, False
     core = settings.get("core", {}) or {}
     hf_model = str(core.get("hf_model") or "").strip().lower()
-    hf_aliases = {hf_model, hf_model.split("/")[-1] if "/" in hf_model else hf_model}
+    hf_aliases = {hf_model, hf_model.rsplit("/", maxsplit=1)[-1] if "/" in hf_model else hf_model}
     if hf_model and lowered in hf_aliases:
         return "hf", False
     external_runtime_configured = bool(
@@ -1129,9 +1126,9 @@ def _build_operational_status(app_state, settings: dict, base_dir: Path) -> dict
             "model_ready" if external_model else prepare_state.get("model_reason")
         )
     if active_backend == "hf":
-        raw_engine_url = _safe_str(prepare_state.get("engine_base_url"))
-        if raw_engine_url and ":30000" in raw_engine_url:
-            raw_engine_url = None
+        raw_engine_url: str = str(prepare_state.get("engine_base_url") or "")
+        if raw_engine_url.find(":30000") != -1:
+            raw_engine_url = ""
         prepare_state["engine_kind"] = "hf"
         prepare_state["engine_base_url"] = raw_engine_url or "http://127.0.0.1:8000"
         prepare_state["engine_ready"] = True
@@ -2071,53 +2068,193 @@ def _format_agent_report_text(report: dict[str, Any]) -> str:
     summary = str(report.get("summary") or "agent_finished").strip() or "agent_finished"
     if bool(report.get("blocked")):
         return summary
-    parts = [summary]
-    tool_calls = report.get("tool_calls")
-    ran_tests = isinstance(tool_calls, list) and any(
-        isinstance(item, dict) and item.get("action") == "run_tests"
-        for item in tool_calls
-    )
-    if bool(report.get("tests_ok")):
-        parts.append("Tests: ok")
-    elif ran_tests:
-        parts.append("Tests: fallo")
-    browser_actions = report.get("browser_actions")
-    if isinstance(browser_actions, list):
-        urls = []
-        for item in browser_actions[:3]:
-            if not isinstance(item, dict):
-                continue
-            target = str(item.get("target") or "").strip()
-            if target:
-                urls.append(target)
-        if urls:
-            parts.append("Browser: " + ", ".join(urls))
-    patch_id = str(report.get("patch_id") or "").strip()
-    if patch_id:
-        parts.append(f"Patch: {patch_id}")
+    workspace_root = str(report.get("workspace_root") or "").strip()
+    patch_text = str(report.get("patch") or "").strip()
     file_changes = report.get("file_changes")
-    changed_paths: list[str] = []
-    if isinstance(file_changes, list):
-        for item in file_changes:
+    has_file_changes = isinstance(file_changes, list) and any(isinstance(item, dict) for item in file_changes)
+    if summary in {"agent_finished", "direct_actions_done", "file_action_done"} and has_file_changes:
+        paths: list[str] = []
+        for item in (file_changes if isinstance(file_changes, list) else []):
             if not isinstance(item, dict):
                 continue
             path = str(item.get("path") or "").strip()
-            if not path or path in changed_paths:
-                continue
-            changed_paths.append(path)
-        if changed_paths:
-            visible_paths = changed_paths[:8]
-            suffix = f" (+{len(changed_paths) - len(visible_paths)} mas)" if len(changed_paths) > len(visible_paths) else ""
-            parts.append("Archivos: " + ", ".join(visible_paths) + suffix)
-    workspace_root = str(report.get("workspace_root") or "").strip()
-    if workspace_root and changed_paths:
-        parts.append(f"Workspace: {workspace_root}")
-    patch_text = str(report.get("patch") or "").strip()
-    if patch_text and not changed_paths:
+            if path and path not in paths:
+                paths.append(path)
+        if paths:
+            summary = f"He actualizado `{', '.join(paths)}`."
+    if patch_text and not has_file_changes:
         if len(patch_text) > 12000:
             patch_text = patch_text[:12000].rstrip() + "\n...diff truncated..."
-        parts.append(f"```diff\n{patch_text}\n```")
-    return "\n\n".join(part for part in parts if part)
+        return f"{summary}\n\n```diff\n{patch_text}\n```"
+    if workspace_root and "workspace:" in summary.lower():
+        summary = summary.split("Workspace:", 1)[0].strip()
+    return summary
+
+
+def _safe_agent_event_args(args: object) -> dict[str, Any]:
+    if not isinstance(args, dict):
+        return {}
+    safe: dict[str, Any] = {}
+    for key, value in args.items():
+        name = str(key)
+        if name == "text":
+            safe[name] = f"<{len(str(value or ''))} chars>"
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            text = str(value) if isinstance(value, str) else value
+            safe[name] = text[:500] + "..." if isinstance(text, str) and len(text) > 500 else text
+            continue
+        safe[name] = str(value)[:500]
+    return safe
+
+
+def _agent_step_title(action: str) -> str:
+    return {
+        "list_tree": "Inspeccionando workspace",
+        "grep": "Buscando en archivos",
+        "read_file": "Leyendo archivo",
+        "write_file": "Editando archivo",
+        "delete_file": "Borrando archivo",
+        "run_tests": "Ejecutando tests",
+        "run_command": "Ejecutando comando",
+        "open_browser": "Abriendo navegador",
+        "open_docs": "Leyendo docs",
+        "search_web": "Buscando web",
+        "propose_patch": "Proponiendo patch",
+        "sandbox_patch": "Validando patch",
+        "apply_patch": "Aplicando patch",
+        "summarize_diff": "Resumiendo diff",
+    }.get(action, f"Herramienta: {action}")
+
+
+def _agent_command_from_call(action: str, args: object, meta: object) -> tuple[str, str | None]:
+    if action == "run_tests":
+        return "python -m pytest -q", None
+    if action != "run_command":
+        return "", None
+    command = ""
+    cwd = None
+    if isinstance(args, dict):
+        command = str(args.get("command") or "").strip()
+        cwd = str(args.get("cwd") or "").strip() or None
+    if not command and isinstance(meta, dict):
+        raw_command = meta.get("command")
+        if isinstance(raw_command, list):
+            command = " ".join(str(part) for part in raw_command)
+        elif raw_command:
+            command = str(raw_command)
+        cwd = cwd or (str(meta.get("cwd") or "").strip() or None)
+    return command, cwd
+
+
+def _agent_events_from_report(report: dict[str, Any]) -> list[dict[str, Any]]:
+    now_ms = int(time.time() * 1000)
+    events: list[dict[str, Any]] = [
+        {"type": "status", "value": "running", "ts": now_ms},
+        {"type": "step", "title": "Preparando agente local", "index": 0, "ts": now_ms},
+    ]
+    step_index = 1
+    seen_file_changes: set[tuple[str, str]] = set()
+    tool_calls = report.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for raw_call in tool_calls:
+            if not isinstance(raw_call, dict):
+                continue
+            action = str(raw_call.get("action") or "tool").strip() or "tool"
+            args = raw_call.get("args") if isinstance(raw_call.get("args"), dict) else {}
+            meta = raw_call.get("meta") if isinstance(raw_call.get("meta"), dict) else {}
+            ok = bool(raw_call.get("ok"))
+            output = str(raw_call.get("output") or "")
+            ts = int(time.time() * 1000)
+            events.append(
+                {
+                    "type": "step",
+                    "title": _agent_step_title(action),
+                    "index": step_index,
+                    "ts": ts,
+                }
+            )
+            step_index += 1
+            command, cwd = _agent_command_from_call(action, args, meta)
+            if command:
+                event = {"type": "command", "command": command, "ts": ts}
+                if cwd:
+                    event["cwd"] = cwd
+                events.append(event)
+            events.append(
+                {
+                    "type": "tool_call",
+                    "tool": action,
+                    "args": _safe_agent_event_args(args),
+                    "ts": ts,
+                }
+            )
+            path = str(meta.get("path") or "").strip() if isinstance(meta, dict) else ""
+            diff = str(meta.get("diff") or "").strip() if isinstance(meta, dict) else ""
+            if action == "write_file" and path:
+                bytes_value = None
+                try:
+                    bytes_value = int(json.loads(output).get("bytes"))
+                except Exception:
+                    bytes_value = None
+                file_event = {"type": "file_write", "path": path, "ts": ts}
+                if bytes_value is not None:
+                    file_event["bytes"] = bytes_value
+                events.append(file_event)
+            if path and diff:
+                seen_file_changes.add((path, diff))
+                events.append({"type": "file_change", "path": path, "diff": diff, "ts": ts})
+            if output:
+                channel = "stdout" if ok else "stderr"
+                events.append({"type": channel, "chunk": output[:4000], "ts": ts})
+            events.append(
+                {
+                    "type": "tool_result",
+                    "tool": action,
+                    "ok": ok,
+                    "output": output[:4000],
+                    "ts": ts,
+                }
+            )
+            if not ok:
+                events.append({"type": "error", "message": output[:1200] or f"{action} failed", "ts": ts})
+    file_changes = report.get("file_changes")
+    if isinstance(file_changes, list):
+        for raw_change in file_changes:
+            if not isinstance(raw_change, dict):
+                continue
+            path = str(raw_change.get("path") or "").strip()
+            diff = str(raw_change.get("diff") or "").strip()
+            if not path or not diff or (path, diff) in seen_file_changes:
+                continue
+            seen_file_changes.add((path, diff))
+            ts = int(time.time() * 1000)
+            events.append(
+                {
+                    "type": "step",
+                    "title": "Registrando cambio de archivo",
+                    "index": step_index,
+                    "ts": ts,
+                }
+            )
+            step_index += 1
+            events.append({"type": "file_change", "path": path, "diff": diff, "ts": ts})
+    final_status = "completed" if bool(report.get("ok", True)) and not bool(report.get("blocked")) else "failed"
+    final_ts = int(time.time() * 1000)
+    events.append({"type": "status", "value": final_status, "ts": final_ts})
+    events.append({"type": "done", "ts": final_ts})
+    return events
+
+
+def _agent_error_events(message: str) -> list[dict[str, Any]]:
+    now_ms = int(time.time() * 1000)
+    return [
+        {"type": "status", "value": "running", "ts": now_ms},
+        {"type": "step", "title": "Preparando agente local", "index": 0, "ts": now_ms},
+        {"type": "error", "message": message, "ts": now_ms},
+        {"type": "status", "value": "failed", "ts": now_ms},
+        {"type": "done", "ts": now_ms},
+    ]
 
 
 def _parse_client_datetime(raw: object | None) -> datetime | None:
@@ -2949,7 +3086,7 @@ def _inject_chat_memory_context(
 def create_app(settings: dict, base_dir: Path) -> FastAPI:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+    from fastapi.responses import JSONResponse, StreamingResponse
     from .api_server.routes import (
         register_core_routes,
         register_local_lab_routes,
@@ -3460,6 +3597,107 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         except Exception:
             data = []
         return JSONResponse(content={"object": "list", "data": data})
+
+    @app.get("/v1/skills/config")
+    async def get_skills_config():
+        cfg = getattr(app.state, "skills_config", None)
+        if cfg is None:
+            return JSONResponse(
+                status_code=501,
+                content={"ok": False, "error": "skills_config_unavailable"},
+            )
+        return JSONResponse(
+            content={
+                "ok": True,
+                "config": {
+                    "enabled": bool(getattr(cfg, "enabled", False)),
+                    "max_k": int(getattr(cfg, "max_k", 3) or 3),
+                    "token_budget_total": int(getattr(cfg, "token_budget_total", 600) or 600),
+                    "strict": bool(getattr(cfg, "strict", True)),
+                },
+            }
+        )
+
+    @app.post("/v1/skills/config")
+    async def update_skills_config(request: StarletteRequest):
+        cfg = getattr(app.state, "skills_config", None)
+        if cfg is None or SkillsConfig is None:
+            return JSONResponse(
+                status_code=501,
+                content={"ok": False, "error": "skills_config_unavailable"},
+            )
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            payload = {}
+
+        def _coerce_bool(value: object, default: bool) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                raw = value.strip().lower()
+                if raw in {"1", "true", "yes", "y", "on"}:
+                    return True
+                if raw in {"0", "false", "no", "n", "off"}:
+                    return False
+            return bool(default)
+
+        def _coerce_int(value: object, default: int, min_value: int, max_value: int) -> int:
+            try:
+                parsed = int(value)  # type: ignore[arg-type]
+            except Exception:
+                parsed = int(default)
+            parsed = max(int(min_value), min(int(max_value), int(parsed)))
+            return int(parsed)
+
+        next_cfg = SkillsConfig(
+            enabled=_coerce_bool(payload.get("enabled"), bool(cfg.enabled)),
+            strict=_coerce_bool(payload.get("strict"), bool(cfg.strict)),
+            max_k=_coerce_int(payload.get("max_k"), int(cfg.max_k), 1, 10),
+            token_budget_total=_coerce_int(payload.get("token_budget_total"), int(cfg.token_budget_total), 64, 4096),
+        )
+        app.state.skills_config = next_cfg
+        return JSONResponse(
+            content={
+                "ok": True,
+                "config": {
+                    "enabled": bool(next_cfg.enabled),
+                    "max_k": int(next_cfg.max_k),
+                    "token_budget_total": int(next_cfg.token_budget_total),
+                    "strict": bool(next_cfg.strict),
+                },
+            }
+        )
+
+    @app.post("/v1/skills/toggle")
+    async def toggle_skill(request: StarletteRequest):
+        store = getattr(app.state, "skills_store", None)
+        if store is None:
+            return JSONResponse(
+                status_code=501,
+                content={"ok": False, "error": "skills_store_unavailable"},
+            )
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            payload = {}
+        ref = str(payload.get("ref") or "").strip()
+        if not ref:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "ref_missing"})
+        enabled = bool(payload.get("enabled"))
+        store.set_enabled(ref, enabled)
+        rec = store.get(ref)
+        if rec is None:
+            return JSONResponse(status_code=404, content={"ok": False, "error": "skill_not_found"})
+        sm = getattr(app.state, "skills_metrics", None)
+        if sm is not None and hasattr(sm, "set_inventory"):
+            try:
+                records = store.list()
+                sm.set_inventory(
+                    installed_total=len(records),
+                    enabled_total=sum(1 for r in records if r.enabled),
+                )
+            except Exception:
+                pass
+        return JSONResponse(content={"ok": True, "skill": rec.to_public_dict(include_prompt=False)})
 
     @app.post("/v1/skills/stage")
     async def stage_skills(request: StarletteRequest):
@@ -4093,26 +4331,75 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                     if agent_model_unavailable_reason:
                         perf["agent_model_unavailable_reason"] = agent_model_unavailable_reason
                     try:
-                        report = await asyncio.to_thread(
-                            run_agent,
-                            agent_task,
-                            settings,
-                            base_dir,
-                            max_iters=max(
-                                1,
-                                int(
-                                    agent_cfg.get("max_iters", agent_default_iters)
-                                    or agent_default_iters
+                        heartbeat_s = float(agent_cfg.get("stream_heartbeat_s", 8.0) or 0.0)
+                        if heartbeat_s > 0:
+                            task = asyncio.create_task(
+                                asyncio.to_thread(
+                                    run_agent,
+                                    agent_task,
+                                    settings,
+                                    base_dir,
+                                    max_iters=max(
+                                        1,
+                                        int(
+                                            agent_cfg.get("max_iters", agent_default_iters)
+                                            or agent_default_iters
+                                        ),
+                                    ),
+                                    model=selected_model,
+                                    model_lock=model_lock.read_lock,
+                                    permissions=agent_permissions,
+                                    workspace_root=agent_workspace_root,
+                                    allow_model_load=selected_model is not None,
+                                )
+                            )
+                            while True:
+                                done, _pending = await asyncio.wait({task}, timeout=heartbeat_s)
+                                if done:
+                                    report = task.result()
+                                    break
+                                elapsed_s = float(max(0.0, time.time() - start))
+                                heartbeat = {
+                                    "id": resp_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": str(chosen_backend),
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {"content": ""},
+                                            "finish_reason": None,
+                                        }
+                                    ],
+                                    "request_id": request_id,
+                                    "perf": {
+                                        "agent_heartbeat": True,
+                                        "elapsed_s": elapsed_s,
+                                    },
+                                }
+                                yield f"data: {json.dumps(heartbeat)}\n\n"
+                        else:
+                            report = await asyncio.to_thread(
+                                run_agent,
+                                agent_task,
+                                settings,
+                                base_dir,
+                                max_iters=max(
+                                    1,
+                                    int(
+                                        agent_cfg.get("max_iters", agent_default_iters)
+                                        or agent_default_iters
+                                    ),
                                 ),
-                            ),
-                            model=selected_model,
-                            model_lock=model_lock.read_lock,
-                            permissions=agent_permissions,
-                            workspace_root=agent_workspace_root,
-                            allow_model_load=selected_model is not None,
-                        )
+                                model=selected_model,
+                                model_lock=model_lock.read_lock,
+                                permissions=agent_permissions,
+                                workspace_root=agent_workspace_root,
+                                allow_model_load=selected_model is not None,
+                            )
                         elapsed = max(1e-6, time.time() - start)
                         text = _format_agent_report_text(report)
+                        agent_events = _agent_events_from_report(report)
                         prompt_tokens = _estimate_tokens(agent_task, selected_model)
                         tokens_out = _estimate_tokens(text, selected_model)
                         vram_peak = None
@@ -4131,6 +4418,8 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                 "tools_ok": bool(report.get("tools_ok")),
                                 "patch_id": report.get("patch_id"),
                                 "file_changes": report.get("file_changes") or [],
+                                "tool_calls": report.get("tool_calls") or [],
+                                "agent_events": agent_events,
                                 "permissions": report.get("permissions"),
                                 "browser_actions": report.get("browser_actions") or [],
                             }
@@ -4191,6 +4480,8 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                 "agent_error": str(exc),
                                 "tests_ok": False,
                                 "file_changes": [],
+                                "tool_calls": [],
+                                "agent_events": _agent_error_events(str(exc)),
                                 "browser_actions": [],
                             }
                         )
@@ -4266,6 +4557,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                     top_k=int(stream_topk_override) if stream_topk_override else None,
                 )
             text = _format_agent_report_text(report)
+            agent_events = _agent_events_from_report(report)
             prompt_tokens = _estimate_tokens(agent_task, selected_model)
             tokens_out = _estimate_tokens(text, selected_model)
             vram_peak = None
@@ -4285,6 +4577,8 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 "tools_ok": bool(report.get("tools_ok")),
                 "patch_id": report.get("patch_id"),
                 "file_changes": report.get("file_changes") or [],
+                "tool_calls": report.get("tool_calls") or [],
+                "agent_events": agent_events,
                 "permissions": report.get("permissions"),
                 "browser_actions": report.get("browser_actions") or [],
             }
@@ -5419,6 +5713,7 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
     model_lock = threading.Lock()
     episode_lock = threading.Lock()
     episode_index = EpisodeIndex(base_dir / "data" / "episodes" / "index.sqlite")
+    chat_sessions_store = ChatSessionStore(base_dir / "data" / "chat" / "sessions.sqlite")
     fallback_backend = _resolve_fallback_backend(
         settings,
         str(settings.get("core", {}).get("backend", "vortex")).lower(),
@@ -5544,12 +5839,16 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                 self.send_response(400)
                 self.end_headers()
                 return
-            messages, chat_memory_info = _inject_chat_memory_context(
-                chat_sessions_store,
-                settings,
-                payload,
-                messages,
-            )
+            chat_store = getattr(self.server, "chat_sessions_store", None)  # pylint: disable=undefined-variable
+            if chat_store is not None:
+                messages, chat_memory_info = _inject_chat_memory_context(
+                    chat_store,
+                    settings,
+                    payload,
+                    messages,
+                )
+            else:
+                chat_memory_info = {"enabled": False, "error": "chat_sessions_unavailable"}
             temporal_system_context = _build_temporal_system_context(payload)
             direct_temporal_reply = _direct_temporal_response(payload, _extract_query(messages, None))
             if direct_temporal_reply:
@@ -5948,5 +6247,6 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
             self.wfile.flush()
 
     server = ThreadingHTTPServer((host, port), Handler)
+    server.chat_sessions_store = chat_sessions_store
     print({"ok": True, "mode": "basic", "host": host, "port": port})
     server.serve_forever()

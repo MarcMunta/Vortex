@@ -51,7 +51,7 @@ test('agent stream uses same-origin API proxy by default', async () => {
     const body = [
       'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"request_id":"req-1"}\n\n',
       'data: {"choices":[{"index":0,"delta":{"content":"agent-ok"},"finish_reason":null}],"request_id":"req-1"}\n\n',
-      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"request_id":"req-1","perf":{"file_changes":[{"path":"lib/main.dart","diff":"--- /dev/null\\n+++ b/lib/main.dart\\n@@\\n+void main() {}"}]}}\n\n',
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"request_id":"req-1","perf":{"file_changes":[{"path":"lib/main.dart","diff":"--- /dev/null\\n+++ b/lib/main.dart\\n@@\\n+void main() {}"}],"agent_events":[{"type":"step","title":"Ejecutando comando","index":1,"ts":1},{"type":"command","command":"python -m pytest -q","ts":2},{"type":"stdout","chunk":"1 passed","ts":3},{"type":"file_change","path":"lib/main.dart","diff":"--- /dev/null\\n+++ b/lib/main.dart\\n@@\\n+void main() {}","ts":4},{"type":"status","value":"completed","ts":5},{"type":"done","ts":5}],"tool_calls":[{"action":"run_command","args":{"command":"python -m pytest -q"},"ok":true,"output":"1 passed"}]}}\n\n',
       'data: [DONE]\n\n',
     ].join('');
     return new Response(body, {
@@ -72,6 +72,8 @@ test('agent stream uses same-origin API proxy by default', async () => {
     expect(chunks.at(-1)?.text).toBe('agent-ok');
     expect(chunks.at(-1)?.fileChanges?.[0]?.path).toBe('lib/main.dart');
     expect(chunks.at(-1)?.fileChanges?.[0]?.diff).toContain('+void main()');
+    expect(chunks.at(-1)?.agentEvents?.some((event) => event.type === 'command' && event.command === 'python -m pytest -q')).toBeTruthy();
+    expect(chunks.at(-1)?.agentEvents?.some((event) => event.type === 'file_change' && event.path === 'lib/main.dart')).toBeTruthy();
     expect(chunks.at(-1)?.done).toBeTruthy();
   } finally {
     globalThis.fetch = originalFetch;

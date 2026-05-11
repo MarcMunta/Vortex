@@ -13,6 +13,5 @@ disable=
     missing-class-docstring,
     missing-function-docstring,
     line-too-long,
-    import-outside-toplevel,
     superfluous-parens
 

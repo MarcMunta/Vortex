@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import webbrowser
@@ -191,6 +192,32 @@ class AgentTools:
             if any(token in upper for token in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
                 continue
             safe[key] = value
+        path_key = next((key for key in safe if key.upper() == "PATH"), "PATH")
+        current_path = str(safe.get(path_key) or "")
+        existing = {part.lower() for part in current_path.split(os.pathsep) if part}
+        home = Path.home()
+        local_app_data = Path(os.getenv("LOCALAPPDATA") or home / "AppData" / "Local")
+        candidates = [
+            home / ".puro" / "envs" / "stable" / "flutter" / "bin",
+            home / ".puro" / "bin",
+            Path(os.getenv("FLUTTER_HOME") or "") / "bin" if os.getenv("FLUTTER_HOME") else None,
+            local_app_data / "Android" / "Sdk" / "platform-tools",
+            local_app_data / "Android" / "Sdk" / "emulator",
+        ]
+        extra_paths = []
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            try:
+                resolved = str(candidate.resolve())
+            except Exception:
+                resolved = str(candidate)
+            if not candidate.exists() or resolved.lower() in existing:
+                continue
+            existing.add(resolved.lower())
+            extra_paths.append(resolved)
+        if extra_paths:
+            safe[path_key] = os.pathsep.join([current_path, *extra_paths]) if current_path else os.pathsep.join(extra_paths)
         safe["CI"] = "1"
         return safe
 
@@ -253,6 +280,10 @@ class AgentTools:
             args[0] = str(resolved_exe)
         elif exe_name not in DEV_EXECUTABLE_ALLOWLIST:
             return None, ToolResult(ok=False, output=f"command_not_allowed:unsupported_executable:{exe_name}")
+        else:
+            resolved_exe = shutil.which(args[0], path=self._command_env().get("PATH"))
+            if resolved_exe:
+                args[0] = resolved_exe
         for index in range(1, len(args)):
             ok, normalized = self._normalize_command_path_arg(args[index], cwd)
             if not ok:
@@ -532,7 +563,7 @@ class AgentTools:
             if target is None:
                 return ToolResult(ok=False, output="path not allowed")
             if not target.exists():
-                return ToolResult(ok=False, output="path missing")
+                return ToolResult(ok=False, output=f"No encuentro el archivo `{path}`. No he borrado nada.")
             if not target.is_file():
                 return ToolResult(ok=False, output="path is not a file")
             old_text = target.read_text(encoding="utf-8", errors="ignore")

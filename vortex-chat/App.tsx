@@ -5,7 +5,7 @@ import Sidebar from "./components/Sidebar";
 import ChatInput from "./components/ChatInput";
 import type { SettingsTab } from "./components/SettingsModal";
 import VirtualizedMessageList from "./components/VirtualizedMessageList";
-import { BrowserAction, ChatSession, Message, Role, ViewType, LogEntry, AppMode, Source } from "./types";
+import { AgentEvent, BrowserAction, ChatSession, Message, Role, ViewType, LogEntry, AppMode, Source } from "./types";
 import { hasAssistantCompletionClosure, isLikelyTruncatedCode, vortexService } from "./services/vortexService";
 import type { StreamChunk } from "./services/vortexService";
 import { translations } from "./translations";
@@ -571,6 +571,22 @@ const VORTEX_CONFIG = {
     return merged;
   };
 
+  const mergeAgentEventsLocal = (
+    left: AgentEvent[] = [],
+    right: AgentEvent[] = [],
+  ) => {
+    const merged: AgentEvent[] = [];
+    const seen = new Set<string>();
+    for (const event of [...left, ...right]) {
+      if (!event || !event.type) continue;
+      const key = JSON.stringify(event);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(event);
+    }
+    return merged;
+  };
+
   const trimContinuationOverlap = (previous: string, addition: string): string => {
     const cleanAddition = String(addition || "").trim();
     if (!cleanAddition) return "";
@@ -648,6 +664,7 @@ const VORTEX_CONFIG = {
       originalTask: string;
       previousText: string;
       previousFileChanges?: { path: string; diff: string }[];
+      previousAgentEvents?: AgentEvent[];
       useInternet: boolean;
       selectedMode: AppMode;
       useThinking: boolean;
@@ -657,6 +674,7 @@ const VORTEX_CONFIG = {
   ) => {
     let carriedText = params.previousText;
     let carriedFileChanges = params.previousFileChanges || [];
+    let carriedAgentEvents = params.previousAgentEvents || [];
     let reason = params.reason;
 
     while (reason && autoContinueDepthRef.current < 20 && !abortControllerRef.current) {
@@ -688,6 +706,7 @@ const VORTEX_CONFIG = {
           timestamp: Date.now(),
           mode: params.selectedMode,
           fileChanges: carriedFileChanges,
+          agentEvents: carriedAgentEvents,
         },
       ];
       const stream = vortexService.generateResponseStream(
@@ -722,10 +741,11 @@ const VORTEX_CONFIG = {
                 }
               : session
           )));
-          return { ...chunk, text: carriedText, fileChanges: carriedFileChanges, finishReason: "stop" };
+          return { ...chunk, text: carriedText, fileChanges: carriedFileChanges, agentEvents: carriedAgentEvents, finishReason: "stop" };
         }
         const nextText = addition ? `${carriedText}\n\n${addition}` : carriedText;
         const nextFileChanges = mergeFileChangesLocal(carriedFileChanges, chunk.fileChanges || []);
+        const nextAgentEvents = mergeAgentEventsLocal(carriedAgentEvents, chunk.agentEvents || []);
         setSessions((prev) => prev.map((session) => (
           session.id === params.targetSessionId
             ? {
@@ -741,13 +761,14 @@ const VORTEX_CONFIG = {
                         finishReason: chunk.finishReason ?? "stop",
                         sources: chunk.sources.length > 0 ? chunk.sources : message.sources,
                         fileChanges: nextFileChanges,
+                        agentEvents: nextAgentEvents.length > 0 ? nextAgentEvents : message.agentEvents,
                       }
                     : message
                 )),
               }
             : session
         )));
-        return { ...chunk, text: nextText, fileChanges: nextFileChanges };
+        return { ...chunk, text: nextText, fileChanges: nextFileChanges, agentEvents: nextAgentEvents };
       };
 
       try {
@@ -777,6 +798,7 @@ const VORTEX_CONFIG = {
       if (lastContinuationChunk.text === carriedText) break;
       carriedText = lastContinuationChunk.text;
       carriedFileChanges = lastContinuationChunk.fileChanges || carriedFileChanges;
+      carriedAgentEvents = lastContinuationChunk.agentEvents || carriedAgentEvents;
       reason = detectAutoContinuationReason(lastContinuationChunk, params.selectedMode);
     }
   };
@@ -925,6 +947,9 @@ const VORTEX_CONFIG = {
                         finishReason: chunk.finishReason ?? message.finishReason,
                         sources: chunk.sources.length > 0 ? chunk.sources : message.sources,
                         fileChanges: chunk.fileChanges || message.fileChanges,
+                        agentEvents: chunk.agentEvents?.length
+                          ? mergeAgentEventsLocal(message.agentEvents || [], chunk.agentEvents)
+                          : message.agentEvents,
                       }
                     : message
                 )),
@@ -983,7 +1008,7 @@ const VORTEX_CONFIG = {
           autoContinuationReason = "truncated_code";
         } else if (
           selectedMode === "agent"
-          && /stopped_by_context_compaction_limit|stopped_by_wall_time_limit|stream_first_chunk_timeout|stream_connect_timeout|No se pudo completar la ejecucion del agente|Agent run could not complete/i.test(finalText)
+          && /stopped_by_context_compaction_limit|stopped_by_wall_time_limit|stream_first_chunk_timeout|stream_connect_timeout|stream_idle_timeout|No se pudo completar la ejecucion del agente|Agent run could not complete/i.test(finalText)
         ) {
           autoContinuationReason = "agent_incomplete";
         }
@@ -999,12 +1024,21 @@ const VORTEX_CONFIG = {
       addLog("SYSTEM", cleanedDetail);
       if (
         selectedMode === "agent"
-        && /stream_first_chunk_timeout|stream_connect_timeout|network_error|Failed to fetch|No se pudo completar/i.test(cleanedDetail)
+        && /stream_first_chunk_timeout|stream_connect_timeout|stream_idle_timeout|network_error|Failed to fetch|No se pudo completar/i.test(cleanedDetail)
       ) {
         autoContinuationReason = "agent_stream_error";
         autoContinuationPrompt = settings.language === "es"
           ? "Continua la misma tarea de modo agente desde el estado actual. Reintenta la ejecucion, inspecciona el workspace, termina acciones pendientes y devuelve cambios completos."
           : "Continue the same agent task from the current state. Retry execution, inspect the workspace, finish pending actions, and return complete changes.";
+      }
+      if (!autoContinuationReason) {
+        const hasPartialText = Boolean((lastStreamChunk?.text || "").trim());
+        if (hasPartialText && /stream_first_chunk_timeout|stream_connect_timeout|stream_idle_timeout/i.test(cleanedDetail)) {
+          autoContinuationReason = "stream_idle_timeout";
+          autoContinuationPrompt = settings.language === "es"
+            ? "Continua la respuesta desde el ultimo punto coherente sin repetir texto. Cierra bloques de codigo o diff y completa lo pendiente."
+            : "Continue the response from the last coherent point without repeating text. Close code or diff blocks and finish pending content.";
+        }
       }
       setSessions((prev) => prev.map((session) => (
         session.id === targetSessionId
@@ -1047,6 +1081,7 @@ const VORTEX_CONFIG = {
         originalTask: content,
         previousText,
         previousFileChanges: lastStreamChunk?.fileChanges || [],
+        previousAgentEvents: lastStreamChunk?.agentEvents || [],
         useInternet,
         selectedMode,
         useThinking,
@@ -1073,6 +1108,7 @@ const VORTEX_CONFIG = {
       originalTask: previousUser?.content || "",
       previousText: message.content,
       previousFileChanges: message.fileChanges || [],
+      previousAgentEvents: message.agentEvents || [],
       useInternet: false,
       selectedMode: message.mode || mode,
       useThinking: true,

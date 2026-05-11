@@ -13,6 +13,7 @@ import {
   Plus,
   ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
   Sun,
   TerminalSquare,
   Type,
@@ -20,7 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import { Reorder, AnimatePresence, motion } from 'framer-motion';
-import { FontSize, Language, LocalAccount, OperationalStatus, PermissionLevel, ThemeMode, UserSettings, WorkspaceProject } from '../types';
+import { FontSize, Language, LocalAccount, OperationalStatus, PermissionLevel, SkillsConfig, SkillSummary, ThemeMode, UserSettings, WorkspaceProject } from '../types';
 import { translations } from '../translations';
 import { vortexService } from '../services/vortexService';
 
@@ -37,7 +38,7 @@ interface SettingsModalProps {
   operationalStatus?: OperationalStatus | null;
 }
 
-export type SettingsTab = 'general' | 'appearance' | 'permissions' | 'profiles';
+export type SettingsTab = 'general' | 'appearance' | 'permissions' | 'skills' | 'profiles';
 type FolderTarget = 'draftRoot' | 'activeRoot';
 type DirectoryPickerHandle = { name?: string };
 
@@ -60,6 +61,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [draftHandle, setDraftHandle] = useState('');
   const [projectDraft, setProjectDraft] = useState({ name: '', rootPath: '' });
   const [folderPickerError, setFolderPickerError] = useState('');
+  const [skillsLoading, setSkillsLoading] = useState(false);
+  const [skillsSaving, setSkillsSaving] = useState(false);
+  const [skillsError, setSkillsError] = useState('');
+  const [skillsList, setSkillsList] = useState<SkillSummary[]>([]);
+  const [skillsConfig, setSkillsConfig] = useState<SkillsConfig | null>(null);
+  const [skillsDraft, setSkillsDraft] = useState<SkillsConfig | null>(null);
 
   const currentAccount = useMemo(
     () => accounts.find((account) => account.id === currentAccountId) || accounts[0] || null,
@@ -81,6 +88,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       id: 'permissions' as const,
       label: settings.language === 'es' ? 'Permisos' : 'Permissions',
       icon: <ShieldCheck size={16} />,
+    },
+    {
+      id: 'skills' as const,
+      label: settings.language === 'es' ? 'Skills' : 'Skills',
+      icon: <Sparkles size={16} />,
     },
     {
       id: 'profiles' as const,
@@ -110,6 +122,20 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const activeProject = settings.projects.find((project) => project.id === settings.activeProjectId) || null;
+  const sortedSkills = useMemo(
+    () => [...skillsList].sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id))),
+    [skillsList],
+  );
+  const skillsDirty = Boolean(
+    skillsDraft
+    && skillsConfig
+    && (
+      skillsDraft.enabled !== skillsConfig.enabled
+      || skillsDraft.strict !== skillsConfig.strict
+      || skillsDraft.max_k !== skillsConfig.max_k
+      || skillsDraft.token_budget_total !== skillsConfig.token_budget_total
+    ),
+  );
 
   const updateProjects = (projects: WorkspaceProject[], activeProjectId: string | null) => {
     const selected = projects.find((project) => project.id === activeProjectId) || null;
@@ -178,6 +204,20 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  const handleManualFolderPath = (target: FolderTarget, folderPath: string) => {
+    const value = folderPath;
+    setFolderPickerError('');
+    if (target === 'draftRoot') {
+      setProjectDraft((prev) => ({
+        ...prev,
+        rootPath: value,
+        name: prev.name || value.split(/[\\/]/).filter(Boolean).pop() || '',
+      }));
+      return;
+    }
+    patchActiveProject({ rootPath: value, projectPath: value });
+  };
+
   const handleSelectFolder = async (target: FolderTarget) => {
     setFolderPickerError('');
     const initialDir = target === 'draftRoot'
@@ -194,22 +234,29 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     if (result.ok && result.cancelled) return;
     const picker = (window as Window & { showDirectoryPicker?: () => Promise<DirectoryPickerHandle> }).showDirectoryPicker;
     if (picker) {
+      if (!window.isSecureContext) {
+        setFolderPickerError(settings.language === 'es'
+          ? 'El selector del navegador requiere https o localhost. Pega la ruta completa abajo.'
+          : 'The browser picker requires https or localhost. Paste the full path below.');
+        return;
+      }
       try {
-        const handle = await picker();
-        if (handle?.name) {
-          applyFolderSelection(target, handle.name);
-          setFolderPickerError(settings.language === 'es'
-            ? 'Seleccionada por navegador. En Docker debe estar dentro de la carpeta montada.'
-            : 'Selected through browser. In Docker it must be inside the mounted folder.');
-          return;
-        }
-      } catch {
+        await picker();
+        setFolderPickerError(settings.language === 'es'
+          ? 'El selector del navegador no expone la ruta absoluta. Pega la ruta completa abajo.'
+          : 'The browser picker cannot expose the absolute path. Paste the full path below.');
+        return;
+      } catch (error) {
+        if ((error as DOMException)?.name === 'AbortError') return;
+        setFolderPickerError(settings.language === 'es'
+          ? 'No se pudo abrir el selector del navegador. Pega la ruta completa abajo.'
+          : 'Unable to open the browser picker. Paste the full path below.');
         return;
       }
     }
     setFolderPickerError(settings.language === 'es'
-      ? 'Selector de carpeta no disponible en este runtime. Usa backend local o configura la carpeta montada de Docker.'
-      : 'Folder picker unavailable in this runtime. Use local backend or configure the Docker mounted folder.');
+      ? 'Selector de carpeta no disponible en este runtime. Pega la ruta absoluta de la carpeta.'
+      : 'Folder picker unavailable in this runtime. Paste the absolute folder path.');
   };
 
   const handleCreateProject = () => {
@@ -241,9 +288,88 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     setDraftHandle('');
   };
 
+  const refreshSkills = React.useCallback(async () => {
+    setSkillsLoading(true);
+    setSkillsError('');
+    try {
+      const [configResult, listResult] = await Promise.all([
+        vortexService.getSkillsConfig(),
+        vortexService.listSkills(),
+      ]);
+
+      if (configResult.ok && configResult.config) {
+        setSkillsConfig(configResult.config);
+        setSkillsDraft({ ...configResult.config });
+      } else {
+        setSkillsConfig(null);
+        setSkillsDraft(null);
+      }
+
+      if (listResult.ok) {
+        setSkillsList(listResult.skills);
+      } else {
+        setSkillsList([]);
+      }
+
+      let nextError = '';
+      if (!configResult.ok) nextError = configResult.error || 'skills_config_failed';
+      if (!listResult.ok) {
+        const tail = listResult.error || 'skills_list_failed';
+        nextError = nextError ? `${nextError}; ${tail}` : tail;
+      }
+      setSkillsError(nextError);
+    } catch (error) {
+      setSkillsError(error instanceof Error ? error.message : 'skills_load_failed');
+    } finally {
+      setSkillsLoading(false);
+    }
+  }, []);
+
+  const handleSkillsDraftToggle = (key: 'enabled' | 'strict') => {
+    if (!skillsDraft) return;
+    setSkillsDraft({ ...skillsDraft, [key]: !skillsDraft[key] });
+  };
+
+  const handleSkillsDraftNumber = (key: 'max_k' | 'token_budget_total', raw: string, min: number, max: number) => {
+    if (!skillsDraft) return;
+    const next = Number(raw);
+    if (!Number.isFinite(next)) return;
+    const clamped = Math.max(min, Math.min(max, Math.trunc(next)));
+    setSkillsDraft({ ...skillsDraft, [key]: clamped });
+  };
+
+  const handleSkillsConfigSave = async () => {
+    if (!skillsDraft) return;
+    setSkillsSaving(true);
+    setSkillsError('');
+    const result = await vortexService.updateSkillsConfig(skillsDraft);
+    if (result.ok && result.config) {
+      setSkillsConfig(result.config);
+      setSkillsDraft({ ...result.config });
+    } else {
+      setSkillsError(result.error || 'skills_config_update_failed');
+    }
+    setSkillsSaving(false);
+  };
+
+  const handleToggleSkill = async (ref: string, enabled: boolean) => {
+    setSkillsError('');
+    const result = await vortexService.toggleSkill(ref, enabled);
+    if (!result.ok || !result.skill) {
+      setSkillsError(result.error || 'skills_toggle_failed');
+      return;
+    }
+    setSkillsList((prev) => prev.map((skill) => (skill.id === result.skill?.id ? result.skill : skill)));
+  };
+
   React.useEffect(() => {
     if (isOpen) setActiveTab(initialTab);
   }, [initialTab, isOpen]);
+
+  React.useEffect(() => {
+    if (!isOpen || activeTab !== 'skills') return;
+    void refreshSkills();
+  }, [activeTab, isOpen, refreshSkills]);
 
   const OptionCard = ({
     active,
@@ -620,6 +746,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                     <div className="mt-4 grid gap-3">
                       <input
+                        data-testid="project-name-input"
                         value={projectDraft.name}
                         onChange={(event) => setProjectDraft((prev) => ({ ...prev, name: event.target.value }))}
                         placeholder={settings.language === 'es' ? 'Nombre: Vortex' : 'Name: Vortex'}
@@ -637,17 +764,28 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                           </div>
                           <button
                             type="button"
+                            data-testid="project-root-picker"
                             onClick={() => { void handleSelectFolder('draftRoot'); }}
                             className="shrink-0 rounded-xl border border-primary/25 bg-primary/10 px-3 py-2 text-xs font-black uppercase tracking-[0.1em] text-primary transition-colors hover:bg-primary/15"
                           >
                             <span className="inline-flex items-center gap-2"><FolderOpen size={14} />{settings.language === 'es' ? 'Seleccionar' : 'Select'}</span>
                           </button>
                         </div>
+                        <input
+                          data-testid="project-root-path-input"
+                          aria-label={settings.language === 'es' ? 'Ruta absoluta del proyecto' : 'Absolute project path'}
+                          value={projectDraft.rootPath}
+                          onChange={(event) => handleManualFolderPath('draftRoot', event.target.value)}
+                          placeholder="C:\Users\...\Downloads\flutter_test"
+                          className="mt-3 w-full rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs font-semibold text-foreground outline-none transition-all placeholder:text-muted-foreground/70 focus:border-primary/40 focus:ring-4 focus:ring-primary/10"
+                        />
                       </div>
                       <button
                         type="button"
+                        data-testid="project-add-button"
                         onClick={handleCreateProject}
-                        className="flex w-fit items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground shadow-[0_16px_36px_-24px_rgba(0,174,255,0.95)] transition-transform hover:scale-[1.01] active:scale-[0.99]"
+                        disabled={!projectDraft.rootPath.trim()}
+                        className="flex w-fit items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground shadow-[0_16px_36px_-24px_rgba(0,174,255,0.95)] transition-transform hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100"
                       >
                         <Plus size={16} />
                         {settings.language === 'es' ? 'Añadir workspace' : 'Add workspace'}
@@ -719,12 +857,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                           </div>
                           <button
                             type="button"
+                            data-testid="active-root-picker"
                             onClick={() => { void handleSelectFolder('activeRoot'); }}
                             className="shrink-0 rounded-xl border border-primary/25 bg-primary/10 px-3 py-2 text-xs font-black uppercase tracking-[0.1em] text-primary transition-colors hover:bg-primary/15"
                           >
                             <span className="inline-flex items-center gap-2"><FolderOpen size={14} />{settings.language === 'es' ? 'Seleccionar' : 'Select'}</span>
                           </button>
                         </div>
+                        <input
+                          data-testid="active-root-path-input"
+                          aria-label={settings.language === 'es' ? 'Ruta absoluta autorizada' : 'Authorized absolute path'}
+                          value={settings.permissions.workspaceRoot}
+                          onChange={(event) => handleManualFolderPath('activeRoot', event.target.value)}
+                          placeholder={settings.language === 'es' ? 'Ruta absoluta autorizada' : 'Authorized absolute path'}
+                          className="mt-3 w-full rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs font-semibold text-foreground outline-none transition-all placeholder:text-muted-foreground/70 focus:border-primary/40 focus:ring-4 focus:ring-primary/10"
+                        />
                       </div>
                     </div>
                   </div>
@@ -798,6 +945,191 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         </p>
                       </div>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'skills' && (
+                <div className="max-w-[700px] space-y-6">
+                  <div>
+                    <h3 className="text-lg font-bold tracking-tight text-foreground">
+                      {settings.language === 'es' ? 'Skills' : 'Skills'}
+                    </h3>
+                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                      {settings.language === 'es'
+                        ? 'Configura skills prompt-only y su enrutado en el runtime.'
+                        : 'Configure prompt-only skills and runtime routing.'}
+                    </p>
+                  </div>
+
+                  <div className="rounded-[1.3rem] border border-border/60 bg-muted/10 p-5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                          {settings.language === 'es' ? 'Config runtime' : 'Runtime config'}
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                          {settings.language === 'es'
+                            ? 'Aplica al runtime actual. Reinicio usa variables env.'
+                            : 'Applies to current runtime. Restart reads env vars.'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { void refreshSkills(); }}
+                        className="rounded-xl border border-border/60 bg-background px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground hover:border-primary/30 hover:text-foreground"
+                      >
+                        {settings.language === 'es' ? 'Actualizar' : 'Refresh'}
+                      </button>
+                    </div>
+
+                    {skillsLoading && (
+                      <p className="mt-4 text-sm text-muted-foreground">
+                        {settings.language === 'es' ? 'Cargando skills...' : 'Loading skills...'}
+                      </p>
+                    )}
+
+                    {!skillsLoading && !skillsConfig && (
+                      <p className="mt-4 text-sm text-muted-foreground">
+                        {settings.language === 'es'
+                          ? 'Skills no disponibles en el backend.'
+                          : 'Skills are unavailable in the backend.'}
+                      </p>
+                    )}
+
+                    {!skillsLoading && skillsConfig && skillsDraft && (
+                      <div className="mt-4 grid gap-4">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleSkillsDraftToggle('enabled')}
+                            className={`inline-flex items-center gap-2 rounded-full border px-4 py-2.5 text-[11px] font-black uppercase tracking-[0.14em] transition-all ${
+                              skillsDraft.enabled
+                                ? 'border-primary/40 bg-primary/10 text-foreground'
+                                : 'border-border/70 bg-background text-muted-foreground hover:border-primary/25 hover:text-foreground'
+                            }`}
+                          >
+                            <Check size={14} /> {skillsDraft.enabled ? 'On' : 'Off'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSkillsDraftToggle('strict')}
+                            className={`inline-flex items-center gap-2 rounded-full border px-4 py-2.5 text-[11px] font-black uppercase tracking-[0.14em] transition-all ${
+                              skillsDraft.strict
+                                ? 'border-primary/40 bg-primary/10 text-foreground'
+                                : 'border-border/70 bg-background text-muted-foreground hover:border-primary/25 hover:text-foreground'
+                            }`}
+                          >
+                            <ShieldCheck size={14} /> {skillsDraft.strict ? 'Strict' : 'Lenient'}
+                          </button>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="block">
+                            <span className="mb-2 block text-[11px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+                              Max K
+                            </span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={10}
+                              value={skillsDraft.max_k}
+                              onChange={(event) => handleSkillsDraftNumber('max_k', event.target.value, 1, 10)}
+                              className="w-full rounded-xl border border-border/70 bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary/40 focus:ring-4 focus:ring-primary/10"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="mb-2 block text-[11px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+                              Token budget
+                            </span>
+                            <input
+                              type="number"
+                              min={64}
+                              max={4096}
+                              value={skillsDraft.token_budget_total}
+                              onChange={(event) => handleSkillsDraftNumber('token_budget_total', event.target.value, 64, 4096)}
+                              className="w-full rounded-xl border border-border/70 bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary/40 focus:ring-4 focus:ring-primary/10"
+                            />
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={handleSkillsConfigSave}
+                            disabled={!skillsDirty || skillsSaving}
+                            className="rounded-xl bg-primary px-4 py-2.5 text-[11px] font-black uppercase tracking-[0.14em] text-primary-foreground shadow-[0_16px_36px_-24px_rgba(0,174,255,0.95)] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {skillsSaving ? (settings.language === 'es' ? 'Guardando...' : 'Saving...') : (settings.language === 'es' ? 'Guardar' : 'Save')}
+                          </button>
+                          <span className="text-xs text-muted-foreground">
+                            {skillsDirty ? (settings.language === 'es' ? 'Cambios pendientes.' : 'Pending changes.') : (settings.language === 'es' ? 'Sin cambios.' : 'No changes.')}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {skillsError && (
+                      <p className="mt-4 text-xs text-amber-500">{skillsError}</p>
+                    )}
+                  </div>
+
+                  <div className="rounded-[1.3rem] border border-border/60 bg-muted/10 p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">
+                          {settings.language === 'es' ? 'Inventario' : 'Inventory'}
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                          {settings.language === 'es'
+                            ? 'Activa o desactiva skills instaladas.'
+                            : 'Enable or disable installed skills.'}
+                        </p>
+                      </div>
+                      <span className="rounded-full border border-border/60 bg-background px-3 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+                        {sortedSkills.length}
+                      </span>
+                    </div>
+
+                    {!skillsLoading && sortedSkills.length === 0 && (
+                      <p className="mt-4 text-sm text-muted-foreground">
+                        {settings.language === 'es' ? 'Sin skills instaladas.' : 'No skills installed.'}
+                      </p>
+                    )}
+
+                    {!skillsLoading && sortedSkills.length > 0 && (
+                      <div className="mt-4 grid gap-2">
+                        {sortedSkills.map((skill) => (
+                          <div key={skill.id} className="rounded-xl border border-border/60 bg-background px-4 py-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-bold text-foreground">{skill.name || skill.id}</p>
+                                <p className="mt-1 truncate text-xs text-muted-foreground">{skill.id}</p>
+                                <div className="mt-2 flex flex-wrap gap-2 text-[9px] font-black uppercase tracking-[0.12em]">
+                                  <span className={`rounded-full px-2 py-0.5 ${skill.trusted ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'}`}>
+                                    {skill.trusted ? 'trusted' : 'untrusted'}
+                                  </span>
+                                  {skill.tags?.slice(0, 4).map((tag) => (
+                                    <span key={tag} className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
+                                      {tag}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleSkill(skill.id, !skill.enabled)}
+                                className={`rounded-full border px-4 py-2 text-[10px] font-black uppercase tracking-[0.14em] transition-all ${
+                                  skill.enabled
+                                    ? 'border-primary/40 bg-primary/10 text-foreground'
+                                    : 'border-border/70 bg-background text-muted-foreground hover:border-primary/25 hover:text-foreground'
+                                }`}
+                              >
+                                {skill.enabled ? 'On' : 'Off'}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

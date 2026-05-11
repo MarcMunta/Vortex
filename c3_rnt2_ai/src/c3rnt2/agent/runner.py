@@ -319,7 +319,10 @@ def _generate_final_summary(
 
 
 def _file_action_summary(tool_calls: List[dict]) -> str:
-    for call in reversed(tool_calls):
+    created: list[str] = []
+    updated: list[str] = []
+    deleted: list[str] = []
+    for call in tool_calls:
         if call.get("action") not in {"write_file", "delete_file"} or not call.get("ok"):
             continue
         try:
@@ -330,9 +333,29 @@ def _file_action_summary(tool_calls: List[dict]) -> str:
         if not path:
             continue
         if call.get("action") == "delete_file":
-            return f"Archivo eliminado: {path}"
-        return f"Archivo escrito: {path}"
-    return ""
+            if path not in deleted:
+                deleted.append(path)
+            continue
+        was_created = bool(payload.get("created", False))
+        target = created if was_created else updated
+        if path not in target:
+            target.append(path)
+    parts: list[str] = []
+    if created:
+        parts.append(f"He creado `{_join_natural(created)}`.")
+    if updated:
+        parts.append(f"He actualizado `{_join_natural(updated)}`.")
+    if deleted:
+        parts.append(f"He borrado `{_join_natural(deleted)}`.")
+    return " ".join(parts)
+
+
+def _join_natural(items: list[str]) -> str:
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " y " + items[-1]
 
 
 def _infer_exists_summary(task: str, workspace_dir: Path) -> str:
@@ -367,6 +390,9 @@ def _extract_direct_file_action(task: str) -> Action | None:
     text = str(task or "").strip()
     if not text:
         return None
+    natural_action = _extract_natural_file_action(text)
+    if natural_action is not None:
+        return natural_action
     create_match = re.search(
         r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?([^`\"'\s]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(.+)",
         text,
@@ -398,6 +424,46 @@ def _extract_direct_file_action(task: str) -> Action | None:
     return None
 
 
+def _normalize_natural_file_target(raw: str) -> str:
+    target = str(raw or "").strip().strip("`\"' \t\r\n").rstrip(".,;:")
+    lowered = target.lower()
+    if lowered in {"readme", "readme.md", "readme.txt"}:
+        return "README.md"
+    return target
+
+
+def _extract_natural_file_action(text: str) -> Action | None:
+    target_pattern = r"(?P<target>readme(?:\.(?:md|txt))?|[A-Za-z0-9_./\\-]+\.[A-Za-z0-9_]+)"
+    write_patterns = [
+        rf"(?P<verb>edita|editar|modifica|modificar|actualiza|actualizar|cambia|cambiar|sobrescribe|sobrescribir|crea|crear|edit|modify|update|change|write|create)\s+(?:el\s+|la\s+|un\s+|una\s+|the\s+|a\s+)?{target_pattern}\s+(?:para\s+que\s+)?(?:ponga|diga|contenga|sea|con\s+(?:texto|contenido)|with|to\s+say|to\s+contain)\s+(?P<text>[^;\n]+)",
+        rf"(?P<verb>haz|hacer|make)\s+que\s+(?:el\s+|la\s+|the\s+)?{target_pattern}\s+(?:ponga|diga|contenga|sea|say|contain)\s+(?P<text>[^;\n]+)",
+    ]
+    for pattern in write_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        path = _normalize_natural_file_target(str(match.group("target") or ""))
+        content = _clean_direct_file_content(str(match.group("text") or ""))
+        if path and content:
+            verb = _normalish(str(match.group("verb") or ""))
+            creates_file = verb in {"crea", "crear", "create", "write"}
+            args = {"path": path, "text": content}
+            if not creates_file:
+                args["require_exists"] = True
+            return Action(type="write_file", args=args)
+
+    delete_match = re.search(
+        rf"(?:borra|borrar|elimina|eliminar|delete|remove)\s+(?:el\s+|la\s+|un\s+|una\s+|the\s+|a\s+)?{target_pattern}",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if delete_match:
+        path = _normalize_natural_file_target(str(delete_match.group("target") or ""))
+        if path:
+            return Action(type="delete_file", args={"path": path})
+    return None
+
+
 def _append_direct_action(
     actions: list[tuple[int, Action]],
     start: int,
@@ -419,7 +485,7 @@ def _clean_direct_file_content(content: str) -> str:
         maxsplit=1,
         flags=re.IGNORECASE,
     )[0].strip()
-    return cleaned.rstrip(".")
+    return cleaned.rstrip(".").strip("`\"' \t\r\n")
 
 
 def _normalish(text: str) -> str:
@@ -439,22 +505,45 @@ def _extract_objective_text(task: str) -> str:
     return objective.strip() or text
 
 
-def _requests_flutter_login_project(task: str) -> bool:
+def _workspace_looks_flutter(workspace_dir: Path) -> bool:
+    pubspec = workspace_dir / "pubspec.yaml"
+    if not pubspec.exists() or not pubspec.is_file():
+        return False
+    try:
+        text = pubspec.read_text(encoding="utf-8", errors="ignore").lower()
+    except Exception:
+        return False
+    return "flutter:" in text or "sdk: flutter" in text
+
+
+def _requests_flutter_login_project(task: str, *, assume_flutter: bool = False) -> bool:
     normalized_all = _normalish(task)
     normalized_objective = _normalish(_extract_objective_text(task))
-    wants_project = any(word in normalized_objective for word in ("proyecto", "project", "app"))
+    wants_project = any(word in normalized_objective for word in ("proyecto", "project", "app", "crea", "crear", "haz", "hacer", "implementa", "genera", "create", "build"))
     wants_login = "login" in normalized_all or "inicio de sesion" in normalized_all
-    mentions_flutter = "flutter" in normalized_all or "dart" in normalized_all
+    mentions_flutter = assume_flutter or "flutter" in normalized_all or "dart" in normalized_all
     return wants_project and wants_login and mentions_flutter
 
 
-def _requests_flutter_basic_project(task: str) -> bool:
+def _requests_flutter_basic_project(task: str, *, assume_flutter: bool = False) -> bool:
     normalized_all = _normalish(task)
     normalized_objective = _normalish(_extract_objective_text(task))
-    mentions_flutter = "flutter" in normalized_all or "dart" in normalized_all
+    mentions_flutter = assume_flutter or "flutter" in normalized_all or "dart" in normalized_all
     wants_project = any(word in normalized_objective for word in ("proyecto", "project", "app"))
     wants_code = any(word in normalized_objective for word in ("codigo", "code", "basico", "basic"))
-    wants_runnable = any(word in normalized_all for word in ("ejecutar", "run", "runnable", "funcione", "funcionar"))
+    wants_runnable = any(
+        word in normalized_all
+        for word in (
+            "ejecuta",
+            "ejecutar",
+            "emulador",
+            "emulator",
+            "run",
+            "runnable",
+            "funcione",
+            "funcionar",
+        )
+    )
     return mentions_flutter and (wants_project or wants_code) and wants_runnable
 
 
@@ -804,12 +893,72 @@ def _flutter_login_project_support_actions(workspace_dir: Path) -> list[Action]:
     return actions
 
 
-def _flutter_project_fallback_actions(task: str) -> list[Action]:
-    if _requests_flutter_login_project(task):
-        return _flutter_login_project_actions()
-    if _requests_flutter_basic_project(task):
-        return _flutter_basic_project_actions()
-    return []
+def _requests_flutter_terminal_actions(task: str) -> bool:
+    normalized = _normalish(task)
+    return any(
+        word in normalized
+        for word in (
+            "terminal",
+            "comando",
+            "comandos",
+            "validar",
+            "prueba",
+            "probar",
+            "test",
+            "emulador",
+            "emulator",
+        )
+    )
+
+
+def _requests_flutter_emulator_run(task: str) -> bool:
+    normalized = _normalish(task)
+    return "emulador" in normalized or "emulator" in normalized
+
+
+def _flutter_project_command_actions(task: str) -> list[Action]:
+    if not _requests_flutter_terminal_actions(task):
+        return []
+    actions = [
+        Action(type="run_command", args={"command": "flutter --version", "cwd": ".", "timeout_s": 60}),
+        Action(type="run_command", args={"command": "flutter pub get", "cwd": ".", "timeout_s": 180}),
+        Action(type="run_command", args={"command": "flutter test", "cwd": ".", "timeout_s": 240}),
+    ]
+    if _requests_flutter_emulator_run(task):
+        actions.extend(
+            [
+                Action(type="run_command", args={"command": "flutter emulators", "cwd": ".", "timeout_s": 60}),
+                Action(type="run_command", args={"command": "flutter emulators --launch Pixel_API_34", "cwd": ".", "timeout_s": 120}),
+                Action(
+                    type="run_command",
+                    args={
+                        "command": "flutter run -d emulator-5554 --debug",
+                        "cwd": ".",
+                        "timeout_s": 120,
+                        "background": True,
+                    },
+                ),
+            ]
+        )
+    return actions
+
+
+def _flutter_project_fallback_actions(
+    task: str,
+    *,
+    include_commands: bool = False,
+    assume_flutter: bool = False,
+) -> list[Action]:
+    actions: list[Action]
+    if _requests_flutter_login_project(task, assume_flutter=assume_flutter):
+        actions = _flutter_login_project_actions()
+    elif _requests_flutter_basic_project(task, assume_flutter=assume_flutter):
+        actions = _flutter_basic_project_actions()
+    else:
+        return []
+    if include_commands:
+        actions.extend(_flutter_project_command_actions(task))
+    return actions
 
 
 def _extract_direct_actions(task: str) -> list[Action]:
@@ -818,20 +967,35 @@ def _extract_direct_actions(task: str) -> list[Action]:
         return []
     actions: list[tuple[int, Action]] = []
     write_patterns = [
-        r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
-        r"(?:modifica|modificar|actualiza|actualizar|sobrescribe|sobrescribir|update|modify|overwrite)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
-        r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<text>[^;\n]+)",
-        r"(?:modifica|modificar|actualiza|actualizar|sobrescribe|sobrescribir|update|modify|overwrite)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<text>[^;\n]+)",
+        (
+            r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
+            False,
+        ),
+        (
+            r"(?:modifica|modificar|actualiza|actualizar|sobrescribe|sobrescribir|update|modify|overwrite)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
+            True,
+        ),
+        (
+            r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<text>[^;\n]+)",
+            False,
+        ),
+        (
+            r"(?:modifica|modificar|actualiza|actualizar|sobrescribe|sobrescribir|update|modify|overwrite)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<text>[^;\n]+)",
+            True,
+        ),
     ]
-    for pattern in write_patterns:
+    for pattern, require_exists in write_patterns:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE | re.DOTALL):
             path = str(match.group("path") or "").strip().rstrip(".,;:")
             content = _clean_direct_file_content(str(match.group("text") or ""))
             if path and content:
+                args = {"path": path, "text": content}
+                if require_exists:
+                    args["require_exists"] = True
                 _append_direct_action(
                     actions,
                     match.start(),
-                    Action(type="write_file", args={"path": path, "text": content}),
+                    Action(type="write_file", args=args),
                 )
     delete_pattern = r"(?:borra|borrar|elimina|eliminar|delete|remove)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s,;:]+)[`\"']?"
     for match in re.finditer(delete_pattern, text, flags=re.IGNORECASE):
@@ -862,24 +1026,77 @@ def _extract_direct_actions(task: str) -> list[Action]:
 
 
 def _direct_actions_summary(tool_calls: List[dict]) -> str:
-    files: list[str] = []
-    actions: list[str] = []
+    created: list[str] = []
+    updated: list[str] = []
+    deleted: list[str] = []
+    command_names: list[str] = []
     for call in tool_calls:
         action = str(call.get("action") or "")
         if action not in {"write_file", "delete_file", "run_command"}:
             continue
-        actions.append(action)
         if action in {"write_file", "delete_file"} and call.get("ok"):
             meta = call.get("meta")
+            path = ""
             if isinstance(meta, dict):
                 path = str(meta.get("path") or "").strip()
-                if path:
-                    files.append(path)
-    if files:
-        return "Archivos actualizados: " + ", ".join(files)
-    if not actions:
+            try:
+                payload = json.loads(str(call.get("output") or ""))
+                path = str(payload.get("relative_path") or payload.get("path") or path).strip()
+                created_file = bool(payload.get("created", False))
+            except Exception:
+                created_file = False
+            if not path:
+                continue
+            if action == "delete_file":
+                if path not in deleted:
+                    deleted.append(path)
+            elif created_file:
+                if path not in created:
+                    created.append(path)
+            else:
+                if path not in updated:
+                    updated.append(path)
+        if action == "run_command" and call.get("ok"):
+            args = call.get("args")
+            command = str(args.get("command") if isinstance(args, dict) else "").strip()
+            if command:
+                command_names.append(command)
+    parts: list[str] = []
+    if created:
+        parts.append(f"He creado `{_join_natural(created)}`.")
+    if updated:
+        parts.append(f"He actualizado `{_join_natural(updated)}`.")
+    if deleted:
+        parts.append(f"He borrado `{_join_natural(deleted)}`.")
+    if any("flutter test" in command for command in command_names):
+        parts.append("He validado el proyecto con sus tests.")
+    if any("flutter run" in command for command in command_names):
+        parts.append("He iniciado la app en el emulador.")
+    elif any("emulators --launch" in command for command in command_names):
+        parts.append("He iniciado el emulador.")
+    if parts:
+        return " ".join(parts)
+    if not tool_calls:
         return ""
-    return "Acciones directas OK: " + ", ".join(actions)
+    return "He terminado la tarea."
+
+
+def _command_looks_like_test(command: str) -> bool:
+    normalized = str(command or "").strip().lower()
+    if not normalized:
+        return False
+    return any(
+        pattern in normalized
+        for pattern in (
+            "flutter test",
+            "dart test",
+            "npm test",
+            "pnpm test",
+            "yarn test",
+            "pytest",
+            "python -m pytest",
+        )
+    )
 
 
 def _tool_call_record(
@@ -1017,7 +1234,7 @@ def run_agent(
         "read_file": 'read_file args={"path":"relative/or/absolute","max_chars":4000?}',
         "grep": 'grep args={"pattern":"regex","path_glob":"**/*"?,"max_hits":50?}',
         "list_tree": 'list_tree args={"root":"."?,"max_entries":200?}',
-        "write_file": 'write_file args={"path":"lib/main.dart","text":"...","append":false?}',
+        "write_file": 'write_file args={"path":"lib/main.dart","text":"...","append":false?,"require_exists":true?}',
         "delete_file": 'delete_file args={"path":"relative/path"}',
         "run_tests": 'run_tests args={}',
         "run_command": 'run_command args={"command":"flutter test","cwd":"."?,"timeout_s":120?,"background":false?}',
@@ -1035,6 +1252,8 @@ def run_agent(
         "You must respond with a single minified JSON object Action{type,args}. "
         "Do not use markdown. Do not add prose. "
         "If the task asks to create, modify, or delete files, use write_file, apply_patch, or delete_file before finish. "
+        "For edits to an existing file, check that the target exists first or set require_exists=true; if it is missing, finish with a clear blocker and do not create it unless the user asked to create it. "
+        "For deletes, if the target is missing, report that clearly instead of doing nothing. "
         "If full permissions allow commands, run the relevant validation command before finish when practical. "
         "Finish only when the requested work is done or a real blocker remains. "
         f"Valid types: {allowed_prompt_tools}. "
@@ -1107,15 +1326,43 @@ def run_agent(
         if action_provider is None and effective_permissions.can_write
         else []
     )
+    if (
+        not direct_actions
+        and action_provider is None
+        and effective_permissions.can_write
+        and "write_file" in allowed_tools
+        and _requests_flutter_terminal_actions(task)
+    ):
+        direct_actions = _flutter_project_fallback_actions(
+            task,
+            include_commands=effective_permissions.can_run_commands and "run_command" in allowed_tools,
+            assume_flutter=_workspace_looks_flutter(workspace_dir),
+        )
+
+    def _missing_required_file_result(args: dict) -> ToolResult | None:
+        if not bool(args.get("require_exists", False)):
+            return None
+        raw_path = str(args.get("path") or "").strip()
+        target = tools._resolve_safe_path(raw_path)
+        if target is None:
+            return ToolResult(ok=False, output=f"No puedo acceder a `{raw_path}` dentro del scope autorizado.")
+        if not target.exists():
+            return ToolResult(
+                ok=False,
+                output=f"No encuentro el archivo `{raw_path}`. No he creado nada. Dime si quieres que lo cree.",
+            )
+        if not target.is_file():
+            return ToolResult(ok=False, output=f"`{raw_path}` existe, pero no es un archivo editable.")
+        return None
 
     def _run_direct_actions(actions: list[Action]) -> bool:
-        nonlocal summary, tools_ok
+        nonlocal summary, tests_ok, tools_ok
         direct_ok = True
         for direct_action in actions:
             if direct_action.type not in allowed_tools:
                 direct_result = ToolResult(ok=False, output=f"tool_disabled:{direct_action.type}")
             elif direct_action.type == "write_file":
-                direct_result = tools.write_file(
+                direct_result = _missing_required_file_result(direct_action.args) or tools.write_file(
                     str(direct_action.args.get("path", "")),
                     str(direct_action.args.get("text", "")),
                     append=bool(direct_action.args.get("append", False)),
@@ -1123,12 +1370,15 @@ def run_agent(
             elif direct_action.type == "delete_file":
                 direct_result = tools.delete_file(str(direct_action.args.get("path", "")))
             elif direct_action.type == "run_command":
+                command = str(direct_action.args.get("command", ""))
                 direct_result = tools.run_command(
-                    str(direct_action.args.get("command", "")),
+                    command,
                     cwd=str(direct_action.args.get("cwd", ".")),
                     timeout_s=int(direct_action.args.get("timeout_s", 120)),
                     background=bool(direct_action.args.get("background", False)),
                 )
+                if direct_result.ok and _command_looks_like_test(command):
+                    tests_ok = True
             else:
                 direct_result = ToolResult(ok=False, output=f"tool_unsupported:{direct_action.type}")
             tool_calls.append(
@@ -1164,7 +1414,11 @@ def run_agent(
         and effective_permissions.can_write
         and "write_file" in allowed_tools
     ):
-        direct_actions = _flutter_project_fallback_actions(task)
+        direct_actions = _flutter_project_fallback_actions(
+            task,
+            include_commands=effective_permissions.can_run_commands and "run_command" in allowed_tools,
+            assume_flutter=_workspace_looks_flutter(workspace_dir),
+        )
     if direct_actions and not tools_ok and not tool_calls:
         _run_direct_actions(direct_actions)
 
@@ -1330,7 +1584,7 @@ def run_agent(
             max_entries = int(action.args.get("max_entries", 200))
             result = tools.list_tree(root, max_entries=max_entries)
         elif action.type == "write_file":
-            result = tools.write_file(
+            result = _missing_required_file_result(action.args) or tools.write_file(
                 str(action.args.get("path", "")),
                 str(action.args.get("text", "")),
                 append=bool(action.args.get("append", False)),
@@ -1379,12 +1633,16 @@ def run_agent(
             result = tools.run_tests(workspace_dir)
             tests_ok = bool(result.ok)
         elif action.type == "run_command":
+            command = str(action.args.get("command", ""))
             result = tools.run_command(
-                str(action.args.get("command", "")),
+                command,
                 cwd=str(action.args.get("cwd", ".")),
                 timeout_s=int(action.args.get("timeout_s", 120)),
                 background=bool(action.args.get("background", False)),
             )
+            tools_ok = tools_ok or bool(result.ok)
+            if result.ok and _command_looks_like_test(command):
+                tests_ok = True
         elif action.type == "open_browser":
             result = tools.open_browser(str(action.args.get("url", "")))
             if tools.browser_actions:

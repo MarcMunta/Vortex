@@ -30,8 +30,50 @@ const AgentMessageWrapper: React.FC<AgentMessageWrapperProps> = ({
   const prevContentRef = useRef('');
   const prevThoughtRef = useRef('');
 
+  const rebuildRunFromEvents = useCallback((events: AgentEvent[]): AgentRun => {
+    const filesChanged = new Set<string>();
+    const commandsRun = new Set<string>();
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let status: AgentRun['status'] = isStreaming ? 'running' : 'completed';
+    let completedAt: number | undefined;
+
+    for (const event of events) {
+      if (event.type === 'file_change' || event.type === 'file_write') filesChanged.add(event.path);
+      if (event.type === 'command') commandsRun.add(event.command);
+      if (event.type === 'token_usage') {
+        totalInputTokens += event.input;
+        totalOutputTokens += event.output;
+      }
+      if (event.type === 'status') status = event.value;
+      if (event.type === 'done') completedAt = event.ts;
+    }
+
+    return {
+      id: `run-${message.id}`,
+      messageId: message.id,
+      status,
+      events,
+      startedAt: events[0]?.ts || Date.now(),
+      completedAt,
+      totalInputTokens,
+      totalOutputTokens,
+      stepCount: events.filter(e => e.type === 'step').length,
+      toolCallCount: events.filter(e => e.type === 'tool_call').length,
+      filesChanged: Array.from(filesChanged),
+      commandsRun: Array.from(commandsRun),
+      summary: message.content?.slice(0, 200),
+    };
+  }, [isStreaming, message.content, message.id]);
+
+  useEffect(() => {
+    if (!message.agentEvents?.length) return;
+    setAgentRun(rebuildRunFromEvents(message.agentEvents));
+  }, [message.agentEvents, rebuildRunFromEvents]);
+
   // Parse agent events from the streaming message content
   useEffect(() => {
+    if (message.agentEvents?.length) return;
     const content = message.content || '';
     const thought = message.thought || '';
 
@@ -63,15 +105,16 @@ const AgentMessageWrapper: React.FC<AgentMessageWrapperProps> = ({
         ])),
       }));
     }
-  }, [message.content, message.thought, message.fileChanges]);
+  }, [message.agentEvents, message.content, message.thought, message.fileChanges]);
 
   // Finalize run when streaming completes
   useEffect(() => {
+    if (message.agentEvents?.length) return;
     if (!isStreaming && agentRun.status === 'running') {
       const status = message.finishReason === 'error' ? 'failed' as const : 'completed' as const;
       setAgentRun(prev => finalizeAgentRun(prev, status, message.content?.slice(0, 200)));
     }
-  }, [isStreaming, agentRun.status, message.finishReason, message.content]);
+  }, [isStreaming, agentRun.status, message.finishReason, message.content, message.agentEvents]);
 
   const fontSizeClass = { small: 'text-[11px]', medium: 'text-[14px]', large: 'text-[16px]' }[fontSize];
 

@@ -630,7 +630,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, fontSize = 'medi
             </div>
           )}
           <div className={`${bubbleClass} ${fontSizeClass} leading-[1.45] ${isUser ? 'w-full' : 'w-fit'} max-w-full relative`}>
-            {!isUser && message.fileChanges && message.fileChanges.length >= 2 && (
+            {!isUser && message.fileChanges && message.fileChanges.length >= 1 && (
               <PatchOverview fileChanges={message.fileChanges} onToggleAll={toggleAll} onToggleSingle={togglePath} onOpenExplorer={() => onOpenModificationExplorer(message.fileChanges!)} collapsedPaths={collapsedPaths} language={language} />
             )}
             <div className="markdown-content relative overflow-visible z-10">

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 
-def _setup_app(tmp_path: Path, monkeypatch, *, model=None, settings=None):
+def _setup_app(tmp_path: Path, monkeypatch, *, model=None, settings=None, prepare_server=None):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -61,6 +61,8 @@ def _setup_app(tmp_path: Path, monkeypatch, *, model=None, settings=None):
         "rag": {"enabled": False},
         "agent": {"max_iters": 4},
     }
+    if prepare_server is not None:
+        prepare_server(server_mod)
     app = server_mod.create_app(settings, base_dir=tmp_path)
     return TestClient(app), dummy, server_mod
 
@@ -91,6 +93,19 @@ def test_chat_completions_agent_mode_non_stream(tmp_path: Path, monkeypatch) -> 
             ],
             "tests_ok": True,
             "browser_actions": [{"target": "http://localhost:4173", "opened": False}],
+            "tool_calls": [
+                {
+                    "action": "run_command",
+                    "args": {"command": "python -m pytest -q", "cwd": "."},
+                    "ok": True,
+                    "output": "1 passed",
+                    "meta": {
+                        "cwd": str(tmp_path / "repo"),
+                        "command": ["python", "-m", "pytest", "-q"],
+                        "returncode": 0,
+                    },
+                }
+            ],
         }
 
     monkeypatch.setattr(server_mod, "run_agent", _fake_run_agent)
@@ -118,15 +133,18 @@ def test_chat_completions_agent_mode_non_stream(tmp_path: Path, monkeypatch) -> 
     content = data["choices"][0]["message"]["content"]
     assert data["model"] == "core"
     assert "agent-ok" in content
-    assert "Tests: ok" in content
-    assert "Patch: patch-1" in content
-    assert "Archivos: lib/main.dart" in content
+    assert "Tests: ok" not in content
+    assert "Patch: patch-1" not in content
+    assert "Archivos: lib/main.dart" not in content
     assert "```file:lib/main.dart" not in content
     assert data["sources"] == []
     assert data["perf"]["agent_mode"] is True
     assert data["perf"]["agent_strategy"] == "tool_runner"
     assert data["perf"]["tests_ok"] is True
     assert data["perf"]["file_changes"][0]["path"] == "lib/main.dart"
+    assert data["perf"]["tool_calls"][0]["action"] == "run_command"
+    assert any(event["type"] == "command" for event in data["perf"]["agent_events"])
+    assert any(event["type"] == "file_change" for event in data["perf"]["agent_events"])
     assert data["perf"]["browser_actions"][0]["target"] == "http://localhost:4173"
     assert seen["model"] is dummy
     assert callable(seen["model_lock"])
@@ -151,6 +169,18 @@ def test_chat_completions_agent_mode_stream(tmp_path: Path, monkeypatch) -> None
                     "diff": "--- /dev/null\n+++ b/app.py\n@@\n+print('ok')\n",
                 }
             ],
+            "tool_calls": [
+                {
+                    "action": "write_file",
+                    "args": {"path": "app.py", "text": "print('ok')\n"},
+                    "ok": True,
+                    "output": '{"path":"app.py","bytes":12}',
+                    "meta": {
+                        "path": "app.py",
+                        "diff": "--- /dev/null\n+++ b/app.py\n@@\n+print('ok')\n",
+                    },
+                }
+            ],
             "tests_ok": False,
         },
     )
@@ -171,9 +201,62 @@ def test_chat_completions_agent_mode_stream(tmp_path: Path, monkeypatch) -> None
     assert "Agente iniciado" in resp.text
     assert "agent-stream" in resp.text
     assert "file_changes" in resp.text
-    assert "Archivos: app.py" in resp.text
+    assert "agent_events" in resp.text
+    assert "tool_calls" in resp.text
+    assert "Archivos: app.py" not in resp.text
     assert "```file:app.py" not in resp.text
     assert "data: [DONE]" in resp.text
+
+
+def test_chat_completions_agent_mode_continues_when_rag_context_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def _prepare(server_mod):
+        def _raise_rag(*_args, **_kwargs):
+            raise ValueError("rag_vector_shape")
+
+        monkeypatch.setattr(server_mod, "_inject_rag_context", _raise_rag)
+
+    client, _dummy, server_mod = _setup_app(
+        tmp_path,
+        monkeypatch,
+        settings={
+            "core": {"backend": "vortex", "hf_system_prompt": "SYS"},
+            "rag": {"enabled": True},
+            "agent": {"max_iters": 4},
+        },
+        prepare_server=_prepare,
+    )
+    monkeypatch.setattr(
+        server_mod,
+        "run_agent",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "summary": "agent-after-rag-error",
+            "patch_id": None,
+            "patch": "",
+            "file_changes": [],
+            "tests_ok": False,
+            "tool_calls": [],
+        },
+    )
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "core",
+            "messages": [{"role": "user", "content": "arregla el modo agente"}],
+            "agent_mode": True,
+            "stream": False,
+            "include_perf": True,
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "agent-after-rag-error" in data["choices"][0]["message"]["content"]
+    assert data["perf"]["agent_mode"] is True
 
 
 def test_chat_completions_agent_mode_does_not_503_when_model_failed(tmp_path: Path, monkeypatch) -> None:

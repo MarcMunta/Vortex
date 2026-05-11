@@ -67,6 +67,9 @@ test("settings own theme and project permissions", () => {
   expect(types).toContain("export type PermissionLevel = 'none' | 'read' | 'edit' | 'full'");
   expect(types).toContain("export type ThemeMode = 'light' | 'dark' | 'system'");
   expect(shell).toContain("permissionsFromProject");
+  expect(settings).toContain("project-root-path-input");
+  expect(settings).toContain("active-root-path-input");
+  expect(settings).not.toContain("applyFolderSelection(target, handle.name)");
   expect(settings).toContain("Añadir workspace");
   expect(settings).toContain("Tema de la app");
   expect(chatInput).toContain("Gestionar proyectos");
@@ -77,4 +80,15 @@ test("chat send is not hard-blocked by status polling", () => {
   expect(app).toContain("const sendDisabledReason = undefined");
   expect(app).not.toContain("if (baseSendDisabledReason)");
   expect(app).not.toContain("Selecciona un proyecto para usar agente");
+});
+
+test("agent timeline groups file changes without command/tool noise", () => {
+  const timeline = read("components/agent/AgentTimeline.tsx");
+  const diffBlock = read("components/agent/FileDiffBlock.tsx");
+  expect(timeline).toContain("Archivos cambiados");
+  expect(timeline).toContain("ChangedFilesPanel");
+  expect(timeline).not.toContain("AgentStepCard");
+  expect(timeline).not.toContain("TerminalBlock");
+  expect(timeline).not.toContain("commandsRun.length");
+  expect(diffBlock).toContain("forceExpanded");
 });
