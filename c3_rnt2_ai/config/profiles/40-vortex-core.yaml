@@ -321,7 +321,7 @@ profiles:
         - "pytorch.org"
         - "duckduckgo.com"
         - "developer.nvidia.com"
-      tools_enabled: ["run_tests", "search_web", "open_docs", "propose_patch"]
+      tools_enabled: ["open_docs", "search_web", "read_file", "grep", "list_tree", "write_file", "delete_file", "run_tests", "run_command", "open_browser", "propose_patch", "sandbox_patch", "apply_patch", "summarize_diff"]
       rate_limit_per_min: 30
   rtx4080_16gb_safe_vortex:
     # Safer defaults for RTX 4080 16GB (core backend)

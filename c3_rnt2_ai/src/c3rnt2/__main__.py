@@ -102,6 +102,10 @@ def run_agent(*args: Any, **kwargs: Any) -> Any:
     return _lazy_symbol(".agent.runner", "run_agent")(*args, **kwargs)
 
 
+def run_support_chatbot(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".support_chatbot", "manejar_pregunta")(*args, **kwargs)
+
+
 def decide_max_new_tokens(*args: Any, **kwargs: Any) -> Any:
     return _lazy_symbol(".runtime.vram_governor", "decide_max_new_tokens")(
         *args, **kwargs
@@ -1628,6 +1632,29 @@ def cmd_agent_run(args: argparse.Namespace) -> None:
     print(report)
 
 
+def cmd_support_chatbot(args: argparse.Namespace) -> None:
+    docs_dir = Path(args.docs_dir) if args.docs_dir else Path("documentos")
+    index_path = Path(args.index_path) if args.index_path else Path("data/support_chatbot/support.sqlite")
+    escalations_path = (
+        Path(args.escalations_path)
+        if args.escalations_path
+        else Path("data/support_chatbot/escalations.jsonl")
+    )
+    result = run_support_chatbot(
+        args.question,
+        docs_dir=docs_dir,
+        index_path=index_path,
+        escalations_path=escalations_path,
+        llm=None,
+    )
+    if bool(args.json):
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(result.get("answer"))
+        if bool(args.show_chunks):
+            print(json.dumps(result.get("chunks", []), ensure_ascii=False, indent=2))
+
+
 def cmd_learn_ingest(args: argparse.Namespace) -> None:
     settings = _load_and_validate(args.profile)
     base_dir = Path(".")
@@ -2221,6 +2248,15 @@ def main() -> None:
     ar.add_argument("--task", required=True)
     ar.add_argument("--max-iters", type=int, default=5)
     ar.set_defaults(func=cmd_agent_run)
+
+    support = sub.add_parser("support-chatbot")
+    support.add_argument("--question", required=True)
+    support.add_argument("--docs-dir", default="documentos")
+    support.add_argument("--index-path", default="data/support_chatbot/support.sqlite")
+    support.add_argument("--escalations-path", default="data/support_chatbot/escalations.jsonl")
+    support.add_argument("--show-chunks", action="store_true")
+    support.add_argument("--json", action="store_true")
+    support.set_defaults(func=cmd_support_chatbot)
 
     tok = sub.add_parser("tokenizer-train")
     tok.add_argument("extra", nargs=argparse.REMAINDER)

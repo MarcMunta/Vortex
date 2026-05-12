@@ -568,3 +568,53 @@ python -m c3rnt2 ingest-once --profile qwen8b_base
 python -m c3rnt2 train-once --profile qwen8b_train
 python -m c3rnt2 self-patch --goal "Fix failing test" --dry-run
 ```
+
+## Practica final: chatbot soporte IA + RAG + humano
+
+Implementado en Vortex local:
+- Preprocesado: `preprocesar_input()` limpia, normaliza y corrige errores como `internat -> internet`, `ruter -> router`, `funksiona -> funciona`.
+- RAG: `SupportChatbot` indexa `documentos/*.txt` en `KnowledgeStore` con embeddings hash locales y FAISS si esta disponible.
+- Prompt: obliga a responder como soporte tecnico usando solo contexto.
+- LLM local: endpoint usa el modelo ya cargado en Vortex si existe. Con perfil diario, eso es `llama_cpp` + LLaMA 2 GGUF local.
+- Decision: valida contexto, longitud, marcadores de incertidumbre y score de recuperacion.
+- Escalado: registra escalados en `data/support_chatbot/escalations.jsonl`.
+- Chunks: la respuesta devuelve los chunks usados para auditar RAG.
+
+Archivos principales:
+- `src/c3rnt2/support_chatbot.py`
+- `documentos/faq.txt`
+- `documentos/incidencias.txt`
+- `documentos/soporte_red.txt`
+- `tests/test_support_chatbot.py`
+
+API:
+```bash
+curl -X POST http://127.0.0.1:8000/v1/support-chatbot/ask ^
+  -H "Content-Type: application/json" ^
+  -d "{\"question\":\"no teng internat\",\"use_llm\":true}"
+```
+
+CLI:
+```bash
+python -m c3rnt2 support-chatbot --question "no teng internat" --show-chunks --json
+python -m c3rnt2 support-chatbot --question "llevo 3 dias sin internet y nadie responde" --json
+```
+
+Pruebas ejecutadas:
+```bash
+python -m pytest tests/test_support_chatbot.py -q
+# 8 passed
+```
+
+Casos validados:
+- FAQ simple: responde con contexto de `faq.txt`.
+- Errores de input: `no teng internat` -> `no tengo internet`; `el ruter no funksiona` -> `el router no funciona`.
+- Caso complejo: `llevo 3 dias sin internet y nadie responde` -> escalado humano.
+- Fallo forzado: sin documentos o sin contexto relevante -> escalado humano.
+- Reto final: intencion, chunks visibles y logging de escalados.
+
+Modo local:
+- No se usa Codex CLI.
+- Chat y agente usan runtime local de Vortex.
+- Perfil recomendado: `rtx4080_16gb_llama2_7b_q4_local`.
+- Modelo local: `data/models/gguf/llama-2-7b-chat.Q4_K_M.gguf`.

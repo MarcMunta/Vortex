@@ -1,0 +1,15 @@
+Soporte de red
+
+Para reiniciar el router:
+1. Desconectar alimentacion.
+2. Esperar 30 segundos.
+3. Volver a conectar.
+4. Esperar 2 minutos.
+
+Si el WiFi no funciona:
+1. Comprobar que la luz WiFi esta encendida.
+2. Reiniciar el router.
+3. Olvidar la red en el dispositivo y conectarse de nuevo.
+
+Si internet sigue sin funcionar despues del reinicio:
+Abrir una incidencia tecnica con los datos del cliente y revisar si existe averia en la zona.

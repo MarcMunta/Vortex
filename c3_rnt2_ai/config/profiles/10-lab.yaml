@@ -400,6 +400,7 @@ profiles:
       reload_interval_s: 15
       allow_parallel_runtime_training: false
       lazy_model_load: true
+      model_boot_fallback_profile:
       ctx_overflow_policy: tail_keep_last_n
       use_instruction_files: false
     context:

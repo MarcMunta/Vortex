@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -188,6 +189,72 @@ def _task_requests_code_file(task: str) -> bool:
             "login",
         },
     )
+
+
+def _task_requires_workspace_change(task: str) -> bool:
+    normalized = _normalish(_extract_objective_text(task))
+    return any(
+        word in normalized
+        for word in (
+            "anade",
+            "añade",
+            "agrega",
+            "add",
+            "boton",
+            "button",
+            "build",
+            "cambia",
+            "cambiar",
+            "codigo",
+            "crea",
+            "crear",
+            "create",
+            "delete",
+            "edita",
+            "editar",
+            "elimina",
+            "genera",
+            "generar",
+            "haz",
+            "hazme",
+            "hacer",
+            "implementa",
+            "implementar",
+            "modifica",
+            "modificar",
+            "programa",
+            "programar",
+            "remove",
+            "update",
+        )
+    )
+
+
+def _task_requires_command_activity(task: str) -> bool:
+    normalized = _normalish(_extract_objective_text(task))
+    if any(word in normalized for word in ("comando", "command", "emulador", "emulator", "terminal")):
+        return True
+    if re.search(r"\b(corre|correr|ejecuta|ejecutalo|ejecutarlo|inicia|iniciar|launch|run)\b", normalized):
+        return True
+    negated_validation = any(
+        phrase in normalized
+        for phrase in (
+            "no ejecutes",
+            "no ejecutar",
+            "no valides",
+            "sin tests",
+            "sin test",
+            "do not run",
+            "don't run",
+        )
+    )
+    if not negated_validation and re.search(r"\b(test|tests|valida|validar)\b", normalized):
+        return True
+    return False
+
+
+def _task_requires_tool_activity(task: str) -> bool:
+    return _task_requires_workspace_change(task) or _task_requires_command_activity(task)
 
 
 def _infer_code_path(task: str, lang: str, code: str, workspace_dir: Path) -> str:
@@ -435,8 +502,8 @@ def _normalize_natural_file_target(raw: str) -> str:
 def _extract_natural_file_action(text: str) -> Action | None:
     target_pattern = r"(?P<target>readme(?:\.(?:md|txt))?|[A-Za-z0-9_./\\-]+\.[A-Za-z0-9_]+)"
     write_patterns = [
-        rf"(?P<verb>edita|editar|modifica|modificar|actualiza|actualizar|cambia|cambiar|sobrescribe|sobrescribir|crea|crear|edit|modify|update|change|write|create)\s+(?:el\s+|la\s+|un\s+|una\s+|the\s+|a\s+)?{target_pattern}\s+(?:para\s+que\s+)?(?:ponga|diga|contenga|sea|con\s+(?:el\s+|la\s+)?(?:texto|contenido)|with|to\s+say|to\s+contain)\s+(?P<text>[^;\n]+)",
-        rf"(?P<verb>haz|hacer|make)\s+que\s+(?:el\s+|la\s+|the\s+)?{target_pattern}\s+(?:ponga|diga|contenga|sea|say|contain)\s+(?P<text>[^;\n]+)",
+        rf"(?P<verb>edita|editar|modifica|modificar|actualiza|actualizar|cambia|cambiar|sobrescribe|sobrescribir|crea|crear|edit|modify|update|change|write|create)\s+(?:el\s+|la\s+|un\s+|una\s+|the\s+|a\s+)?{target_pattern}\s+(?:para\s+que\s+)?(?:ponga|diga|contenga|sea|con\s+(?:el\s+|la\s+)?(?:texto|contenido)|with|to\s+say|to\s+contain)\s*[,:\-]?\s+(?P<text>[^;\n]+)",
+        rf"(?P<verb>haz|hacer|make)\s+que\s+(?:el\s+|la\s+|the\s+)?{target_pattern}\s+(?:ponga|diga|contenga|sea|say|contain)\s*[,:\-]?\s+(?P<text>[^;\n]+)",
     ]
     for pattern in write_patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
@@ -488,9 +555,14 @@ def _clean_direct_file_content(content: str) -> str:
     return cleaned.rstrip(".").strip("`\"' \t\r\n")
 
 
-def _normalish(text: str) -> str:
+def _normalish_legacy(text: str) -> str:
     replacements = str.maketrans("áéíóúÁÉÍÓÚñÑ", "aeiouAEIOUnN")
     return str(text or "").translate(replacements).lower()
+
+
+def _normalish(text: str) -> str:
+    normalized = unicodedata.normalize("NFD", str(text or ""))
+    return "".join(char for char in normalized if unicodedata.category(char) != "Mn").lower()
 
 
 def _extract_objective_text(task: str) -> str:
@@ -973,6 +1045,188 @@ def _flutter_forgot_password_button_actions(
     return actions
 
 
+def _requests_flutter_dark_mode_button(task: str) -> bool:
+    normalized = _normalish(_extract_objective_text(task))
+    wants_button = "boton" in normalized or "button" in normalized
+    wants_dark = "modo oscuro" in normalized or "dark mode" in normalized or "tema oscuro" in normalized
+    wants_animation = "animacion" in normalized or "animado" in normalized or "transition" in normalized or "transicion" in normalized
+    return wants_button and wants_dark and (wants_animation or "color" in normalized)
+
+
+def _flutter_dark_mode_button_actions(
+    task: str,
+    workspace_dir: Path,
+    *,
+    include_commands: bool = False,
+) -> list[Action]:
+    if not _requests_flutter_dark_mode_button(task):
+        return []
+    main_path = workspace_dir / "lib" / "main.dart"
+    if not main_path.exists() or not main_path.is_file():
+        return []
+    try:
+        main_text = main_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return []
+    actions: list[Action] = []
+    new_main = main_text
+    if "themeMode:" not in new_main:
+        old_app = """class VortexLoginApp extends StatelessWidget {
+  const VortexLoginApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Vortex Login',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        useMaterial3: true,
+      ),
+      home: const LoginPage(),
+    );
+  }
+}
+"""
+        new_app = """class VortexLoginApp extends StatefulWidget {
+  const VortexLoginApp({super.key});
+
+  @override
+  State<VortexLoginApp> createState() => _VortexLoginAppState();
+}
+
+class _VortexLoginAppState extends State<VortexLoginApp> {
+  bool _isDarkMode = false;
+
+  void _toggleTheme() {
+    setState(() => _isDarkMode = !_isDarkMode);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Vortex Login',
+      debugShowCheckedModeBanner: false,
+      themeMode: _isDarkMode ? ThemeMode.dark : ThemeMode.light,
+      themeAnimationDuration: const Duration(milliseconds: 450),
+      themeAnimationCurve: Curves.easeInOutCubic,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo, brightness: Brightness.light),
+        useMaterial3: true,
+      ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo, brightness: Brightness.dark),
+        useMaterial3: true,
+      ),
+      home: LoginPage(
+        isDarkMode: _isDarkMode,
+        onToggleTheme: _toggleTheme,
+      ),
+    );
+  }
+}
+"""
+        if old_app not in new_main:
+            return []
+        new_main = new_main.replace(old_app, new_app, 1)
+    if "final bool isDarkMode;" not in new_main:
+        old_login = """class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+"""
+        new_login = """class LoginPage extends StatefulWidget {
+  const LoginPage({
+    super.key,
+    required this.isDarkMode,
+    required this.onToggleTheme,
+  });
+
+  final bool isDarkMode;
+  final VoidCallback onToggleTheme;
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+"""
+        if old_login not in new_main:
+            return []
+        new_main = new_main.replace(old_login, new_login, 1)
+    if "AnimatedSwitcher" not in new_main:
+        old_title = "              Text('Login', style: Theme.of(context).textTheme.headlineMedium),"
+        theme_button = """              Align(
+                alignment: Alignment.centerRight,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 350),
+                  curve: Curves.easeInOut,
+                  decoration: BoxDecoration(
+                    color: widget.isDarkMode ? Colors.white10 : Colors.black12,
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  child: IconButton(
+                    tooltip: widget.isDarkMode ? 'Modo claro' : 'Modo oscuro',
+                    onPressed: widget.onToggleTheme,
+                    icon: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 250),
+                      transitionBuilder: (child, animation) {
+                        return RotationTransition(
+                          turns: animation,
+                          child: FadeTransition(opacity: animation, child: child),
+                        );
+                      },
+                      child: Icon(
+                        widget.isDarkMode ? Icons.light_mode : Icons.dark_mode,
+                        key: ValueKey(widget.isDarkMode),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text('Login', style: Theme.of(context).textTheme.headlineMedium),"""
+        if old_title not in new_main:
+            return []
+        new_main = new_main.replace(old_title, theme_button, 1)
+    if new_main != main_text:
+        actions.append(
+            Action(
+                type="write_file",
+                args={"path": "lib/main.dart", "text": new_main, "require_exists": True},
+            )
+        )
+
+    test_path = workspace_dir / "test" / "widget_test.dart"
+    if test_path.exists() and test_path.is_file():
+        try:
+            test_text = test_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            test_text = ""
+        if "find.byTooltip('Modo oscuro')" not in test_text and "expect(tester.takeException(), isNull);" in test_text:
+            actions.append(
+                Action(
+                    type="write_file",
+                    args={
+                        "path": "test/widget_test.dart",
+                        "text": test_text.replace(
+                            "    expect(tester.takeException(), isNull);",
+                            "    expect(tester.takeException(), isNull);\n"
+                            "    expect(find.byTooltip('Modo oscuro'), findsOneWidget);\n"
+                            "    await tester.tap(find.byTooltip('Modo oscuro'));\n"
+                            "    await tester.pumpAndSettle();\n"
+                            "    expect(find.byTooltip('Modo claro'), findsOneWidget);",
+                            1,
+                        ),
+                        "require_exists": True,
+                    },
+                )
+            )
+    if actions and include_commands:
+        actions.append(Action(type="run_command", args={"command": "flutter test", "cwd": ".", "timeout_s": 240}))
+    return actions
+
+
 def _requests_flutter_terminal_actions(task: str) -> bool:
     normalized = _normalish(task)
     return any(
@@ -1275,6 +1529,20 @@ def _direct_actions_summary(tool_calls: List[dict]) -> str:
     return "He terminado la tarea."
 
 
+def _attempted_workspace_mutation(tool_calls: List[dict]) -> bool:
+    return any(
+        str(call.get("action") or "") in {"write_file", "delete_file", "apply_patch", "propose_patch", "sandbox_patch"}
+        for call in tool_calls
+    )
+
+
+def _attempted_command_activity(tool_calls: List[dict]) -> bool:
+    return any(
+        str(call.get("action") or "") in {"run_command", "run_tests", "open_browser"}
+        for call in tool_calls
+    )
+
+
 def _command_looks_like_test(command: str) -> bool:
     normalized = str(command or "").strip().lower()
     if not normalized:
@@ -1547,12 +1815,14 @@ def run_agent(
     tests_ok = False
     tools_ok = False
     summary = ""
+    blocked = False
     browser_actions: List[dict[str, object]] = []
     start_ts = time.monotonic()
     compactions_done = 0
     iterations_done = 0
     invalid_json_count = 0
 
+    model_unavailable_reason = ""
     objective_text = _extract_objective_text(task)
     direct_actions = (
         _extract_direct_actions(objective_text)
@@ -1563,6 +1833,20 @@ def run_agent(
     if (
         not direct_actions
         and action_provider is None
+        and current_model is None
+        and assume_flutter_workspace
+        and effective_permissions.can_write
+        and "write_file" in allowed_tools
+    ):
+        direct_actions = _flutter_dark_mode_button_actions(
+            objective_text,
+            workspace_dir,
+            include_commands=effective_permissions.can_run_commands and "run_command" in allowed_tools,
+        )
+    if (
+        not direct_actions
+        and action_provider is None
+        and current_model is None
         and assume_flutter_workspace
         and effective_permissions.can_write
         and "write_file" in allowed_tools
@@ -1575,6 +1859,7 @@ def run_agent(
     if (
         not direct_actions
         and action_provider is None
+        and current_model is None
         and effective_permissions.can_run_commands
         and "run_command" in allowed_tools
     ):
@@ -1586,6 +1871,7 @@ def run_agent(
     if (
         not direct_actions
         and action_provider is None
+        and current_model is None
         and effective_permissions.can_write
         and "write_file" in allowed_tools
         and _requests_flutter_terminal_actions(task)
@@ -1662,6 +1948,13 @@ def run_agent(
         summary = "direct_actions_done" if direct_ok or had_nonfatal_failure else tool_calls[-1]["output"]
         return direct_ok
 
+    def _command_activity_required() -> bool:
+        return (
+            _task_requires_command_activity(task)
+            and effective_permissions.can_run_commands
+            and bool({"run_command", "run_tests", "open_browser"} & allowed_tools)
+        )
+
     if direct_actions:
         _run_direct_actions(direct_actions)
 
@@ -1671,7 +1964,10 @@ def run_agent(
         and current_model is None
         and allow_model_load
     ):
-        current_model = load_inference_model(settings)
+        try:
+            current_model = load_inference_model(settings)
+        except Exception as exc:
+            model_unavailable_reason = str(exc)
 
     if (
         not direct_actions
@@ -1694,6 +1990,8 @@ def run_agent(
             "agent_model_unavailable: no hay modelo cargado para planificar acciones; "
             "las acciones directas siguen disponibles cuando la tarea es determinista."
         )
+        if model_unavailable_reason:
+            summary = f"{summary} Motivo: {model_unavailable_reason}"
         episode = {
             "version": 2,
             "ts": time.time(),
@@ -1828,6 +2126,27 @@ def run_agent(
 
         if action.type == "finish":
             summary = str(action.args.get("summary", "finished"))
+            if _task_requires_tool_activity(task) and not tool_calls:
+                blocked = True
+                tools_ok = False
+                summary = (
+                    "No he ejecutado acciones: el agente intento terminar sin usar herramientas. "
+                    "No marco la tarea como hecha."
+                )
+            elif _task_requires_workspace_change(task) and not _attempted_workspace_mutation(tool_calls):
+                blocked = True
+                tools_ok = False
+                summary = (
+                    "No he aplicado cambios: el agente intento terminar sin modificar archivos. "
+                    "No marco la tarea como hecha porque no hay archivos modificados."
+                )
+            elif _command_activity_required() and not _attempted_command_activity(tool_calls):
+                blocked = True
+                tools_ok = False
+                summary = (
+                    "No he ejecutado comandos: el agente intento terminar sin terminal. "
+                    "No marco la tarea como hecha."
+                )
             break
 
         result: ToolResult
@@ -1994,6 +2313,30 @@ def run_agent(
     if patch_id and not patch_text:
         patch_text = _load_patch_from_queue(workspace_dir, settings, patch_id)
     file_changes = _file_changes_from_tool_calls(tool_calls)
+    if (
+        _task_requires_workspace_change(task)
+        and not file_changes
+        and not patch_id
+        and not _attempted_workspace_mutation(tool_calls)
+    ):
+        blocked = True
+        tools_ok = False
+        if _summary_needs_fallback(summary) or summary.strip().lower() not in {"agent_model_unavailable"}:
+            summary = (
+                "No he aplicado cambios: no hay ningun archivo modificado ni patch generado. "
+                "No marco la tarea como hecha."
+            )
+    if (
+        _command_activity_required()
+        and not _attempted_command_activity(tool_calls)
+        and not blocked
+    ):
+        blocked = True
+        tools_ok = False
+        summary = (
+            "No he ejecutado comandos: no hay ninguna accion de terminal registrada. "
+            "No marco la tarea como hecha."
+        )
     if not patch_text and file_changes:
         patch_text = "\n\n".join(
             str(change.get("diff") or "").strip()
@@ -2016,6 +2359,7 @@ def run_agent(
         "tools_ok": tools_ok,
         "summary": summary,
         "tool_calls": tool_calls,
+        "blocked": blocked,
         "max_iters": max_iters,
         "max_total_iters": max_total_iters,
         "max_context_compactions": max_context_compactions,
@@ -2034,7 +2378,7 @@ def run_agent(
         episode["profile"] = profile
     _log_episode(base_dir, episode)
     return {
-        "ok": True,
+        "ok": not blocked,
         "patch_id": patch_id,
         "patch": patch_text,
         "file_changes": file_changes,
@@ -2045,4 +2389,5 @@ def run_agent(
         "permissions": effective_permissions.to_dict(),
         "browser_actions": browser_actions,
         "tool_calls": tool_calls,
+        "blocked": blocked,
     }

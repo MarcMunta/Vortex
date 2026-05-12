@@ -1,0 +1,16 @@
+FAQ de soporte tecnico
+
+Pregunta: Como puedo reiniciar el router?
+Respuesta:
+1. Desconectar la alimentacion del router.
+2. Esperar 30 segundos.
+3. Volver a conectar el router.
+4. Esperar a que las luces de internet queden estables.
+
+Pregunta: Que hago si no tengo internet?
+Respuesta:
+Comprueba que el router esta encendido, reinicialo siguiendo los pasos de soporte red y revisa si otros dispositivos tienen conexion.
+
+Pregunta: Como consulto una incidencia?
+Respuesta:
+Usa el numero de ticket para consultar el estado. Si no tienes ticket, el agente debe crear una incidencia nueva.

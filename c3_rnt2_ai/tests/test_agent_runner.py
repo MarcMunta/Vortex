@@ -487,6 +487,39 @@ def test_agent_runner_direct_readme_natural_edit_and_delete(
     assert "-hola mundo" in delete_report["file_changes"][0]["diff"]
 
 
+def test_agent_runner_direct_readme_edit_accepts_punctuation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "tools_enabled": ["write_file"],
+        },
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+    (tmp_path / "README.md").write_text("old readme\n", encoding="utf-8")
+
+    report = run_agent(
+        'Modifica el readme para que ponga, "hola marc hola pol hola joan"',
+        settings,
+        tmp_path,
+        max_iters=3,
+        permissions=permissions,
+    )
+
+    assert report["ok"] is True
+    assert report["tools_ok"] is True
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "hola marc hola pol hola joan"
+    assert report["file_changes"][0]["path"] == "README.md"
+    assert "+hola marc hola pol hola joan" in report["file_changes"][0]["diff"]
+
+
 def test_agent_runner_direct_edit_missing_file_reports_blocker(
     tmp_path: Path,
     monkeypatch,
@@ -772,6 +805,132 @@ void main() {
     }
 
 
+def test_agent_runner_adds_animated_dark_mode_button_to_flutter_login(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    (tmp_path / "lib").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "test").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "pubspec.yaml").write_text(
+        "name: existing_flutter\n\ndependencies:\n  flutter:\n    sdk: flutter\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "lib" / "main.dart").write_text(
+        """import 'package:flutter/material.dart';
+
+void main() {
+  runApp(const VortexLoginApp());
+}
+
+class VortexLoginApp extends StatelessWidget {
+  const VortexLoginApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Vortex Login',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        useMaterial3: true,
+      ),
+      home: const LoginPage(),
+    );
+  }
+}
+
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  Widget _buildLoginCard(BuildContext context) {
+    return Column(
+      children: [
+              Text('Login', style: Theme.of(context).textTheme.headlineMedium),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => _buildLoginCard(context);
+}
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "test" / "widget_test.dart").write_text(
+        """import 'package:flutter_test/flutter_test.dart';
+import 'package:existing_flutter/main.dart' as app;
+
+void main() {
+  testWidgets('app starts', (WidgetTester tester) async {
+    app.main();
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
+}
+""",
+        encoding="utf-8",
+    )
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "tools_enabled": ["write_file", "run_command"],
+        },
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+    commands: list[str] = []
+
+    def _fake_run_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout_s: int = 120,
+        background: bool = False,
+    ) -> ToolResult:
+        commands.append(command)
+        return ToolResult(
+            ok=True,
+            output=f"ran:{command}",
+            meta={"cwd": str(self.repo_root), "command": command.split(), "returncode": 0},
+        )
+
+    monkeypatch.setattr(AgentTools, "run_command", _fake_run_command)
+
+    report = run_agent(
+        "Añade un boton para el modo oscuro con animacion basica y transicion del color blanco al negro.",
+        settings,
+        tmp_path,
+        max_iters=3,
+        permissions=permissions,
+        allow_model_load=False,
+    )
+
+    main_text = (tmp_path / "lib" / "main.dart").read_text(encoding="utf-8")
+    test_text = (tmp_path / "test" / "widget_test.dart").read_text(encoding="utf-8")
+    assert report["ok"] is True
+    assert report["tools_ok"] is True
+    assert report["tests_ok"] is True
+    assert "themeMode:" in main_text
+    assert "AnimatedSwitcher" in main_text
+    assert "Modo oscuro" in main_text
+    assert "find.byTooltip('Modo oscuro')" in test_text
+    assert commands == ["flutter test"]
+    assert {change["path"] for change in report["file_changes"]} == {
+        "lib/main.dart",
+        "test/widget_test.dart",
+    }
+
+
 def test_agent_runner_scaffolds_flutter_login_project_without_model(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("C3RNT2_NO_NET", "1")
     settings = {
@@ -914,7 +1073,7 @@ def test_agent_runner_flutter_project_uses_terminal_and_emulator_without_model(
     )
 
 
-def test_agent_runner_flutter_terminal_request_uses_tools_before_model(
+def test_agent_runner_flutter_terminal_request_uses_tools_without_model(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -931,12 +1090,6 @@ def test_agent_runner_flutter_terminal_request_uses_tools_before_model(
         tmp_path,
     )
     commands: list[str] = []
-
-    class UnexpectedModel:
-        tokenizer = None
-
-        def generate(self, _prompt: str, **_kwargs):
-            raise AssertionError("model should not be needed for deterministic Flutter terminal request")
 
     def _fake_run_command(
         self,
@@ -960,8 +1113,8 @@ def test_agent_runner_flutter_terminal_request_uses_tools_before_model(
         settings,
         tmp_path,
         max_iters=1,
-        model=UnexpectedModel(),
         permissions=permissions,
+        allow_model_load=False,
     )
 
     assert report["ok"] is True
@@ -1201,10 +1354,46 @@ def test_agent_runner_does_not_scaffold_flutter_project_when_model_is_available(
         permissions=permissions,
     )
 
-    assert report["ok"] is True
-    assert report["summary"] == "modelo planifico"
+    assert report["ok"] is False
+    assert report["tools_ok"] is False
+    assert "No he aplicado cambios" in report["summary"]
     assert report["file_changes"] == []
     assert not (tmp_path / "pubspec.yaml").exists()
+
+
+def test_agent_runner_does_not_complete_command_request_without_terminal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {"web_allowlist": [], "json_repair_retries": 0},
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+
+    class PlanningModel:
+        tokenizer = None
+
+        def generate(self, _prompt: str, **_kwargs):
+            return json.dumps({"action": "finish", "args": {"summary": "finished"}})
+
+    report = run_agent(
+        "Ejecuta el proyecto en el emulador de Android.",
+        settings,
+        tmp_path,
+        max_iters=1,
+        model=PlanningModel(),
+        permissions=permissions,
+    )
+
+    assert report["ok"] is False
+    assert report["tools_ok"] is False
+    assert "No he ejecutado acciones" in report["summary"]
+    assert report["tool_calls"] == []
 
 
 def test_agent_runner_writes_flutter_code_when_model_returns_markdown(tmp_path: Path, monkeypatch) -> None:

@@ -1,0 +1,16 @@
+Gestion de incidencias
+
+Una incidencia debe registrarse cuando el usuario no puede resolver el problema con los pasos de FAQ.
+
+Datos minimos para una incidencia:
+- Nombre del cliente.
+- Telefono de contacto.
+- Direccion del servicio.
+- Descripcion del problema.
+- Tiempo aproximado desde el inicio del fallo.
+
+Escalado a humano:
+Escalar si el usuario indica que lleva varios dias sin servicio, si nadie responde, si pide una reclamacion, si existe una incidencia repetida o si solicita compensacion.
+
+Respuesta recomendada al escalar:
+No he podido resolver tu problema. Te paso con un agente.

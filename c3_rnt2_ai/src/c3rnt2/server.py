@@ -93,6 +93,10 @@ from .context_budget import (
     resolve_context_budget,
     resolve_model_context_limit,
 )
+from .support_chatbot import (
+    DEFAULT_DOCS_DIR,
+    SupportChatbot,
+)
 from .api_server.chat_services import (
     ChatContextService,
     compose_dynamic_system_prompt as _compose_dynamic_system_prompt_impl,
@@ -3969,6 +3973,91 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             }
         )
 
+    @app.post("/v1/support-chatbot/ask")
+    async def support_chatbot_ask(request: StarletteRequest):
+        payload = await request.json()
+        question = str(payload.get("question") or payload.get("pregunta") or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="question required")
+        support_cfg = settings.get("support_chatbot", {}) or {}
+        default_docs_dir = base_dir / "documentos"
+        if not default_docs_dir.exists():
+            default_docs_dir = DEFAULT_DOCS_DIR
+        default_index_path = base_dir / "data" / "support_chatbot" / "support.sqlite"
+        default_escalations_path = base_dir / "data" / "support_chatbot" / "escalations.jsonl"
+
+        def _resolve_local_path(raw: object | None, default: Path) -> Path:
+            value = Path(str(raw or default))
+            if not value.is_absolute():
+                value = base_dir / value
+            return value
+
+        docs_dir = _resolve_local_path(
+            payload.get("docs_dir") or support_cfg.get("docs_dir"),
+            default_docs_dir,
+        )
+        index_path = _resolve_local_path(
+            payload.get("index_path") or support_cfg.get("index_path"),
+            default_index_path,
+        )
+        escalations_path = _resolve_local_path(
+            payload.get("escalations_path") or support_cfg.get("escalations_path"),
+            default_escalations_path,
+        )
+        top_k = int(payload.get("top_k") or support_cfg.get("top_k") or 3)
+        min_score = float(payload.get("min_score") or support_cfg.get("min_score") or 0.08)
+        bot = SupportChatbot.from_documents(
+            docs_dir,
+            index_path=index_path,
+            escalations_path=escalations_path,
+            top_k=top_k,
+            min_score=min_score,
+            embedding_backend=str(support_cfg.get("embedding_backend") or "hash"),
+            index_backend=str(support_cfg.get("index_backend") or "auto"),
+            rebuild_index=bool(payload.get("rebuild_index", support_cfg.get("rebuild_index", True))),
+        )
+        use_llm = bool(payload.get("use_llm", True))
+        selected_backend = _normalize_backend_label((settings.get("core", {}) or {}).get("backend", default_backend_label))
+        selected_model = (getattr(app.state, "models", {}) or {}).get(selected_backend) or getattr(app.state, "model", None)
+        llm_used = False
+
+        def _local_llm(prompt: str) -> str:
+            nonlocal llm_used
+            if selected_model is None:
+                return ""
+            max_tokens = int(payload.get("max_tokens") or payload.get("max_new_tokens") or 256)
+            temperature = float(payload.get("temperature") if payload.get("temperature") is not None else 0.1)
+            top_p = float(payload.get("top_p") if payload.get("top_p") is not None else 0.9)
+            llm_used = True
+            with model_lock.read_lock():
+                try:
+                    return str(
+                        selected_model.generate(
+                            prompt,
+                            max_new_tokens=max_tokens,
+                            temperature=temperature,
+                            top_p=top_p,
+                            repetition_penalty=1.05,
+                        )
+                    )
+                except TypeError:
+                    return str(selected_model.generate(prompt, max_new_tokens=max_tokens))
+
+        result = bot.manejar_pregunta(
+            question,
+            llm=_local_llm if use_llm and selected_model is not None else None,
+            include_prompt=bool(payload.get("include_prompt", True)),
+        )
+        return JSONResponse(
+            content={
+                "ok": True,
+                "llm_used": llm_used,
+                "active_backend": selected_backend if selected_model is not None else None,
+                "docs_indexed": bot.indexed_docs,
+                **result.to_dict(),
+            }
+        )
+
     @app.post("/v1/chat/completions")
     async def chat_completions(request: StarletteRequest):
         payload = await request.json()
@@ -4156,7 +4245,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 bool(getattr(selected_model, "is_llama_cpp", False))
                 and not has_explicit_agent_scope
             )
-            if direct_agent_chat and (not force_tool_runner or not has_explicit_agent_scope):
+            if direct_agent_chat and not force_tool_runner:
                 agent_messages = _build_external_agent_messages(
                     messages,
                     payload.get("prompt"),

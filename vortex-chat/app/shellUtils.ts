@@ -9,10 +9,10 @@ import {
 } from "../types";
 
 export const DEFAULT_PERMISSIONS: WorkspacePermissions = {
-  level: "none",
+  level: "full",
   workspaceRoot: "",
   projectPath: "",
-  actionMode: "safe",
+  actionMode: "full",
 };
 
 export const DEFAULT_SETTINGS: UserSettings = {
