@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import webbrowser
 from urllib.parse import quote_plus, urlparse
 from dataclasses import dataclass, field
@@ -799,15 +800,72 @@ class AgentTools:
                     popen_kwargs["creationflags"] = getattr(
                         subprocess, "CREATE_NEW_PROCESS_GROUP"
                     )
+                out_handle = tempfile.NamedTemporaryFile(
+                    mode="w+",
+                    encoding="utf-8",
+                    errors="ignore",
+                    delete=False,
+                    prefix="vortex-agent-bg-",
+                    suffix=".out.log",
+                )
+                err_handle = tempfile.NamedTemporaryFile(
+                    mode="w+",
+                    encoding="utf-8",
+                    errors="ignore",
+                    delete=False,
+                    prefix="vortex-agent-bg-",
+                    suffix=".err.log",
+                )
                 proc = subprocess.Popen(
                     args,
                     cwd=str(workdir),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=out_handle,
+                    stderr=err_handle,
                     env=self._command_env(),
                     shell=False,
                     **popen_kwargs,
                 )
+                try:
+                    probe_s = float(self.agent_cfg.get("background_probe_s", 8.0) or 0.0)
+                except Exception:
+                    probe_s = 8.0
+                if probe_s > 0:
+                    try:
+                        proc.wait(timeout=probe_s)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    else:
+                        out_handle.flush()
+                        err_handle.flush()
+                        out_handle.seek(0)
+                        err_handle.seek(0)
+                        stdout = out_handle.read()
+                        stderr = err_handle.read()
+                        combined = "\n".join(
+                            part.strip() for part in (stdout or "", stderr or "") if part and part.strip()
+                        ).strip()
+                        if not combined:
+                            combined = f"returncode={proc.returncode}"
+                        out_path = out_handle.name
+                        err_path = err_handle.name
+                        out_handle.close()
+                        err_handle.close()
+                        return ToolResult(
+                            ok=proc.returncode == 0,
+                            output=combined,
+                            meta={
+                                "cwd": str(workdir),
+                                "command": args,
+                                "returncode": proc.returncode,
+                                "background": True,
+                                "stdout_path": out_path,
+                                "stderr_path": err_path,
+                            },
+                        )
+                out_path = out_handle.name
+                err_path = err_handle.name
+                out_handle.close()
+                err_handle.close()
                 return ToolResult(
                     ok=True,
                     output=json.dumps(
@@ -816,6 +874,8 @@ class AgentTools:
                             "cwd": str(workdir),
                             "background": True,
                             "command": args,
+                            "stdout_path": out_path,
+                            "stderr_path": err_path,
                         }
                     ),
                 )

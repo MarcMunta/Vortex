@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bot, ChevronDown, ChevronRight, Clock, FileCode } from 'lucide-react';
+import { Bot, ChevronDown, ChevronRight, Clock, FileCode, Terminal as TerminalIcon } from 'lucide-react';
 import type { AgentEvent, AgentRun, Language } from '../../types';
 import StatusBadge from './StatusBadge';
 import FileDiffBlock from './FileDiffBlock';
+import TerminalBlock from './TerminalBlock';
 
 interface AgentTimelineProps {
   run: AgentRun;
@@ -44,6 +45,23 @@ const collectErrors = (events: AgentEvent[]): string[] => {
     errors.push(message);
   }
   return errors;
+};
+
+const collectCommands = (events: AgentEvent[]): { command: string; output: string; streaming: boolean }[] => {
+  const commands: { command: string; output: string; streaming: boolean }[] = [];
+  let current: { command: string; output: string; streaming: boolean } | null = null;
+  for (const event of events) {
+    if (event.type === 'command') {
+      if (current) commands.push(current);
+      current = { command: event.command, output: '', streaming: false };
+      continue;
+    }
+    if ((event.type === 'stdout' || event.type === 'stderr') && current) {
+      current.output += `${current.output ? '\n' : ''}${event.chunk}`;
+    }
+  }
+  if (current) commands.push(current);
+  return commands;
 };
 
 const ChangedFilesPanel: React.FC<{
@@ -105,8 +123,67 @@ const ChangedFilesPanel: React.FC<{
   );
 };
 
+const CommandsPanel: React.FC<{
+  commands: { command: string; output: string; streaming: boolean }[];
+  language: Language;
+}> = ({ commands, language }) => {
+  const [expanded, setExpanded] = useState(true);
+  const label = language === 'es' ? 'Comandos ejecutados' : 'Executed commands';
+  const commandLabel = language === 'es' ? 'comando' : 'command';
+  const commandsLabel = language === 'es' ? 'comandos' : 'commands';
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-zinc-700/40 bg-zinc-900/70">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center justify-between gap-3 bg-zinc-800/50 px-4 py-3 text-left transition-colors hover:bg-zinc-800/70"
+      >
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-emerald-400/15 bg-emerald-400/10 text-emerald-300">
+            <TerminalIcon size={14} />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[12px] font-bold text-foreground/85">{label}</p>
+            <p className="mt-0.5 truncate text-[10px] font-mono text-zinc-500">
+              {commands.length} {commands.length === 1 ? commandLabel : commandsLabel}
+            </p>
+          </div>
+        </div>
+        <div className="text-zinc-500">
+          {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+        </div>
+      </button>
+
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="space-y-2.5 p-3">
+              {commands.map((command, index) => (
+                <TerminalBlock
+                  key={`${command.command}-${index}`}
+                  command={command.command}
+                  output={command.output}
+                  isStreaming={command.streaming}
+                  language={language}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
 const AgentTimeline: React.FC<AgentTimelineProps> = ({ run, isStreaming, language }) => {
   const fileChanges = useMemo(() => collectFileChanges(run.events), [run.events]);
+  const commands = useMemo(() => collectCommands(run.events), [run.events]);
   const errors = useMemo(() => collectErrors(run.events), [run.events]);
   const elapsedMs = run.completedAt
     ? run.completedAt - run.startedAt
@@ -137,6 +214,10 @@ const AgentTimeline: React.FC<AgentTimelineProps> = ({ run, isStreaming, languag
           <ChangedFilesPanel changes={fileChanges} language={language} />
         )}
 
+        {commands.length > 0 && (
+          <CommandsPanel commands={commands} language={language} />
+        )}
+
         {errors.map((error, index) => (
           <div
             key={`${error}-${index}`}
@@ -146,7 +227,7 @@ const AgentTimeline: React.FC<AgentTimelineProps> = ({ run, isStreaming, languag
           </div>
         ))}
 
-        {isStreaming && fileChanges.length === 0 && errors.length === 0 && (
+        {isStreaming && fileChanges.length === 0 && commands.length === 0 && errors.length === 0 && (
           <div className="flex items-center gap-3 rounded-xl border border-zinc-700/30 bg-zinc-800/30 px-4 py-3">
             <motion.div
               animate={{ scale: [1, 1.35, 1], opacity: [0.45, 1, 0.45] }}
@@ -171,6 +252,12 @@ const AgentTimeline: React.FC<AgentTimelineProps> = ({ run, isStreaming, languag
               <div className="flex items-center gap-2 text-[10px] font-bold text-zinc-400">
                 <FileCode size={11} className="text-zinc-500" />
                 {fileChanges.length} {language === 'es' ? 'archivos' : 'files'}
+              </div>
+            )}
+            {commands.length > 0 && (
+              <div className="flex items-center gap-2 text-[10px] font-bold text-zinc-400">
+                <TerminalIcon size={11} className="text-zinc-500" />
+                {commands.length} {language === 'es' ? 'comandos' : 'commands'}
               </div>
             )}
           </div>

@@ -282,6 +282,30 @@ def test_agent_tools_full_mode_allows_dev_command(tmp_path: Path) -> None:
     assert result.ok is True
 
 
+def test_agent_tools_background_command_reports_immediate_failure(tmp_path: Path) -> None:
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+    tools = AgentTools(
+        allowlist=[],
+        web_cfg={"enabled": False, "allow_domains": []},
+        repo_root=tmp_path,
+        permissions=permissions,
+        agent_cfg={"background_probe_s": 3},
+    )
+
+    result = tools.run_command(
+        "python -m vortex_missing_background_module_12345",
+        background=True,
+    )
+
+    assert result.ok is False
+    assert result.meta["background"] is True
+    assert result.meta["returncode"] != 0
+    assert "vortex_missing_background_module_12345" in result.output
+
+
 def test_agent_tools_command_env_adds_flutter_and_android_tool_paths(
     tmp_path: Path,
     monkeypatch,
@@ -552,6 +576,202 @@ def test_agent_runner_direct_create_modify_command_and_delete_procedure(
     assert report["summary"] == "He creado `notes/demo.txt`. He actualizado `notes/demo.txt`. He borrado `notes/demo.txt`."
 
 
+def test_agent_runner_direct_create_file_accepts_common_spanish_article(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "tools_enabled": ["write_file"],
+        },
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+
+    report = run_agent(
+        "Crea un archivo qa_agent_ui_check.txt con el texto agente-ui-ok",
+        settings,
+        tmp_path,
+        max_iters=3,
+        permissions=permissions,
+    )
+
+    assert report["ok"] is True
+    assert report["tools_ok"] is True
+    assert (tmp_path / "qa_agent_ui_check.txt").read_text(encoding="utf-8") == "agente-ui-ok"
+    assert report["tool_calls"][0]["action"] == "write_file"
+    assert report["file_changes"][0]["path"] == "qa_agent_ui_check.txt"
+    assert "+agente-ui-ok" in report["file_changes"][0]["diff"]
+
+
+def test_agent_runner_direct_file_actions_ignore_stale_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "tools_enabled": ["write_file", "delete_file"],
+        },
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+    (tmp_path / "qa_agent_ui_check.txt").write_text("agente-ui-ok", encoding="utf-8")
+
+    report = run_agent(
+        (
+            "Objetivo principal:\n"
+            "Edita no_existe_qa.txt para que ponga hola\n\n"
+            "Contexto reciente:\n"
+            "[user]\n"
+            "Crea un archivo qa_agent_ui_check.txt con el texto agente-ui-ok\n"
+            "[assistant]\n"
+            "He creado `qa_agent_ui_check.txt`."
+        ),
+        settings,
+        tmp_path,
+        max_iters=3,
+        permissions=permissions,
+    )
+
+    assert report["ok"] is True
+    assert report["tools_ok"] is False
+    assert (tmp_path / "qa_agent_ui_check.txt").read_text(encoding="utf-8") == "agente-ui-ok"
+    assert not (tmp_path / "no_existe_qa.txt").exists()
+    assert "No encuentro el archivo `no_existe_qa.txt`" in report["summary"]
+    assert report["tool_calls"][0]["args"]["path"] == "no_existe_qa.txt"
+
+
+def test_agent_runner_adds_forgot_password_button_to_flutter_login(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    (tmp_path / "lib").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "test").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "pubspec.yaml").write_text(
+        "name: existing_flutter\n\ndependencies:\n  flutter:\n    sdk: flutter\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "lib" / "main.dart").write_text(
+        """import 'package:flutter/material.dart';
+
+void main() {
+  runApp(const VortexLoginApp());
+}
+
+class VortexLoginApp extends StatelessWidget {
+  const VortexLoginApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(home: const LoginPage());
+  }
+}
+
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  void _submit() {}
+
+  Widget _buildLoginCard(BuildContext context) {
+    return Column(
+      children: [
+              FilledButton(
+                onPressed: _submit,
+                child: const Text('Sign in'),
+              ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => _buildLoginCard(context);
+}
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "test" / "widget_test.dart").write_text(
+        """import 'package:flutter_test/flutter_test.dart';
+import 'package:existing_flutter/main.dart' as app;
+
+void main() {
+  testWidgets('app starts', (WidgetTester tester) async {
+    app.main();
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
+}
+""",
+        encoding="utf-8",
+    )
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "tools_enabled": ["write_file", "run_command"],
+        },
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+    commands: list[str] = []
+
+    def _fake_run_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout_s: int = 120,
+        background: bool = False,
+    ) -> ToolResult:
+        commands.append(command)
+        return ToolResult(
+            ok=True,
+            output=f"ran:{command}",
+            meta={"cwd": str(self.repo_root), "command": command.split(), "returncode": 0},
+        )
+
+    monkeypatch.setattr(AgentTools, "run_command", _fake_run_command)
+
+    report = run_agent(
+        "Añade un boton sencillo por si el usuario no se acuerda de la contrasena.",
+        settings,
+        tmp_path,
+        max_iters=3,
+        permissions=permissions,
+        allow_model_load=False,
+    )
+
+    main_text = (tmp_path / "lib" / "main.dart").read_text(encoding="utf-8")
+    test_text = (tmp_path / "test" / "widget_test.dart").read_text(encoding="utf-8")
+    assert report["ok"] is True
+    assert report["tools_ok"] is True
+    assert report["tests_ok"] is True
+    assert "Olvidaste la contrasena?" in main_text
+    assert "Olvidaste la contrasena?" in test_text
+    assert commands == ["flutter test"]
+    assert {change["path"] for change in report["file_changes"]} == {
+        "lib/main.dart",
+        "test/widget_test.dart",
+    }
+
+
 def test_agent_runner_scaffolds_flutter_login_project_without_model(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("C3RNT2_NO_NET", "1")
     settings = {
@@ -680,10 +900,10 @@ def test_agent_runner_flutter_project_uses_terminal_and_emulator_without_model(
     assert "VortexFlutterApp" in (tmp_path / "lib" / "main.dart").read_text(encoding="utf-8")
     assert [item[0] for item in commands] == [
         "flutter --version",
+        "flutter create --platforms=android --no-overwrite .",
+        "flutter devices",
         "flutter pub get",
         "flutter test",
-        "flutter emulators",
-        "flutter emulators --launch Pixel_API_34",
         "flutter run -d emulator-5554 --debug",
     ]
     assert commands[-1][1] is True
@@ -803,9 +1023,153 @@ def test_agent_runner_infers_flutter_workspace_for_login_and_emulator(
     assert report["tools_ok"] is True
     assert report["tests_ok"] is True
     assert "VortexLoginApp" in (tmp_path / "lib" / "main.dart").read_text(encoding="utf-8")
-    assert "flutter emulators --launch Pixel_API_34" in commands
+    assert "flutter devices" in commands
     assert "flutter run -d emulator-5554 --debug" in commands
     assert "He actualizado" in report["summary"] or "He creado" in report["summary"]
+
+
+def test_agent_runner_runs_existing_flutter_project_without_repeating_previous_login_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    (tmp_path / "pubspec.yaml").write_text(
+        "name: existing_flutter\n\ndependencies:\n  flutter:\n    sdk: flutter\n",
+        encoding="utf-8",
+    )
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "tools_enabled": ["write_file", "run_command"],
+        },
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+    commands: list[str] = []
+
+    def _fake_run_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout_s: int = 120,
+        background: bool = False,
+    ) -> ToolResult:
+        commands.append(command)
+        return ToolResult(
+            ok=True,
+            output=f"ran:{command}",
+            meta={"cwd": str(self.repo_root), "command": command.split(), "returncode": 0},
+        )
+
+    monkeypatch.setattr(AgentTools, "run_command", _fake_run_command)
+
+    report = run_agent(
+        (
+            "Resuelve la peticion del usuario como operador tecnico dentro del repositorio actual.\n\n"
+            "Objetivo principal:\nQuiero que ejecutes el proyecto\n\n"
+            "Contexto reciente:\n[user]\nHaz un login basico para el proyecto de flutter"
+        ),
+        settings,
+        tmp_path,
+        max_iters=1,
+        permissions=permissions,
+        allow_model_load=False,
+    )
+
+    assert report["ok"] is True
+    assert report["tools_ok"] is True
+    assert report["tests_ok"] is True
+    assert [call["action"] for call in report["tool_calls"]] == ["run_command"] * 6
+    assert commands == [
+        "flutter --version",
+        "flutter create --platforms=android --no-overwrite .",
+        "flutter devices",
+        "flutter pub get",
+        "flutter test",
+        "flutter run -d emulator-5554 --debug",
+    ]
+    assert report["file_changes"] == []
+    assert "pubspec.yaml" not in report["summary"]
+    assert "He iniciado la app en el emulador" in report["summary"]
+
+
+def test_agent_runner_reports_emulator_unavailable_without_repeating_stale_summary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    (tmp_path / "pubspec.yaml").write_text(
+        "name: existing_flutter\n\ndependencies:\n  flutter:\n    sdk: flutter\n",
+        encoding="utf-8",
+    )
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {
+            "web_allowlist": [],
+            "tools_enabled": ["write_file", "run_command"],
+        },
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+    commands: list[str] = []
+
+    def _fake_run_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout_s: int = 120,
+        background: bool = False,
+    ) -> ToolResult:
+        commands.append(command)
+        if command.startswith("flutter run"):
+            return ToolResult(
+                ok=False,
+                output="No supported devices connected.",
+                meta={"cwd": str(self.repo_root), "command": command.split(), "returncode": 1},
+            )
+        return ToolResult(
+            ok=True,
+            output=f"ran:{command}",
+            meta={"cwd": str(self.repo_root), "command": command.split(), "returncode": 0},
+        )
+
+    monkeypatch.setattr(AgentTools, "run_command", _fake_run_command)
+
+    report = run_agent(
+        (
+            "Resuelve la peticion del usuario como operador tecnico dentro del repositorio actual.\n\n"
+            "Objetivo principal:\nQuiero que ejecutes el proyecto\n\n"
+            "Contexto reciente:\n[user]\nHaz un login basico para el proyecto de flutter"
+        ),
+        settings,
+        tmp_path,
+        max_iters=1,
+        permissions=permissions,
+        allow_model_load=False,
+    )
+
+    assert report["ok"] is True
+    assert report["tools_ok"] is False
+    assert report["tests_ok"] is True
+    assert commands == [
+        "flutter --version",
+        "flutter create --platforms=android --no-overwrite .",
+        "flutter devices",
+        "flutter pub get",
+        "flutter test",
+        "flutter run -d emulator-5554 --debug",
+    ]
+    assert report["file_changes"] == []
+    assert "pubspec.yaml" not in report["summary"]
+    assert "He validado el proyecto con sus tests" in report["summary"]
+    assert "No he podido iniciar el emulador/app" in report["summary"]
 
 
 def test_agent_runner_does_not_scaffold_flutter_project_when_model_is_available(

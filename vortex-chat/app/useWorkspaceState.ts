@@ -190,7 +190,9 @@ export const useWorkspaceState = ({ isLoading }: UseWorkspaceStateArgs) => {
   }, [isDarkMode]);
 
   useEffect(() => {
-    localStorage.setItem("vortex-accounts", JSON.stringify(accounts));
+    if (accounts.length > 0) {
+      localStorage.setItem("vortex-accounts", JSON.stringify(accounts));
+    }
   }, [accounts]);
 
   useEffect(() => {

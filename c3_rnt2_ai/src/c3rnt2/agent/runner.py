@@ -394,7 +394,7 @@ def _extract_direct_file_action(task: str) -> Action | None:
     if natural_action is not None:
         return natural_action
     create_match = re.search(
-        r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?([^`\"'\s]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(.+)",
+        r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?([^`\"'\s]+)[`\"']?\s+(?:con\s+(?:el\s+|la\s+)?(?:texto|contenido)|with\s+(?:the\s+)?(?:text|content))\s+(.+)",
         text,
         flags=re.IGNORECASE | re.DOTALL,
     )
@@ -435,7 +435,7 @@ def _normalize_natural_file_target(raw: str) -> str:
 def _extract_natural_file_action(text: str) -> Action | None:
     target_pattern = r"(?P<target>readme(?:\.(?:md|txt))?|[A-Za-z0-9_./\\-]+\.[A-Za-z0-9_]+)"
     write_patterns = [
-        rf"(?P<verb>edita|editar|modifica|modificar|actualiza|actualizar|cambia|cambiar|sobrescribe|sobrescribir|crea|crear|edit|modify|update|change|write|create)\s+(?:el\s+|la\s+|un\s+|una\s+|the\s+|a\s+)?{target_pattern}\s+(?:para\s+que\s+)?(?:ponga|diga|contenga|sea|con\s+(?:texto|contenido)|with|to\s+say|to\s+contain)\s+(?P<text>[^;\n]+)",
+        rf"(?P<verb>edita|editar|modifica|modificar|actualiza|actualizar|cambia|cambiar|sobrescribe|sobrescribir|crea|crear|edit|modify|update|change|write|create)\s+(?:el\s+|la\s+|un\s+|una\s+|the\s+|a\s+)?{target_pattern}\s+(?:para\s+que\s+)?(?:ponga|diga|contenga|sea|con\s+(?:el\s+|la\s+)?(?:texto|contenido)|with|to\s+say|to\s+contain)\s+(?P<text>[^;\n]+)",
         rf"(?P<verb>haz|hacer|make)\s+que\s+(?:el\s+|la\s+|the\s+)?{target_pattern}\s+(?:ponga|diga|contenga|sea|say|contain)\s+(?P<text>[^;\n]+)",
     ]
     for pattern in write_patterns:
@@ -517,22 +517,20 @@ def _workspace_looks_flutter(workspace_dir: Path) -> bool:
 
 
 def _requests_flutter_login_project(task: str, *, assume_flutter: bool = False) -> bool:
-    normalized_all = _normalish(task)
     normalized_objective = _normalish(_extract_objective_text(task))
     wants_project = any(word in normalized_objective for word in ("proyecto", "project", "app", "crea", "crear", "haz", "hacer", "implementa", "genera", "create", "build"))
-    wants_login = "login" in normalized_all or "inicio de sesion" in normalized_all
-    mentions_flutter = assume_flutter or "flutter" in normalized_all or "dart" in normalized_all
+    wants_login = "login" in normalized_objective or "inicio de sesion" in normalized_objective
+    mentions_flutter = assume_flutter or "flutter" in normalized_objective or "dart" in normalized_objective
     return wants_project and wants_login and mentions_flutter
 
 
 def _requests_flutter_basic_project(task: str, *, assume_flutter: bool = False) -> bool:
-    normalized_all = _normalish(task)
     normalized_objective = _normalish(_extract_objective_text(task))
-    mentions_flutter = assume_flutter or "flutter" in normalized_all or "dart" in normalized_all
-    wants_project = any(word in normalized_objective for word in ("proyecto", "project", "app"))
+    mentions_flutter = assume_flutter or "flutter" in normalized_objective or "dart" in normalized_objective
+    wants_project = any(word in normalized_objective for word in ("proyecto", "project", "app", "crea", "crear", "haz", "hacer", "genera", "create", "build"))
     wants_code = any(word in normalized_objective for word in ("codigo", "code", "basico", "basic"))
     wants_runnable = any(
-        word in normalized_all
+        word in normalized_objective
         for word in (
             "ejecuta",
             "ejecutar",
@@ -544,7 +542,7 @@ def _requests_flutter_basic_project(task: str, *, assume_flutter: bool = False) 
             "funcionar",
         )
     )
-    return mentions_flutter and (wants_project or wants_code) and wants_runnable
+    return mentions_flutter and wants_project and wants_code and wants_runnable
 
 
 def _flutter_basic_project_actions() -> list[Action]:
@@ -893,6 +891,88 @@ def _flutter_login_project_support_actions(workspace_dir: Path) -> list[Action]:
     return actions
 
 
+def _requests_flutter_forgot_password_button(task: str) -> bool:
+    normalized = _normalish(_extract_objective_text(task))
+    wants_button = "boton" in normalized or "button" in normalized
+    mentions_password = "password" in normalized or "contras" in normalized
+    wants_recovery = any(
+        word in normalized
+        for word in ("olvid", "recuerda", "acuerda", "recuper", "forgot")
+    )
+    return wants_button and mentions_password and wants_recovery
+
+
+def _flutter_forgot_password_button_actions(
+    task: str,
+    workspace_dir: Path,
+    *,
+    include_commands: bool = False,
+) -> list[Action]:
+    if not _requests_flutter_forgot_password_button(task):
+        return []
+    main_path = workspace_dir / "lib" / "main.dart"
+    if not main_path.exists() or not main_path.is_file():
+        return []
+    try:
+        main_text = main_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return []
+    button_text = "Olvidaste la contrasena?"
+    actions: list[Action] = []
+    if button_text not in main_text:
+        sign_in_button = """              FilledButton(
+                onPressed: _submit,
+                child: const Text('Sign in'),
+              ),"""
+        forgot_button = sign_in_button + """
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Recuperacion de contrasena pendiente')),
+                  );
+                },
+                child: const Text('Olvidaste la contrasena?'),
+              ),"""
+        if sign_in_button not in main_text:
+            return []
+        actions.append(
+            Action(
+                type="write_file",
+                args={
+                    "path": "lib/main.dart",
+                    "text": main_text.replace(sign_in_button, forgot_button, 1),
+                    "require_exists": True,
+                },
+            )
+        )
+    test_path = workspace_dir / "test" / "widget_test.dart"
+    if test_path.exists() and test_path.is_file():
+        try:
+            test_text = test_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            test_text = ""
+        if button_text not in test_text and "expect(tester.takeException(), isNull);" in test_text:
+            actions.append(
+                Action(
+                    type="write_file",
+                    args={
+                        "path": "test/widget_test.dart",
+                        "text": test_text.replace(
+                            "    expect(tester.takeException(), isNull);",
+                            "    expect(tester.takeException(), isNull);\n"
+                            "    expect(find.text('Olvidaste la contrasena?'), findsOneWidget);",
+                            1,
+                        ),
+                        "require_exists": True,
+                    },
+                )
+            )
+    if actions and include_commands:
+        actions.append(Action(type="run_command", args={"command": "flutter test", "cwd": ".", "timeout_s": 240}))
+    return actions
+
+
 def _requests_flutter_terminal_actions(task: str) -> bool:
     normalized = _normalish(task)
     return any(
@@ -916,19 +996,89 @@ def _requests_flutter_emulator_run(task: str) -> bool:
     return "emulador" in normalized or "emulator" in normalized
 
 
-def _flutter_project_command_actions(task: str) -> list[Action]:
+def _flutter_android_platform_missing(workspace_dir: Path | None) -> bool:
+    if workspace_dir is None:
+        return False
+    android_dir = workspace_dir / "android"
+    manifest_candidates = [
+        android_dir / "app" / "src" / "main" / "AndroidManifest.xml",
+        android_dir / "AndroidManifest.xml",
+    ]
+    return not android_dir.exists() or not any(path.exists() for path in manifest_candidates)
+
+
+def _flutter_android_platform_actions(workspace_dir: Path | None) -> list[Action]:
+    if not _flutter_android_platform_missing(workspace_dir):
+        return []
+    return [
+        Action(
+            type="run_command",
+            args={
+                "command": "flutter create --platforms=android --no-overwrite .",
+                "cwd": ".",
+                "timeout_s": 240,
+            },
+        )
+    ]
+
+
+def _requests_flutter_existing_project_run(task: str, *, assume_flutter: bool = False) -> bool:
+    normalized_objective = _normalish(_extract_objective_text(task))
+    mentions_flutter = assume_flutter or "flutter" in normalized_objective or "dart" in normalized_objective
+    wants_run = any(
+        word in normalized_objective
+        for word in (
+            "ejecuta",
+            "ejecute",
+            "ejecutes",
+            "ejecutar",
+            "corre",
+            "corra",
+            "corras",
+            "correr",
+            "inicia",
+            "inicie",
+            "inicies",
+            "iniciar",
+            "run",
+            "start",
+            "launch",
+        )
+    )
+    mentions_project = any(word in normalized_objective for word in ("proyecto", "project", "app", "aplicacion"))
+    asks_for_new_code = any(
+        word in normalized_objective
+        for word in (
+            "crea",
+            "crear",
+            "haz",
+            "hacer",
+            "implementa",
+            "genera",
+            "nuevo",
+            "login",
+            "basico",
+            "basic",
+            "create",
+            "build",
+        )
+    )
+    return mentions_flutter and wants_run and mentions_project and not asks_for_new_code
+
+
+def _flutter_project_command_actions(task: str, *, workspace_dir: Path | None = None) -> list[Action]:
     if not _requests_flutter_terminal_actions(task):
         return []
     actions = [
         Action(type="run_command", args={"command": "flutter --version", "cwd": ".", "timeout_s": 60}),
+        *_flutter_android_platform_actions(workspace_dir),
+        Action(type="run_command", args={"command": "flutter devices", "cwd": ".", "timeout_s": 60}),
         Action(type="run_command", args={"command": "flutter pub get", "cwd": ".", "timeout_s": 180}),
         Action(type="run_command", args={"command": "flutter test", "cwd": ".", "timeout_s": 240}),
     ]
     if _requests_flutter_emulator_run(task):
         actions.extend(
             [
-                Action(type="run_command", args={"command": "flutter emulators", "cwd": ".", "timeout_s": 60}),
-                Action(type="run_command", args={"command": "flutter emulators --launch Pixel_API_34", "cwd": ".", "timeout_s": 120}),
                 Action(
                     type="run_command",
                     args={
@@ -943,11 +1093,38 @@ def _flutter_project_command_actions(task: str) -> list[Action]:
     return actions
 
 
+def _flutter_existing_project_run_actions(
+    task: str,
+    *,
+    assume_flutter: bool = False,
+    workspace_dir: Path | None = None,
+) -> list[Action]:
+    if not _requests_flutter_existing_project_run(task, assume_flutter=assume_flutter):
+        return []
+    return [
+        Action(type="run_command", args={"command": "flutter --version", "cwd": ".", "timeout_s": 60}),
+        *_flutter_android_platform_actions(workspace_dir),
+        Action(type="run_command", args={"command": "flutter devices", "cwd": ".", "timeout_s": 60}),
+        Action(type="run_command", args={"command": "flutter pub get", "cwd": ".", "timeout_s": 180}),
+        Action(type="run_command", args={"command": "flutter test", "cwd": ".", "timeout_s": 240}),
+        Action(
+            type="run_command",
+            args={
+                "command": "flutter run -d emulator-5554 --debug",
+                "cwd": ".",
+                "timeout_s": 120,
+                "background": True,
+            },
+        ),
+    ]
+
+
 def _flutter_project_fallback_actions(
     task: str,
     *,
     include_commands: bool = False,
     assume_flutter: bool = False,
+    workspace_dir: Path | None = None,
 ) -> list[Action]:
     actions: list[Action]
     if _requests_flutter_login_project(task, assume_flutter=assume_flutter):
@@ -957,7 +1134,7 @@ def _flutter_project_fallback_actions(
     else:
         return []
     if include_commands:
-        actions.extend(_flutter_project_command_actions(task))
+        actions.extend(_flutter_project_command_actions(task, workspace_dir=workspace_dir))
     return actions
 
 
@@ -968,19 +1145,19 @@ def _extract_direct_actions(task: str) -> list[Action]:
     actions: list[tuple[int, Action]] = []
     write_patterns = [
         (
-            r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
+            r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:el\s+|la\s+)?(?:texto|contenido)|with\s+(?:the\s+)?(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
             False,
         ),
         (
-            r"(?:modifica|modificar|actualiza|actualizar|sobrescribe|sobrescribir|update|modify|overwrite)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
+            r"(?:modifica|modificar|actualiza|actualizar|sobrescribe|sobrescribir|update|modify|overwrite)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:el\s+|la\s+)?(?:texto|contenido)|with\s+(?:the\s+)?(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
             True,
         ),
         (
-            r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<text>[^;\n]+)",
+            r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:el\s+|la\s+)?(?:texto|contenido)|with\s+(?:the\s+)?(?:text|content))\s+(?P<text>[^;\n]+)",
             False,
         ),
         (
-            r"(?:modifica|modificar|actualiza|actualizar|sobrescribe|sobrescribir|update|modify|overwrite)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:texto|contenido)|with\s+(?:text|content))\s+(?P<text>[^;\n]+)",
+            r"(?:modifica|modificar|actualiza|actualizar|sobrescribe|sobrescribir|update|modify|overwrite)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:el\s+|la\s+)?(?:texto|contenido)|with\s+(?:the\s+)?(?:text|content))\s+(?P<text>[^;\n]+)",
             True,
         ),
     ]
@@ -1030,6 +1207,7 @@ def _direct_actions_summary(tool_calls: List[dict]) -> str:
     updated: list[str] = []
     deleted: list[str] = []
     command_names: list[str] = []
+    failed_commands: list[tuple[str, str]] = []
     for call in tool_calls:
         action = str(call.get("action") or "")
         if action not in {"write_file", "delete_file", "run_command"}:
@@ -1061,6 +1239,12 @@ def _direct_actions_summary(tool_calls: List[dict]) -> str:
             command = str(args.get("command") if isinstance(args, dict) else "").strip()
             if command:
                 command_names.append(command)
+        elif action == "run_command" and not call.get("ok"):
+            args = call.get("args")
+            command = str(args.get("command") if isinstance(args, dict) else "").strip()
+            output = str(call.get("output") or "").strip()
+            if command:
+                failed_commands.append((command, output))
     parts: list[str] = []
     if created:
         parts.append(f"He creado `{_join_natural(created)}`.")
@@ -1070,10 +1254,20 @@ def _direct_actions_summary(tool_calls: List[dict]) -> str:
         parts.append(f"He borrado `{_join_natural(deleted)}`.")
     if any("flutter test" in command for command in command_names):
         parts.append("He validado el proyecto con sus tests.")
-    if any("flutter run" in command for command in command_names):
+    failed_emulator_commands = [
+        (command, output)
+        for command, output in failed_commands
+        if _command_looks_like_flutter_emulator(command)
+    ]
+    if any("flutter run" in command for command in command_names) and not failed_emulator_commands:
         parts.append("He iniciado la app en el emulador.")
-    elif any("emulators --launch" in command for command in command_names):
+    elif any("emulators --launch" in command for command in command_names) and not failed_emulator_commands:
         parts.append("He iniciado el emulador.")
+    if failed_emulator_commands:
+        parts.append(_flutter_emulator_failure_summary(failed_emulator_commands))
+    elif failed_commands and not parts:
+        command, output = failed_commands[-1]
+        parts.append(_command_failure_summary(command, output))
     if parts:
         return " ".join(parts)
     if not tool_calls:
@@ -1097,6 +1291,44 @@ def _command_looks_like_test(command: str) -> bool:
             "python -m pytest",
         )
     )
+
+
+def _command_looks_like_flutter_emulator(command: str) -> bool:
+    normalized = str(command or "").strip().lower()
+    return "flutter emulators" in normalized or "flutter run" in normalized
+
+
+def _direct_command_failure_is_nonfatal(command: str, output: str) -> bool:
+    normalized = str(command or "").strip().lower()
+    if "flutter emulators" in normalized:
+        return True
+    if "flutter run" in normalized:
+        return "no supported devices" in str(output or "").lower()
+    return False
+
+
+def _command_failure_summary(command: str, output: str) -> str:
+    detail = str(output or "").strip().splitlines()
+    first_line = detail[0].strip() if detail else ""
+    if not first_line:
+        first_line = "el comando fallo."
+    if len(first_line) > 220:
+        first_line = first_line[:217].rstrip() + "..."
+    return f"No he podido completar `{command}`: {first_line}"
+
+
+def _flutter_emulator_failure_summary(failed_commands: list[tuple[str, str]]) -> str:
+    combined = "\n".join(output for _command, output in failed_commands).lower()
+    if "unable to find any emulator sources" in combined or "no emulators" in combined:
+        reason = "este entorno no ve los AVD/emuladores Android."
+    elif "no emulator" in combined and "found" in combined:
+        reason = "no he encontrado el emulador solicitado."
+    else:
+        _command, output = failed_commands[-1]
+        reason = str(output or "").strip().splitlines()[0].strip() if str(output or "").strip() else "fallo el comando del emulador."
+        if len(reason) > 180:
+            reason = reason[:177].rstrip() + "..."
+    return f"No he podido iniciar el emulador/app: {reason}"
 
 
 def _tool_call_record(
@@ -1321,11 +1553,36 @@ def run_agent(
     iterations_done = 0
     invalid_json_count = 0
 
+    objective_text = _extract_objective_text(task)
     direct_actions = (
-        _extract_direct_actions(task)
+        _extract_direct_actions(objective_text)
         if action_provider is None and effective_permissions.can_write
         else []
     )
+    assume_flutter_workspace = _workspace_looks_flutter(workspace_dir)
+    if (
+        not direct_actions
+        and action_provider is None
+        and assume_flutter_workspace
+        and effective_permissions.can_write
+        and "write_file" in allowed_tools
+    ):
+        direct_actions = _flutter_forgot_password_button_actions(
+            objective_text,
+            workspace_dir,
+            include_commands=effective_permissions.can_run_commands and "run_command" in allowed_tools,
+        )
+    if (
+        not direct_actions
+        and action_provider is None
+        and effective_permissions.can_run_commands
+        and "run_command" in allowed_tools
+    ):
+        direct_actions = _flutter_existing_project_run_actions(
+            task,
+            assume_flutter=assume_flutter_workspace,
+            workspace_dir=workspace_dir,
+        )
     if (
         not direct_actions
         and action_provider is None
@@ -1336,7 +1593,8 @@ def run_agent(
         direct_actions = _flutter_project_fallback_actions(
             task,
             include_commands=effective_permissions.can_run_commands and "run_command" in allowed_tools,
-            assume_flutter=_workspace_looks_flutter(workspace_dir),
+            assume_flutter=assume_flutter_workspace,
+            workspace_dir=workspace_dir,
         )
 
     def _missing_required_file_result(args: dict) -> ToolResult | None:
@@ -1358,7 +1616,9 @@ def run_agent(
     def _run_direct_actions(actions: list[Action]) -> bool:
         nonlocal summary, tests_ok, tools_ok
         direct_ok = True
+        had_nonfatal_failure = False
         for direct_action in actions:
+            command = ""
             if direct_action.type not in allowed_tools:
                 direct_result = ToolResult(ok=False, output=f"tool_disabled:{direct_action.type}")
             elif direct_action.type == "write_file":
@@ -1391,9 +1651,15 @@ def run_agent(
             )
             direct_ok = direct_ok and bool(direct_result.ok)
             if not direct_result.ok:
+                if direct_action.type == "run_command" and _direct_command_failure_is_nonfatal(
+                    command,
+                    direct_result.output,
+                ):
+                    had_nonfatal_failure = True
+                    continue
                 break
         tools_ok = direct_ok
-        summary = "direct_actions_done" if direct_ok else tool_calls[-1]["output"]
+        summary = "direct_actions_done" if direct_ok or had_nonfatal_failure else tool_calls[-1]["output"]
         return direct_ok
 
     if direct_actions:
@@ -1417,7 +1683,8 @@ def run_agent(
         direct_actions = _flutter_project_fallback_actions(
             task,
             include_commands=effective_permissions.can_run_commands and "run_command" in allowed_tools,
-            assume_flutter=_workspace_looks_flutter(workspace_dir),
+            assume_flutter=assume_flutter_workspace,
+            workspace_dir=workspace_dir,
         )
     if direct_actions and not tools_ok and not tool_calls:
         _run_direct_actions(direct_actions)

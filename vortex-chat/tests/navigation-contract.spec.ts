@@ -82,13 +82,14 @@ test("chat send is not hard-blocked by status polling", () => {
   expect(app).not.toContain("Selecciona un proyecto para usar agente");
 });
 
-test("agent timeline groups file changes without command/tool noise", () => {
+test("agent timeline groups file changes and terminal commands without tool noise", () => {
   const timeline = read("components/agent/AgentTimeline.tsx");
   const diffBlock = read("components/agent/FileDiffBlock.tsx");
   expect(timeline).toContain("Archivos cambiados");
   expect(timeline).toContain("ChangedFilesPanel");
+  expect(timeline).toContain("Comandos ejecutados");
+  expect(timeline).toContain("CommandsPanel");
   expect(timeline).not.toContain("AgentStepCard");
-  expect(timeline).not.toContain("TerminalBlock");
   expect(timeline).not.toContain("commandsRun.length");
   expect(diffBlock).toContain("forceExpanded");
 });
