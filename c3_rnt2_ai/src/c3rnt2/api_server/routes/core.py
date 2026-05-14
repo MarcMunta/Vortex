@@ -266,13 +266,14 @@ def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDepend
             else ""
         )
         if sys.platform != "win32":
-            raise HTTPException(
-                status_code=501,
-                detail=deps.openai_error(
-                    "native_folder_picker_unavailable",
-                    type="server_error",
-                    code="native_folder_picker_unavailable",
-                ),
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "available": False,
+                    "cancelled": True,
+                    "path": "",
+                    "error": "native_folder_picker_unavailable",
+                }
             )
         description = title or "Selecciona carpeta del proyecto"
         escaped_description = description.replace("'", "''")

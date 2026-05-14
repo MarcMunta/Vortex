@@ -1,0 +1,144 @@
+name: vortex
+
+x-backend-build: &backend-build
+  context: ./c3_rnt2_ai
+  dockerfile: Dockerfile
+  args:
+    VORTEX_BACKEND_IMAGE: ${VORTEX_BACKEND_IMAGE:-python:3.11-slim-bookworm}
+    LLAMA_CPP_CMAKE_ARGS: ${LLAMA_CPP_CMAKE_ARGS:-}
+
+x-backend-env: &backend-env
+  C3RNT2_PROFILE: ${C3RNT2_PROFILE:-rtx4080_16gb_llama2_7b_q4_local}
+  C3RNT2_HOST_WORKSPACE_REPO_NAME: Vortex
+  C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub\Vortex}
+  C3RNT2_HOST_WORKSPACE_MOUNT: /workspace/Vortex
+  VORTEX_API_HOST: 0.0.0.0
+  VORTEX_API_PORT: 8000
+  PYTHONUNBUFFERED: "1"
+
+services:
+  vortex-api:
+    image: vortex-backend:local
+    build: *backend-build
+    environment: *backend-env
+    command:
+      - python
+      - -m
+      - c3rnt2
+      - serve
+      - --profile
+      - ${C3RNT2_PROFILE:-rtx4080_16gb_llama2_7b_q4_local}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    ports:
+      - "${VORTEX_API_PORT:-8000}:8000"
+      - "${VORTEX_FLUTTER_WEB_PORT:-19090}:19090"
+    volumes:
+      - .:/workspace/Vortex
+      - vortex-frontend-node-modules:/workspace/Vortex/vortex-chat/node_modules
+      - ./c3_rnt2_ai/data/models/gguf:/app/data/models/gguf:ro
+      - vortex-chat-data:/app/data/chat
+      - vortex-support-data:/app/data/support_chatbot
+      - vortex-episodes-data:/app/data/episodes
+      - vortex-logs-data:/app/data/logs
+      - vortex-web-cache:/app/data/web_cache
+      - vortex-self-patch:/app/data/self_patch
+      - vortex-workspaces:/app/data/workspaces
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=5)"]
+      interval: 20s
+      timeout: 10s
+      start_period: 180s
+      retries: 12
+    restart: unless-stopped
+    networks:
+      - vortex-net
+
+  vortex-control:
+    image: vortex-backend:local
+    build: *backend-build
+    environment:
+      <<: *backend-env
+      VORTEX_CONTROL_HOST: 0.0.0.0
+      VORTEX_CONTROL_PORT: 8765
+    command:
+      - python
+      - -m
+      - c3rnt2.control_server
+      - --base-dir
+      - /app
+      - --compose-file
+      - /workspace/Vortex/docker-compose.yml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8765"
+      - --api-url
+      - http://vortex-api:8000
+      - --frontend-url
+      - http://vortex-chat:5173
+      - --disable-compose-actions
+      - --assume-docker-ready
+    ports:
+      - "${VORTEX_CONTROL_PORT:-8765}:8765"
+    volumes:
+      - .:/workspace/Vortex
+      - vortex-frontend-node-modules:/workspace/Vortex/vortex-chat/node_modules
+      - ./c3_rnt2_ai/data/models/gguf:/app/data/models/gguf:ro
+      - vortex-chat-data:/app/data/chat
+      - vortex-support-data:/app/data/support_chatbot
+      - vortex-episodes-data:/app/data/episodes
+      - vortex-logs-data:/app/data/logs
+      - vortex-web-cache:/app/data/web_cache
+      - vortex-self-patch:/app/data/self_patch
+      - vortex-workspaces:/app/data/workspaces
+    depends_on:
+      vortex-api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=5)"]
+      interval: 20s
+      timeout: 10s
+      start_period: 20s
+      retries: 6
+    restart: unless-stopped
+    networks:
+      - vortex-net
+
+  vortex-chat:
+    image: vortex-chat:local
+    build:
+      context: ./vortex-chat
+      dockerfile: Dockerfile
+    ports:
+      - "${VORTEX_FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      vortex-api:
+        condition: service_started
+      vortex-control:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5173/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - vortex-net
+
+networks:
+  vortex-net:
+    driver: bridge
+
+volumes:
+  vortex-chat-data:
+  vortex-support-data:
+  vortex-episodes-data:
+  vortex-logs-data:
+  vortex-web-cache:
+  vortex-self-patch:
+  vortex-workspaces:
+  vortex-frontend-node-modules:

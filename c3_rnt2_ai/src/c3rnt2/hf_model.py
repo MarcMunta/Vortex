@@ -70,7 +70,7 @@ class HFModel:
             if AutoProcessor is None:
                 raise RuntimeError(
                     "transformers processor-based loading is not available; "
-                    "install a newer transformers build for Gemma 4/Gemma 3"
+                    "install a newer transformers build"
                 )
             self.processor = AutoProcessor.from_pretrained(
                 cfg.model_name,
@@ -84,7 +84,7 @@ class HFModel:
                 if AutoModelForImageTextToText is None:
                     raise RuntimeError(
                         "transformers image-text-to-text support is not available; "
-                        "install a newer transformers build for Gemma 3"
+                        "install a newer transformers build"
                     )
                 self.model = AutoModelForImageTextToText.from_pretrained(
                     cfg.model_name,

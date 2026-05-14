@@ -15,14 +15,10 @@ JsonDict = dict[str, Any]
 class ChatContextBundle:
     messages: Messages
     chat_memory: JsonDict
-    multimodal_context: str
-    multimodal: JsonDict
     temporal_context: str
     direct_reply: str | None
     live_web_context: str
     live_web_refs: list[dict[str, str]]
-    obsidian_context: str
-    obsidian: JsonDict
     rag: JsonDict
     default_system: str
 
@@ -32,8 +28,6 @@ class ChatContextService:
     base_dir: Path
     settings: dict[str, Any]
     chat_sessions_store: ChatSessionStoreLike | None
-    multimodal_fusion: Any
-    obsidian_sync: Any | None
     extract_query: Callable[[Messages, str | None], str]
     inject_chat_memory_context: Callable[[ChatSessionStoreLike | None, dict[str, Any], JsonDict, Messages], tuple[Messages, JsonDict]]
     build_temporal_system_context: Callable[[JsonDict], str]
@@ -54,15 +48,6 @@ class ChatContextService:
             payload,
             messages,
         )
-        multimodal_context = ""
-        multimodal: JsonDict = {"enabled": False, "refs": []}
-        try:
-            if self.multimodal_fusion is not None:
-                multimodal = self.multimodal_fusion.build_context(messages=messages, payload=payload)
-                multimodal_context = str(multimodal.get("text") or "").strip()
-        except Exception as exc:
-            multimodal = {"enabled": False, "refs": [], "error": str(exc)}
-
         temporal_context = self.build_temporal_system_context(payload)
         direct_reply = self.direct_temporal_response(payload, self.extract_query(messages, None))
         live_web_context = ""
@@ -83,23 +68,6 @@ class ChatContextService:
                 except Exception:
                     live_web_context, live_web_refs = "", []
 
-        obsidian_context = ""
-        obsidian: JsonDict = {"enabled": False, "available": False, "notes": []}
-        try:
-            context_cfg = self.settings.get("context", {}) or {}
-            obsidian_budget_raw = context_cfg.get("obsidian_tokens")
-            obsidian_budget = 5000 if obsidian_budget_raw is None else int(obsidian_budget_raw)
-            if self.obsidian_sync is not None and obsidian_budget > 0:
-                user_query = self.extract_query(messages, None)
-                obsidian = self.obsidian_sync.build_context(
-                    user_query,
-                    top_k=int((self.settings.get("obsidian", {}) or {}).get("top_k") or 6),
-                    max_tokens=obsidian_budget,
-                )
-                obsidian_context = str(obsidian.get("text") or "").strip()
-        except Exception as exc:
-            obsidian = {"enabled": False, "available": False, "notes": [], "error": str(exc)}
-
         rag_disabled = (
             str(payload.get("rag_mode") or "").strip().lower() in {"off", "false", "none", "disabled"}
             or payload.get("grounding") is False
@@ -119,40 +87,19 @@ class ChatContextService:
                 rag = {"enabled": False, "refs": [], "error": str(exc)}
         if live_web_refs:
             rag["refs"] = live_web_refs
-        refs = multimodal.get("refs")
-        if isinstance(refs, list) and refs:
-            rag["refs"] = list(rag.get("refs") or []) + list(refs)
-        obsidian_notes = obsidian.get("notes") if isinstance(obsidian, dict) else []
-        if isinstance(obsidian_notes, list) and obsidian_notes:
-            rag["refs"] = list(rag.get("refs") or []) + [
-                {
-                    "kind": "obsidian",
-                    "title": str(note.get("title") or ""),
-                    "path": str(note.get("path") or note.get("relative_path") or ""),
-                    "url": str(note.get("path") or note.get("relative_path") or ""),
-                }
-                for note in obsidian_notes
-                if isinstance(note, dict)
-            ]
 
         default_system = compose_dynamic_system_prompt(
             default_system_base,
             temporal_context=temporal_context,
             web_context=live_web_context,
-            obsidian_context=obsidian_context,
-            multimodal_context=multimodal_context,
         )
         return ChatContextBundle(
             messages=messages,
             chat_memory=chat_memory,
-            multimodal_context=multimodal_context,
-            multimodal=multimodal,
             temporal_context=temporal_context,
             direct_reply=direct_reply,
             live_web_context=live_web_context,
             live_web_refs=live_web_refs,
-            obsidian_context=obsidian_context,
-            obsidian=obsidian,
             rag=rag,
             default_system=default_system,
         )
@@ -163,8 +110,6 @@ def compose_dynamic_system_prompt(
     *,
     temporal_context: str | None,
     web_context: str | None,
-    obsidian_context: str | None = None,
-    multimodal_context: str | None = None,
 ) -> str:
     parts = [str(base_system or "").strip()]
     if temporal_context:
@@ -174,12 +119,4 @@ def compose_dynamic_system_prompt(
             "When live web results are present, prefer them over stale prior knowledge for time-sensitive questions."
         )
         parts.append(web_context.strip())
-    if obsidian_context:
-        parts.append("Use curated Obsidian notes as project memory when relevant. Keep note paths for traceability.")
-        parts.append(obsidian_context.strip())
-    if multimodal_context:
-        parts.append(
-            "Use the multimodal workspace context as situational grounding for the current request."
-        )
-        parts.append(multimodal_context.strip())
     return "\n\n".join(part for part in parts if part)

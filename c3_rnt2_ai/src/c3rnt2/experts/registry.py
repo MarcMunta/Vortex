@@ -89,14 +89,13 @@ class ExpertRegistry:
             paths[str(name)] = str(p)
 
         if enabled and not paths:
-            # Optional auto-discovery: promoted HF experts registry (fail-closed for 120B-like).
+            # Optional auto-discovery: promoted HF experts registry.
             discovered = _discover_promoted_hf_experts(base_dir, settings)
             if discovered:
                 paths.update(discovered)
-            profile = str(settings.get("_profile") or "")
             discover_hf_train = cfg.get("discover_hf_train")
             if discover_hf_train is None:
-                discover_hf_train = profile != "rtx4080_16gb_120b_like"
+                discover_hf_train = True
             if not paths and bool(discover_hf_train):
                 # Legacy auto-discovery: treat HF training runs as experts.
                 # Keeps workflows viable without editing settings.yaml on each train.

@@ -51,7 +51,7 @@ class ToolsSettings(TypedDict, total=False):
 class DockerSettings(TypedDict, total=False):
     enabled: bool
     compose_path: str
-    runtime_service: str
+    runtime_service: str | None
     api_service: str
     trainer_service: str
     eval_service: str
@@ -82,13 +82,6 @@ class ResolvedSettings(TypedDict, total=False):
     continuous: dict[str, Any]
     hf_train: dict[str, Any]
     local_lab: dict[str, Any]
-    voice: dict[str, Any]
-    camera: dict[str, Any]
-    gesture: dict[str, Any]
-    spatial_ui: dict[str, Any]
-    obsidian: dict[str, Any]
-    multimodal_memory: dict[str, Any]
-    multimodal_context: dict[str, Any]
     presentation: dict[str, Any]
     workspace_panels: dict[str, Any]
 

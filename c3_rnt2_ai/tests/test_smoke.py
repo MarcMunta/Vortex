@@ -5,7 +5,7 @@ from c3rnt2.device import detect_device
 
 
 def test_smoke_settings():
-    settings = load_settings("dev_small")
+    settings = load_settings("rtx4080_16gb_llama2_7b_q4_local")
     assert "tokenizer" in settings
 
 

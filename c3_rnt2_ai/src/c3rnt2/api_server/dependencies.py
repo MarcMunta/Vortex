@@ -15,7 +15,6 @@ class ApiDependencies:
     models_list_payload: Callable[[Any, dict[str, Any], Path], dict[str, Any]]
     openai_error: OpenAIErrorFactory
     metrics_factory: Callable[[], Any]
-    apply_voice_intent: Callable[[Any], dict[str, Any] | None]
     collect_local_lab_status: Callable[[dict[str, Any], Path], dict[str, Any]]
     ensure_host_layout: Callable[[dict[str, Any], Path], dict[str, Any]]
     list_modules: Callable[[dict[str, Any], Path], list[dict[str, Any]]]

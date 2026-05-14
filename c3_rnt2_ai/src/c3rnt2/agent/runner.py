@@ -14,7 +14,6 @@ from ..config import resolve_web_allowlist
 from ..context_budget import apply_message_budget, output_limit_for_mode, resolve_context_budget
 from ..lab_guard import evaluate_lab_request
 from ..model_loader import load_inference_model
-from ..multimodal.obsidian_sync import ObsidianSyncService
 from ..prompting.chat_format import build_chat_prompt
 from .permissions import AgentPermissions, build_agent_permission_context
 from .tools import AgentTools, ToolResult
@@ -179,7 +178,9 @@ def _task_requests_code_file(task: str) -> bool:
             "crear",
             "create",
             "implementa",
+            "implementar",
             "programa",
+            "programar",
             "app",
             "codigo",
             "código",
@@ -187,6 +188,81 @@ def _task_requests_code_file(task: str) -> bool:
             "flutter",
             "dart",
             "login",
+            "pantalla",
+            "screen",
+            "widget",
+            "componente",
+            "component",
+            "pagina",
+            "page",
+            "vista",
+            "view",
+            "layout",
+            "diseño",
+            "design",
+            "interfaz",
+            "interface",
+            "ui",
+            "ux",
+            "formulario",
+            "form",
+            "boton",
+            "botón",
+            "button",
+            "menu",
+            "menú",
+            "navbar",
+            "sidebar",
+            "drawer",
+            "modal",
+            "dialog",
+            "tabla",
+            "table",
+            "lista",
+            "list",
+            "grid",
+            "card",
+            "tarjeta",
+            "animacion",
+            "animation",
+            "api",
+            "servicio",
+            "service",
+            "modelo",
+            "model",
+            "clase",
+            "class",
+            "funcion",
+            "function",
+            "script",
+            "html",
+            "css",
+            "javascript",
+            "typescript",
+            "react",
+            "vue",
+            "angular",
+            "python",
+            "java",
+            "kotlin",
+            "swift",
+            "rust",
+            "go",
+            "genera",
+            "generar",
+            "generate",
+            "escribe",
+            "escribir",
+            "write",
+            "hazme",
+            "hacer",
+            "haz",
+            "build",
+            "scaffold",
+            "template",
+            "plantilla",
+            "proyecto",
+            "project",
         },
     )
 
@@ -213,8 +289,11 @@ def _task_requires_workspace_change(task: str) -> bool:
             "edita",
             "editar",
             "elimina",
+            "escribe",
+            "escribir",
             "genera",
             "generar",
+            "generate",
             "haz",
             "hazme",
             "hacer",
@@ -226,6 +305,32 @@ def _task_requires_workspace_change(task: str) -> bool:
             "programar",
             "remove",
             "update",
+            "write",
+            "pantalla",
+            "screen",
+            "widget",
+            "componente",
+            "pagina",
+            "page",
+            "vista",
+            "view",
+            "layout",
+            "disena",
+            "diseña",
+            "design",
+            "interfaz",
+            "interface",
+            "formulario",
+            "form",
+            "login",
+            "signup",
+            "register",
+            "dashboard",
+            "app",
+            "aplicacion",
+            "proyecto",
+            "project",
+            "scaffold",
         )
     )
 
@@ -270,28 +375,65 @@ def _infer_code_path(task: str, lang: str, code: str, workspace_dir: Path) -> st
         return "main.py"
     if lang in {"html", "htm"}:
         return "index.html"
+    if lang == "css":
+        return "styles.css"
+    if lang in {"json", "jsonc"}:
+        return "config.json"
+    if lang in {"yaml", "yml"}:
+        return "config.yaml"
+    if lang in {"kotlin", "kt"}:
+        return "main.kt"
+    if lang in {"swift"}:
+        return "main.swift"
+    if lang in {"java"}:
+        return "Main.java"
+    if lang in {"rust", "rs"}:
+        return "main.rs"
+    if lang in {"go", "golang"}:
+        return "main.go"
+    if lang in {"c", "cpp", "c++"}:
+        return "main.cpp"
+    if lang in {"dart"}:
+        return "lib/main.dart"
+    # Look at code content for hints
+    if "runapp(" in lowered_code or "statewidget" in lowered_code:
+        return "lib/main.dart"
+    if "import react" in lowered_code or "usestate" in lowered_code:
+        return "src/App.tsx"
+    if "def " in lowered_code or "import " in lowered_code:
+        return "main.py"
+    if "<html" in lowered_code or "<!doctype" in lowered_code:
+        return "index.html"
     existing_main = workspace_dir / "main.py"
     return "main.py" if existing_main.exists() else "generated_code.txt"
 
 
 def _extract_code_write_action(task: str, output: str, workspace_dir: Path) -> Action | None:
-    if not _task_requests_code_file(task):
-        return None
     text = str(output or "")
     if not text.strip():
         return None
-    file_block = re.search(r"```file:([^\n`]+)\n([\s\S]*?)```", text, flags=re.IGNORECASE)
-    if file_block:
-        path = file_block.group(1).strip()
-        code = file_block.group(2).strip()
-        if path and code:
-            return Action(type="write_file", args={"path": path, "text": code.rstrip() + "\n", "_finish_after_write": True})
 
+    # Priority 1: explicit file: blocks (```file:path/to/file)
+    file_blocks = re.findall(r"```file:([^\n`]+)\n([\s\S]*?)```", text, flags=re.IGNORECASE)
+    if file_blocks:
+        # If multiple file blocks, write them all as a batch
+        if len(file_blocks) > 1:
+            first_path = file_blocks[0][0].strip()
+            first_code = file_blocks[0][1].strip()
+            if first_path and first_code:
+                return Action(type="write_file", args={"path": first_path, "text": first_code.rstrip() + "\n", "_finish_after_write": False})
+        elif file_blocks:
+            path = file_blocks[0][0].strip()
+            code = file_blocks[0][1].strip()
+            if path and code:
+                return Action(type="write_file", args={"path": path, "text": code.rstrip() + "\n", "_finish_after_write": True})
+
+    # Priority 2: code blocks with language markers
     blocks = re.findall(r"```([A-Za-z0-9_+.-]*)\n([\s\S]*?)```", text)
     for raw_lang, raw_code in blocks:
         lang = str(raw_lang or "").strip().lower()
         code = str(raw_code or "").strip()
-        if not code:
+        if not code or len(code) < 20:
             continue
         code_signal = bool(
             lang
@@ -299,12 +441,25 @@ def _extract_code_write_action(task: str, output: str, workspace_dir: Path) -> A
             or "class " in code
             or "import " in code
             or "function " in code
+            or "def " in code
+            or "const " in code
+            or "var " in code
+            or "let " in code
+            or "export " in code
+            or "<template" in code
+            or "<html" in code
+            or "@override" in code
+            or "Widget build" in code
+            or "runApp(" in code
+            or "StatelessWidget" in code
+            or "StatefulWidget" in code
         )
         if not code_signal:
             continue
         path = _infer_code_path(task, lang, code, workspace_dir)
         return Action(type="write_file", args={"path": path, "text": code.rstrip() + "\n", "_finish_after_write": True})
 
+    # Priority 3: detect Flutter/Dart code inline
     if "import 'package:flutter/material.dart'" in text or "MaterialApp(" in text:
         path = _infer_code_path(task, "dart", text, workspace_dir)
         return Action(type="write_file", args={"path": path, "text": text.rstrip() + "\n", "_finish_after_write": True})
@@ -1047,10 +1202,114 @@ def _flutter_forgot_password_button_actions(
 
 def _requests_flutter_dark_mode_button(task: str) -> bool:
     normalized = _normalish(_extract_objective_text(task))
-    wants_button = "boton" in normalized or "button" in normalized
     wants_dark = "modo oscuro" in normalized or "dark mode" in normalized or "tema oscuro" in normalized
-    wants_animation = "animacion" in normalized or "animado" in normalized or "transition" in normalized or "transicion" in normalized
-    return wants_button and wants_dark and (wants_animation or "color" in normalized)
+    wants_theme = "tema" in normalized or "theme" in normalized
+    wants_app_change = any(
+        word in normalized
+        for word in (
+            "app",
+            "aplicacion",
+            "aplicación",
+            "proyecto",
+            "pantalla",
+            "interfaz",
+            "ui",
+            "modifica",
+            "modificar",
+            "anade",
+            "añade",
+            "agrega",
+            "implementa",
+            "pon",
+        )
+    )
+    return wants_dark and (wants_theme or wants_app_change)
+
+
+def _find_matching_paren(text: str, open_index: int) -> int:
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index in range(open_index, len(text)):
+        ch = text[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in {"'", '"'}:
+            quote = ch
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def _flutter_generic_dark_mode_text(main_text: str) -> str:
+    if "MaterialApp(" not in main_text:
+        return main_text
+    new_main = main_text
+    app_index = new_main.find("MaterialApp(")
+    app_open = new_main.find("(", app_index)
+    app_close = _find_matching_paren(new_main, app_open)
+    if app_open < 0 or app_close < 0:
+        return main_text
+    app_segment = new_main[app_open + 1 : app_close]
+    app_indent_match = re.search(r"\n(?P<indent>\s*)MaterialApp\(", new_main[: app_index + len("MaterialApp(")])
+    app_indent = app_indent_match.group("indent") if app_indent_match else "    "
+    prop_indent = f"{app_indent}  "
+
+    if "themeMode:" not in app_segment:
+        insert_after = None
+        for marker in ("debugShowCheckedModeBanner:", "title:"):
+            marker_at = app_segment.find(marker)
+            if marker_at >= 0:
+                line_end = app_open + 1 + app_segment.find("\n", marker_at)
+                if line_end > app_open:
+                    insert_after = line_end + 1
+                    break
+        if insert_after is None:
+            insert_after = app_open + 1
+        new_main = new_main[:insert_after] + f"{prop_indent}themeMode: ThemeMode.system,\n" + new_main[insert_after:]
+        app_close += len(f"{prop_indent}themeMode: ThemeMode.system,\n")
+
+    app_segment = new_main[app_open + 1 : app_close]
+    if "darkTheme:" in app_segment:
+        return new_main
+
+    seed_color = "Colors.indigo"
+    seed_match = re.search(r"ColorScheme\.fromSeed\(\s*seedColor:\s*([^,\)]+)", app_segment)
+    if seed_match:
+        seed_color = seed_match.group(1).strip()
+    dark_theme = (
+        f"{prop_indent}darkTheme: ThemeData(\n"
+        f"{prop_indent}  colorScheme: ColorScheme.fromSeed(seedColor: {seed_color}, brightness: Brightness.dark),\n"
+        f"{prop_indent}  useMaterial3: true,\n"
+        f"{prop_indent}),\n"
+    )
+
+    theme_match = re.search(r"\n(?P<indent>\s*)theme:\s*ThemeData\(", app_segment)
+    if theme_match:
+        theme_open = app_open + 1 + theme_match.end() - 1
+        theme_close = _find_matching_paren(new_main, theme_open)
+        if theme_close >= 0:
+            insert_at = theme_close + 1
+            if insert_at < len(new_main) and new_main[insert_at] == ",":
+                insert_at += 1
+            if insert_at < len(new_main) and new_main[insert_at] == "\n":
+                insert_at += 1
+            return new_main[:insert_at] + dark_theme + new_main[insert_at:]
+
+    home_at = app_segment.find("home:")
+    insert_at = app_open + 1 + home_at if home_at >= 0 else app_close
+    return new_main[:insert_at] + dark_theme + new_main[insert_at:]
 
 
 def _flutter_dark_mode_button_actions(
@@ -1069,6 +1328,18 @@ def _flutter_dark_mode_button_actions(
     except Exception:
         return []
     actions: list[Action] = []
+    if "class VortexLoginApp" not in main_text:
+        generic_main = _flutter_generic_dark_mode_text(main_text)
+        if generic_main != main_text:
+            actions.append(
+                Action(
+                    type="write_file",
+                    args={"path": "lib/main.dart", "text": generic_main, "require_exists": True},
+                )
+            )
+            if include_commands:
+                actions.append(Action(type="run_command", args={"command": "flutter test", "cwd": ".", "timeout_s": 240}))
+        return actions
     new_main = main_text
     if "themeMode:" not in new_main:
         old_app = """class VortexLoginApp extends StatelessWidget {
@@ -1276,6 +1547,27 @@ def _flutter_android_platform_actions(workspace_dir: Path | None) -> list[Action
     ]
 
 
+def _flutter_web_platform_missing(workspace_dir: Path | None) -> bool:
+    if workspace_dir is None:
+        return False
+    return not (workspace_dir / "web" / "index.html").exists()
+
+
+def _flutter_web_platform_actions(workspace_dir: Path | None) -> list[Action]:
+    if not _flutter_web_platform_missing(workspace_dir):
+        return []
+    return [
+        Action(
+            type="run_command",
+            args={
+                "command": "flutter create --platforms=web --no-overwrite .",
+                "cwd": ".",
+                "timeout_s": 240,
+            },
+        )
+    ]
+
+
 def _requests_flutter_existing_project_run(task: str, *, assume_flutter: bool = False) -> bool:
     normalized_objective = _normalish(_extract_objective_text(task))
     mentions_flutter = assume_flutter or "flutter" in normalized_objective or "dart" in normalized_objective
@@ -1283,17 +1575,24 @@ def _requests_flutter_existing_project_run(task: str, *, assume_flutter: bool = 
         word in normalized_objective
         for word in (
             "ejecuta",
+            "ejecutame",
+            "ejecutalo",
             "ejecute",
             "ejecutes",
             "ejecutar",
             "corre",
+            "correme",
             "corra",
             "corras",
             "correr",
             "inicia",
+            "iniciame",
             "inicie",
             "inicies",
             "iniciar",
+            "lanza",
+            "lanzame",
+            "lanzalo",
             "run",
             "start",
             "launch",
@@ -1323,14 +1622,20 @@ def _requests_flutter_existing_project_run(task: str, *, assume_flutter: bool = 
 def _flutter_project_command_actions(task: str, *, workspace_dir: Path | None = None) -> list[Action]:
     if not _requests_flutter_terminal_actions(task):
         return []
+    wants_emulator = _requests_flutter_emulator_run(task)
+    platform_actions = (
+        _flutter_android_platform_actions(workspace_dir)
+        if wants_emulator
+        else _flutter_web_platform_actions(workspace_dir)
+    )
     actions = [
         Action(type="run_command", args={"command": "flutter --version", "cwd": ".", "timeout_s": 60}),
-        *_flutter_android_platform_actions(workspace_dir),
+        *platform_actions,
         Action(type="run_command", args={"command": "flutter devices", "cwd": ".", "timeout_s": 60}),
         Action(type="run_command", args={"command": "flutter pub get", "cwd": ".", "timeout_s": 180}),
         Action(type="run_command", args={"command": "flutter test", "cwd": ".", "timeout_s": 240}),
     ]
-    if _requests_flutter_emulator_run(task):
+    if wants_emulator:
         actions.extend(
             [
                 Action(
@@ -1355,22 +1660,47 @@ def _flutter_existing_project_run_actions(
 ) -> list[Action]:
     if not _requests_flutter_existing_project_run(task, assume_flutter=assume_flutter):
         return []
-    return [
+    wants_emulator = _requests_flutter_emulator_run(task)
+    platform_actions = (
+        _flutter_android_platform_actions(workspace_dir)
+        if wants_emulator
+        else _flutter_web_platform_actions(workspace_dir)
+    )
+    actions = [
         Action(type="run_command", args={"command": "flutter --version", "cwd": ".", "timeout_s": 60}),
-        *_flutter_android_platform_actions(workspace_dir),
+        *platform_actions,
         Action(type="run_command", args={"command": "flutter devices", "cwd": ".", "timeout_s": 60}),
         Action(type="run_command", args={"command": "flutter pub get", "cwd": ".", "timeout_s": 180}),
         Action(type="run_command", args={"command": "flutter test", "cwd": ".", "timeout_s": 240}),
-        Action(
-            type="run_command",
-            args={
-                "command": "flutter run -d emulator-5554 --debug",
-                "cwd": ".",
-                "timeout_s": 120,
-                "background": True,
-            },
-        ),
     ]
+    if wants_emulator:
+        actions.append(
+            Action(
+                type="run_command",
+                args={
+                    "command": "flutter run -d emulator-5554 --debug",
+                    "cwd": ".",
+                    "timeout_s": 120,
+                    "background": True,
+                },
+            )
+        )
+    else:
+        actions.extend(
+            [
+                Action(type="run_command", args={"command": "flutter build web", "cwd": ".", "timeout_s": 300}),
+                Action(
+                    type="run_command",
+                    args={
+                        "command": "flutter run -d web-server --web-hostname 0.0.0.0 --web-port 19090",
+                        "cwd": ".",
+                        "timeout_s": 120,
+                        "background": True,
+                    },
+                ),
+            ]
+        )
+    return actions
 
 
 def _flutter_project_fallback_actions(
@@ -1392,11 +1722,161 @@ def _flutter_project_fallback_actions(
     return actions
 
 
+def _requests_existing_project_run(task: str) -> bool:
+    normalized = _normalish(_extract_objective_text(task))
+    wants_run = any(
+        word in normalized
+        for word in (
+            "ejecuta",
+            "ejecutame",
+            "ejecutalo",
+            "ejecute",
+            "ejecutar",
+            "corre",
+            "correme",
+            "correr",
+            "inicia",
+            "iniciame",
+            "iniciar",
+            "lanza",
+            "lanzame",
+            "lanzalo",
+            "run",
+            "start",
+            "launch",
+        )
+    )
+    mentions_project = any(
+        word in normalized
+        for word in ("proyecto", "project", "app", "aplicacion", "workspace")
+    )
+    asks_new_code = any(
+        word in normalized
+        for word in (
+            "crea",
+            "crear",
+            "haz",
+            "hacer",
+            "implementa",
+            "genera",
+            "nuevo",
+            "create",
+            "build",
+        )
+    )
+    return wants_run and mentions_project and not asks_new_code
+
+
+def _node_project_run_actions(workspace_dir: Path) -> list[Action]:
+    package_path = workspace_dir / "package.json"
+    if not package_path.exists() or not package_path.is_file():
+        return []
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        package = {}
+    scripts = package.get("scripts") if isinstance(package, dict) else {}
+    scripts = scripts if isinstance(scripts, dict) else {}
+    actions: list[Action] = []
+    package_lock = workspace_dir / "package-lock.json"
+    node_modules = workspace_dir / "node_modules"
+    npm_lock_marker = node_modules / ".package-lock.json"
+    needs_install = not node_modules.exists() or (package_lock.exists() and not npm_lock_marker.exists())
+    if needs_install:
+        install_cmd = "npm ci" if package_lock.exists() else "npm install"
+        actions.append(Action(type="run_command", args={"command": install_cmd, "cwd": ".", "timeout_s": 300}))
+    if "build" in scripts:
+        actions.append(Action(type="run_command", args={"command": "npm run build", "cwd": ".", "timeout_s": 300}))
+    if "dev" in scripts:
+        actions.append(
+            Action(
+                type="run_command",
+                args={
+                    "command": "npm run dev -- --host 0.0.0.0",
+                    "cwd": ".",
+                    "timeout_s": 120,
+                    "background": True,
+                },
+            )
+        )
+    elif "start" in scripts:
+        actions.append(
+            Action(
+                type="run_command",
+                args={
+                    "command": "npm start",
+                    "cwd": ".",
+                    "timeout_s": 120,
+                    "background": True,
+                },
+            )
+        )
+    return actions
+
+
+def _python_project_run_actions(workspace_dir: Path) -> list[Action]:
+    if not (workspace_dir / "pyproject.toml").exists():
+        return []
+    actions: list[Action] = []
+    tests_dir = workspace_dir / "tests"
+    if tests_dir.exists() and tests_dir.is_dir():
+        actions.append(Action(type="run_command", args={"command": "python -m pytest -q", "cwd": ".", "timeout_s": 300}))
+    else:
+        actions.append(Action(type="run_command", args={"command": "python --version", "cwd": ".", "timeout_s": 60}))
+    return actions
+
+
+def _project_run_actions(task: str, workspace_dir: Path) -> list[Action]:
+    if not _requests_existing_project_run(task):
+        return []
+    normalized = _normalish(_extract_objective_text(task))
+    if _workspace_looks_flutter(workspace_dir) or "flutter" in normalized or "dart" in normalized:
+        return _flutter_existing_project_run_actions(
+            task,
+            assume_flutter=True,
+            workspace_dir=workspace_dir,
+        )
+    node_actions = _node_project_run_actions(workspace_dir)
+    if node_actions:
+        return node_actions
+    python_actions = _python_project_run_actions(workspace_dir)
+    if python_actions:
+        return python_actions
+    return []
+
+
 def _extract_direct_actions(task: str) -> list[Action]:
     text = str(task or "").strip()
     if not text:
         return []
     actions: list[tuple[int, Action]] = []
+    read_pattern = r"(?:lee|leer|read|abre|abrir|open)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)?\s*`?(?P<path>[A-Za-z0-9_.\\/\- ]+\.[A-Za-z0-9_]+)`?"
+    for match in re.finditer(read_pattern, text, flags=re.IGNORECASE):
+        path = str(match.group("path") or "").strip().rstrip(".,;:")
+        if path:
+            _append_direct_action(
+                actions,
+                match.start(),
+                Action(type="read_file", args={"path": path, "max_chars": 4000}),
+            )
+    list_pattern = r"(?:lista|listar|list)\s+(?:archivos|files|tree|arbol|árbol)(?:\s+(?:en|de|from)\s+`?(?P<root>[^`\"'\n;]+)`?)?"
+    for match in re.finditer(list_pattern, text, flags=re.IGNORECASE):
+        root = str(match.group("root") or ".").strip().rstrip(".,;:")
+        _append_direct_action(
+            actions,
+            match.start(),
+            Action(type="list_tree", args={"root": root or ".", "max_entries": 120}),
+        )
+    grep_pattern = r"(?:busca|buscar|grep|search)\s+(?P<quote>[`\"'])(?P<pattern>.*?)(?P=quote)(?:\s+(?:en|in)\s+`?(?P<glob>[^`\"'\n;]+)`?)?"
+    for match in re.finditer(grep_pattern, text, flags=re.IGNORECASE | re.DOTALL):
+        pattern_text = str(match.group("pattern") or "").strip()
+        path_glob = str(match.group("glob") or "**/*").strip().rstrip(".,;:")
+        if pattern_text:
+            _append_direct_action(
+                actions,
+                match.start(),
+                Action(type="grep", args={"pattern": pattern_text, "path_glob": path_glob or "**/*", "max_hits": 50}),
+            )
     write_patterns = [
         (
             r"(?:crea|crear|create|write)\s+(?:el\s+|un\s+|the\s+|a\s+)?(?:archivo|file)\s+[`\"']?(?P<path>[^`\"'\s;]+)[`\"']?\s+(?:con\s+(?:el\s+|la\s+)?(?:texto|contenido)|with\s+(?:the\s+)?(?:text|content))\s+(?P<quote>[`\"'])(?P<text>.*?)(?P=quote)",
@@ -1462,9 +1942,23 @@ def _direct_actions_summary(tool_calls: List[dict]) -> str:
     deleted: list[str] = []
     command_names: list[str] = []
     failed_commands: list[tuple[str, str]] = []
+    reads: list[tuple[str, str]] = []
+    lists: list[str] = []
+    searches: list[str] = []
     for call in tool_calls:
         action = str(call.get("action") or "")
-        if action not in {"write_file", "delete_file", "run_command"}:
+        if action not in {"write_file", "delete_file", "run_command", "read_file", "list_tree", "grep"}:
+            continue
+        args = call.get("args")
+        args_dict = args if isinstance(args, dict) else {}
+        if action == "read_file" and call.get("ok"):
+            reads.append((str(args_dict.get("path") or "archivo"), str(call.get("output") or "")))
+            continue
+        if action == "list_tree" and call.get("ok"):
+            lists.append(str(args_dict.get("root") or "."))
+            continue
+        if action == "grep" and call.get("ok"):
+            searches.append(str(args_dict.get("pattern") or "busqueda"))
             continue
         if action in {"write_file", "delete_file"} and call.get("ok"):
             meta = call.get("meta")
@@ -1506,20 +2000,28 @@ def _direct_actions_summary(tool_calls: List[dict]) -> str:
         parts.append(f"He actualizado `{_join_natural(updated)}`.")
     if deleted:
         parts.append(f"He borrado `{_join_natural(deleted)}`.")
+    if reads:
+        parts.append(_read_actions_summary(reads))
+    if lists:
+        parts.append(f"He listado `{_join_natural(lists)}`.")
+    if searches:
+        parts.append(f"He buscado `{_join_natural(searches)}`.")
+    if command_names and not (created or updated or deleted):
+        parts.append(f"He ejecutado `{_join_natural(command_names)}`.")
     if any("flutter test" in command for command in command_names):
         parts.append("He validado el proyecto con sus tests.")
     failed_emulator_commands = [
-        (command, output)
-        for command, output in failed_commands
-        if _command_looks_like_flutter_emulator(command)
+        (command, output) for command, output in failed_commands if _command_looks_like_flutter_emulator(command)
     ]
-    if any("flutter run" in command for command in command_names) and not failed_emulator_commands:
+    if any(_command_looks_like_flutter_emulator(command) for command in command_names) and not failed_emulator_commands:
         parts.append("He iniciado la app en el emulador.")
+    elif any(_command_looks_like_flutter_web_server(command) for command in command_names):
+        parts.append("He iniciado la app web local en `http://localhost:19090`.")
     elif any("emulators --launch" in command for command in command_names) and not failed_emulator_commands:
         parts.append("He iniciado el emulador.")
     if failed_emulator_commands:
         parts.append(_flutter_emulator_failure_summary(failed_emulator_commands))
-    elif failed_commands and not parts:
+    elif failed_commands:
         command, output = failed_commands[-1]
         parts.append(_command_failure_summary(command, output))
     if parts:
@@ -1527,6 +2029,34 @@ def _direct_actions_summary(tool_calls: List[dict]) -> str:
     if not tool_calls:
         return ""
     return "He terminado la tarea."
+
+
+def _read_actions_summary(reads: list[tuple[str, str]]) -> str:
+    paths = [path for path, _output in reads]
+    if len(reads) == 1:
+        path, output = reads[0]
+        detail = _read_output_brief(path, output)
+        if detail:
+            return f"He leido `{path}`. {detail}"
+    return f"He leido `{_join_natural(paths)}`."
+
+
+def _read_output_brief(path: str, output: str) -> str:
+    text = str(output or "").strip()
+    if not text:
+        return ""
+    lower_path = path.lower()
+    if lower_path.endswith(("pubspec.yaml", "pubspec.yml")):
+        match = re.search(r"(?m)^name:\s*([A-Za-z0-9_\-]+)\s*$", text)
+        if match:
+            return f"El proyecto es `{match.group(1)}`."
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    preview = " ".join(lines[:3])
+    if len(preview) > 260:
+        preview = preview[:257].rstrip() + "..."
+    return f"Primer contenido: {preview}"
 
 
 def _attempted_workspace_mutation(tool_calls: List[dict]) -> bool:
@@ -1563,7 +2093,12 @@ def _command_looks_like_test(command: str) -> bool:
 
 def _command_looks_like_flutter_emulator(command: str) -> bool:
     normalized = str(command or "").strip().lower()
-    return "flutter emulators" in normalized or "flutter run" in normalized
+    return "flutter emulators" in normalized or "flutter run" in normalized and "emulator" in normalized
+
+
+def _command_looks_like_flutter_web_server(command: str) -> bool:
+    normalized = str(command or "").strip().lower()
+    return "flutter run" in normalized and "web-server" in normalized
 
 
 def _direct_command_failure_is_nonfatal(command: str, output: str) -> bool:
@@ -1747,29 +2282,30 @@ def run_agent(
     allowed_tool_schemas = [tool_schemas[name] for name in sorted(allowed_tools) if name in tool_schemas]
     permission_context = build_agent_permission_context(effective_permissions)
     system_prompt = (
-        "You are an autonomous coding agent working like Codex. "
-        "Inspect the workspace, edit files, run useful validation, and keep going until the user task is complete. "
-        "You must respond with a single minified JSON object Action{type,args}. "
-        "Do not use markdown. Do not add prose. "
-        "If the task asks to create, modify, or delete files, use write_file, apply_patch, or delete_file before finish. "
-        "For edits to an existing file, check that the target exists first or set require_exists=true; if it is missing, finish with a clear blocker and do not create it unless the user asked to create it. "
-        "For deletes, if the target is missing, report that clearly instead of doing nothing. "
-        "If full permissions allow commands, run the relevant validation command before finish when practical. "
-        "Finish only when the requested work is done or a real blocker remains. "
+        "You are an autonomous coding agent. You MUST respond with ONLY a single minified JSON object. "
+        "NO markdown. NO prose. NO explanations. JUST ONE JSON object per turn.\n"
+        "\n"
+        "WORKFLOW: 1) Inspect workspace (list_tree/read_file) 2) Make changes (write_file) 3) Validate (run_command) 4) finish\n"
+        "\n"
+        "CRITICAL RULES:\n"
+        "- ALWAYS create files when the user asks to create/implement/build something. Use write_file with the FULL file content.\n"
+        "- For Flutter/Dart: write to lib/main.dart. For Python: write to main.py. For web: write to index.html.\n"
+        "- When creating a file, include COMPLETE, RUNNABLE code. Never write partial code.\n"
+        "- After creating files, validate with run_command (e.g., flutter analyze, python -c 'import main', npm run build).\n"
+        "- finish ONLY after all files are written and validated.\n"
+        "- If the task mentions UI, design, layout, screens, pages, widgets, components - generate REAL code, not descriptions.\n"
+        "\n"
+        "EXAMPLES:\n"
+        '{"type":"list_tree","args":{"root":".","max_entries":100}}\n'
+        '{"type":"read_file","args":{"path":"lib/main.dart"}}\n'
+        '{"type":"write_file","args":{"path":"lib/main.dart","text":"import \'package:flutter/material.dart\';\\nvoid main() => runApp(MyApp());..."}}\n'
+        '{"type":"run_command","args":{"command":"flutter analyze","cwd":"."}}\n'
+        '{"type":"finish","args":{"summary":"Created lib/main.dart with a login screen using Material Design 3"}}\n'
+        "\n"
         f"Valid types: {allowed_prompt_tools}. "
         f"Permission context: {permission_context} "
         f"Tool schemas: {'; '.join(allowed_tool_schemas)}"
     )
-    try:
-        obsidian_budget = int(context_cfg.get("obsidian_tokens") or 0)
-        if obsidian_budget > 0:
-            obsidian = ObsidianSyncService(settings=settings, base_dir=base_dir)
-            obsidian_context = obsidian.build_context(task, max_tokens=obsidian_budget, top_k=6)
-            obsidian_text = str(obsidian_context.get("text") or "").strip()
-            if obsidian_text:
-                system_prompt += f" Curated Obsidian memory follows. Use when relevant and keep paths traceable. {obsidian_text}"
-    except Exception:
-        pass
     messages: List[dict] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task},
@@ -1826,14 +2362,20 @@ def run_agent(
     objective_text = _extract_objective_text(task)
     direct_actions = (
         _extract_direct_actions(objective_text)
-        if action_provider is None and effective_permissions.can_write
+        if action_provider is None and effective_permissions.can_read
         else []
     )
     assume_flutter_workspace = _workspace_looks_flutter(workspace_dir)
     if (
         not direct_actions
         and action_provider is None
-        and current_model is None
+        and effective_permissions.can_run_commands
+        and "run_command" in allowed_tools
+    ):
+        direct_actions = _project_run_actions(objective_text, workspace_dir)
+    if (
+        not direct_actions
+        and action_provider is None
         and assume_flutter_workspace
         and effective_permissions.can_write
         and "write_file" in allowed_tools
@@ -1846,7 +2388,6 @@ def run_agent(
     if (
         not direct_actions
         and action_provider is None
-        and current_model is None
         and assume_flutter_workspace
         and effective_permissions.can_write
         and "write_file" in allowed_tools
@@ -1859,7 +2400,6 @@ def run_agent(
     if (
         not direct_actions
         and action_provider is None
-        and current_model is None
         and effective_permissions.can_run_commands
         and "run_command" in allowed_tools
     ):
@@ -1871,7 +2411,6 @@ def run_agent(
     if (
         not direct_actions
         and action_provider is None
-        and current_model is None
         and effective_permissions.can_write
         and "write_file" in allowed_tools
         and _requests_flutter_terminal_actions(task)
@@ -1915,6 +2454,22 @@ def run_agent(
                 )
             elif direct_action.type == "delete_file":
                 direct_result = tools.delete_file(str(direct_action.args.get("path", "")))
+            elif direct_action.type == "read_file":
+                direct_result = tools.read_file(
+                    str(direct_action.args.get("path", "")),
+                    max_chars=int(direct_action.args.get("max_chars", 4000)),
+                )
+            elif direct_action.type == "list_tree":
+                direct_result = tools.list_tree(
+                    str(direct_action.args.get("root", ".")),
+                    max_entries=int(direct_action.args.get("max_entries", 120)),
+                )
+            elif direct_action.type == "grep":
+                direct_result = tools.grep(
+                    str(direct_action.args.get("pattern", "")),
+                    path_glob=str(direct_action.args.get("path_glob", "**/*")),
+                    max_hits=int(direct_action.args.get("max_hits", 50)),
+                )
             elif direct_action.type == "run_command":
                 command = str(direct_action.args.get("command", ""))
                 direct_result = tools.run_command(

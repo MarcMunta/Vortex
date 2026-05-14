@@ -1,7 +1,121 @@
-imports:
-  - profiles/00-base.yaml
-  - profiles/10-lab.yaml
-  - profiles/20-training.yaml
-  - profiles/30-performance.yaml
-  - profiles/35-gemma-4080-long.yaml
-  - profiles/40-vortex-core.yaml
+profiles:
+  rtx4080_16gb_llama2_7b_q4_local:
+    tokenizer:
+      vortex_tok_path: data/runs/vortex_tok.pt
+      rnt2_model_path: data/runs/rnt2_dev.pt
+      block_size: 64
+    core:
+      backend: llama_cpp
+      llama_cpp_model_path: data/models/gguf/llama-2-7b-chat.Q4_K_M.gguf
+      llama_cpp_quant: Q4_K_M
+      llama_cpp_chat_format: llama-2
+      llama_cpp_ctx: 4096
+      llama_cpp_n_gpu_layers: -1
+      llama_cpp_threads: 12
+      llama_cpp_batch: 512
+      llama_cpp_flash_attn: false
+      hf_system_prompt: "Eres Vortex, asistente local para chat normal, agente de desarrollo, proyectos, skills y RAG. Responde en el idioma del usuario."
+      backend_fallback: null
+      allow_implicit_hf_fallback: false
+      prefer_llama_cpp_if_available: true
+    decode:
+      max_new_tokens: 4096
+      temperature: 0.7
+      top_p: 0.9
+      repetition_penalty: 1.08
+      no_repeat_ngram: 0
+    runtime:
+      cache_vram_budget_mb: 4096
+      prefetch_depth: 0
+      paged_lm_head: false
+      paged_lm_head_stream_topk: 64
+      gpu_decompress: none
+      kv_quant: none
+      i_know_what_im_doing: false
+    server:
+      host: 127.0.0.1
+      port: 8000
+      control_host: 127.0.0.1
+      control_port: 8765
+      lazy_model_load: true
+      block_during_training: false
+    agent:
+      web_allowlist: []
+      max_iters: 20
+      max_total_iters: 60
+      max_context_compactions: 8
+      json_repair_retries: 3
+      action_max_new_tokens: 4096
+      final_summary_max_new_tokens: 2048
+      max_wall_time_s: 300
+      stream_heartbeat_s: 8
+      background_probe_s: 12
+      allow_git: true
+      tools_enabled:
+        - open_docs
+        - search_web
+        - read_file
+        - grep
+        - list_tree
+        - write_file
+        - delete_file
+        - run_tests
+        - run_command
+        - open_browser
+        - propose_patch
+        - sandbox_patch
+        - apply_patch
+        - summarize_diff
+    tools:
+      web:
+        enabled: false
+        allow_domains: []
+        search_domains: ["duckduckgo.com"]
+        max_bytes: 512000
+        timeout_s: 10
+        rate_limit_per_min: 30
+        cache_dir: data/web_cache
+        cache_ttl_s: 3600
+        allow_content_types: ["text/", "application/json"]
+    rag:
+      enabled: true
+      top_k: 3
+      max_chars: 1800
+    knowledge:
+      embedding_backend: hash
+      index_backend: auto
+      policy:
+        min_quality: 0.0
+    continuous:
+      enabled: false
+      ingest_web: false
+      knowledge_path: data/continuous/knowledge.sqlite
+      local_sources:
+        include_repo: true
+        include_local_corpus: true
+    adapters:
+      enabled: false
+      allow_empty: true
+      paths: {}
+      router:
+        top_k: 1
+        mix_mode: single
+        keyword_map: {}
+    self_patch:
+      enabled: true
+      auto_sandbox: true
+      queue_dir: data/self_patch/queue
+      sandbox_dir: data/self_patch/sandbox
+      max_patch_kb: 128
+      run_tests_on_apply: true
+      allowed_commands: ["pytest", "ruff", "python", "npm", "pnpm"]
+      allowed_paths: ["src/", "tests/", "vortex-chat/", "c3_rnt2_ai/"]
+      forbidden_globs: [".env", ".env.*", "data/**", "*.key", "*.pem", "*.p12", "*.sqlite", "*.db", "keys/**", "secrets/**"]
+    skills:
+      enabled: true
+      max_k: 4
+      token_budget_total: 3000
+      strict: true
+    profile_contract:
+      disable_fallbacks: true
+      approved_training_sources_only: false

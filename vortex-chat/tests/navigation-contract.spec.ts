@@ -6,10 +6,10 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relativePath: string) => fs.readFileSync(path.join(root, relativePath), "utf8");
 
-test("sidebar exposes only chat, spatial, and compact brand", () => {
+test("sidebar exposes only chat and compact brand", () => {
   const sidebar = read("components/Sidebar.tsx");
   expect(sidebar).toContain("nav_chat");
-  expect(sidebar).toContain("nav_spatial");
+  expect(sidebar).not.toContain("nav_spatial");
   expect(sidebar).not.toContain("nav_analysis");
   expect(sidebar).not.toContain("nav_training");
   expect(sidebar).not.toContain("nav_edits");
@@ -21,7 +21,7 @@ test("sidebar exposes only chat, spatial, and compact brand", () => {
 test("visible view contract removed legacy product panels", () => {
   const types = read("types.ts");
   const app = read("App.tsx");
-  expect(types).toContain("export type ViewType = 'chat' | 'spatial'");
+  expect(types).toContain("export type ViewType = 'chat'");
   expect(types).not.toContain("'analysis'");
   expect(types).not.toContain("'training'");
   expect(types).not.toContain("'edits'");

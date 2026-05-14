@@ -1,8 +1,6 @@
 import {
   AutonomyStreamPayload,
   AutonomyStatus,
-  MultimodalStatus,
-  MultimodalStreamPayload,
   TrainingRunSummary,
   TrainingStreamPayload,
 } from "../types";
@@ -64,31 +62,6 @@ class ControlService {
   async saveAllowlist(domains: string[]): Promise<string[]> {
     const payload = await this.client.post("POST /control/internet/allowlist", { domains });
     return Array.isArray(payload.domains) ? payload.domains : [];
-  }
-
-  async getMultimodalStatus(): Promise<MultimodalStatus | null> {
-    try {
-      const payload = await this.client.get("GET /control/multimodal/status");
-      return payload.status || null;
-    } catch {
-      return null;
-    }
-  }
-
-  async getVoiceStatus() {
-    return this.client.get("GET /control/voice/status");
-  }
-
-  async restartVoice() {
-    return this.client.post("POST /control/voice/restart");
-  }
-
-  async getObsidianStatus() {
-    return this.client.get("GET /control/obsidian/status");
-  }
-
-  async configureObsidian(payload: { enabled?: boolean; vault_path?: string }) {
-    return this.client.post("POST /control/obsidian/config", payload);
   }
 
   async startTraining(
@@ -196,24 +169,6 @@ class ControlService {
     return () => source.close();
   }
 
-  subscribeMultimodalStream(
-    onMessage: (payload: MultimodalStreamPayload) => void,
-    onError?: (error: Event | Error) => void,
-  ): () => void {
-    const source = this.client.stream("GET /control/multimodal/stream");
-    source.onmessage = (event) => {
-      try {
-        const payload = parseEventData<MultimodalStreamPayload>(event.data, "multimodal_stream_parse_failed");
-        onMessage(payload);
-      } catch (error) {
-        onError?.(error instanceof Error ? error : new Error("multimodal_stream_parse_failed"));
-      }
-    };
-    source.onerror = (event) => {
-      onError?.(event);
-    };
-    return () => source.close();
-  }
 }
 
 export const controlService = new ControlService();

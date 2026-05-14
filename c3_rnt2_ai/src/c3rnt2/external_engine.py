@@ -327,7 +327,7 @@ def load_external_engine_model(settings: dict) -> ExternalEngineModel:
     core = settings.get("core", {}) or {}
     backend = str(core.get("backend", "external") or "external").strip().lower()
     engine = str(core.get("external_engine") or core.get("engine") or "").strip().lower()
-    if backend in {"vllm", "sglang"}:
+    if backend in {"vllm"}:
         engine = backend
         backend = "external"
     if not engine:

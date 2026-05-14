@@ -3,7 +3,6 @@ import {
   ChevronUp,
   ChevronsUpDown,
   CircleUserRound,
-  Layers3,
   MessageSquare,
   Moon,
   PanelLeftClose,
@@ -71,9 +70,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   const navigation = useMemo(
     () => [
       { id: 'chat' as ViewType, label: t.nav_chat, icon: MessageSquare },
-      { id: 'spatial' as ViewType, label: t.nav_spatial, icon: Layers3 },
     ],
-    [t.nav_chat, t.nav_spatial],
+    [t.nav_chat],
   );
 
   const orderedSessions = useMemo(

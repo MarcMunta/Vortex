@@ -36,7 +36,7 @@ DEFAULT_FRONTEND_PORT = 4173
 DEFAULT_API_PORT = 8000
 DEFAULT_RUNTIME_PORT = 30000
 DEFAULT_API_PROFILE = "rtx4080_16gb_llama2_7b_q4_local"
-DEFAULT_TRAINING_PROFILE = "rtx4080_16gb_programming_qwen_coder_train_docker"
+DEFAULT_TRAINING_PROFILE = "rtx4080_16gb_llama2_7b_q4_local"
 DEFAULT_FALLBACK_PROFILE = "rtx4080_16gb_safe_windows_hf"
 DEFAULT_QUICK_QUEUE_THRESHOLD = 3
 DEFAULT_QUICK_QUEUE_COOLDOWN_S = 900
@@ -2113,11 +2113,11 @@ class ControlState:
                 and model_loaded
                 and not model_loading
             ) or api_ready
-        if not runtime_ready and engine_kind in {"", "sglang", "vllm", "external"}:
+        if not runtime_ready and engine_kind in {"", "vllm", "external"}:
             runtime_ready = runtime_models is not None or bool(
                 status_payload.get("engine_ready") and model_ready
             )
-        if not runtime_ready and engine_kind not in {"", "sglang", "vllm", "external"}:
+        if not runtime_ready and engine_kind not in {"", "vllm", "external"}:
             runtime_ready = bool(
                 status_payload.get("engine_ready")
                 and model_ready
@@ -2133,38 +2133,6 @@ class ControlState:
             "runtime_ready": runtime_ready,
             "runtime_models": runtime_models,
         }
-
-    def multimodal_status(self, runtime: dict[str, Any] | None = None) -> dict[str, Any]:
-        current_runtime = runtime or self.runtime_status()
-        status_payload = current_runtime.get("status") if isinstance(current_runtime.get("status"), dict) else {}
-        multimodal = status_payload.get("multimodal") if isinstance(status_payload, dict) else None
-        if isinstance(multimodal, dict) and multimodal:
-            return multimodal
-        voice = _http_json(f"{self.api_url}/v1/voice/status", timeout=2.0) or {"ok": False, "error": "voice_unavailable"}
-        spatial = _http_json(f"{self.api_url}/v1/spatial/session", timeout=2.0) or {"ok": False, "error": "spatial_unavailable"}
-        obsidian = _http_json(f"{self.api_url}/v1/obsidian/status", timeout=2.0) or {"ok": False, "error": "obsidian_unavailable"}
-        session = spatial.get("session") if isinstance(spatial, dict) else None
-        return {
-            "ok": True,
-            "voice": voice,
-            "spatial": session,
-            "camera": (session or {}).get("camera_state") if isinstance(session, dict) else None,
-            "gesture": (session or {}).get("gesture_state") if isinstance(session, dict) else None,
-            "obsidian": obsidian,
-            "fusion": {"enabled": False},
-        }
-
-    def voice_status(self) -> dict[str, Any]:
-        return _http_json(f"{self.api_url}/v1/voice/status", timeout=2.0) or {"ok": False, "error": "voice_unavailable"}
-
-    def restart_voice(self) -> dict[str, Any]:
-        return _http_post_json(f"{self.api_url}/v1/voice/restart", payload={}, timeout=10.0) or {"ok": False, "error": "voice_restart_failed"}
-
-    def obsidian_status(self) -> dict[str, Any]:
-        return _http_json(f"{self.api_url}/v1/obsidian/status", timeout=2.0) or {"ok": False, "error": "obsidian_unavailable"}
-
-    def configure_obsidian(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return _http_post_json(f"{self.api_url}/v1/obsidian/config", payload=payload, timeout=10.0) or {"ok": False, "error": "obsidian_config_failed"}
 
     def _runtime_allows_parallel_training(self, runtime: dict[str, Any] | None = None) -> bool:
         training_settings = self._load_profile_settings(self.training_profile)
@@ -3556,14 +3524,6 @@ class ControlState:
         else:
             runtime["status"] = overlay
         runtime.update(overlay)
-        multimodal = None
-        if isinstance(runtime.get("status"), dict):
-            candidate = runtime["status"].get("multimodal")
-            if isinstance(candidate, dict):
-                multimodal = candidate
-        if multimodal is None:
-            multimodal = self.multimodal_status(runtime=runtime)
-
         return {
             "ok": True,
             "bootstrap": bootstrap,
@@ -3573,7 +3533,6 @@ class ControlState:
             "frontend": self.frontend_status(),
             "internet": {"allowlist": self.get_allowlist()},
             "instructions": self._resolve_instruction_meta(),
-            "multimodal": multimodal,
             "learning_queue": self._learning_queue_summary(),
             "autonomy": self.autonomy_status(runtime=runtime, runs=runs),
             "active_run_id": self._active_run_id,

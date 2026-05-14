@@ -58,14 +58,6 @@ from .experts.registry import ExpertRegistry
 from .experts.router import ExpertRouter
 from .episodes import EpisodeIndex
 from .logging import get_logger
-from .multimodal import (
-    MemoryContextBuilder,
-    ObsidianSyncService,
-    PanelRegistry,
-    MultimodalSessionFusion,
-    SpatialStateStore,
-    VoiceService,
-)
 from .config import load_settings, resolve_web_allowlist
 from .agent.permissions import build_agent_permission_context, permissions_from_request
 from .agent.runner import run_agent
@@ -947,9 +939,9 @@ def _load_backend_model(settings: dict, base_dir: Path, backend: str):
         core["backend"] = "hf"
     elif backend_l in {"llama_cpp", "llamacpp", "llama.cpp"}:
         core["backend"] = "llama_cpp"
-    elif backend_l in {"external", "vllm", "sglang"}:
+    elif backend_l in {"external", "vllm"}:
         core["backend"] = "external"
-        if backend_l in {"vllm", "sglang"}:
+        if backend_l in {"vllm"}:
             core.setdefault("external_engine", backend_l)
     else:
         core["backend"] = "vortex"
@@ -971,7 +963,7 @@ def _normalize_backend_label(value: object) -> str:
         return "hf"
     if name in {"llama_cpp", "llama.cpp", "llamacpp"}:
         return "llama_cpp"
-    if name in {"external", "vllm", "sglang"}:
+    if name in {"external", "vllm"}:
         return "external"
     return name
 
@@ -1022,7 +1014,7 @@ def _resolve_requested_backend(
         or core.get("external_url")
         or core.get("external_model")
         or external_model is not None
-        or str(core.get("backend", "") or "").strip().lower() in {"external", "vllm", "sglang"}
+        or str(core.get("backend", "") or "").strip().lower() in {"external", "vllm"}
     )
     if external_runtime_configured and lowered in _external_model_aliases(settings, external_model):
         return "external", False
@@ -2012,17 +2004,28 @@ def _build_agent_task(
         recent_context = recent_context[-6000:]
     if recent_context:
         task_text = (
-            "Resuelve la peticion del usuario como operador tecnico dentro del repositorio actual. "
-            "Diagnostica, cambia codigo si hace falta y valida cuando puedas.\n\n"
+            "Eres un agente autonomo que ejecuta tareas de desarrollo. "
+            "DEBES crear archivos, modificar codigo y ejecutar comandos reales. "
+            "NO respondas con texto ni explicaciones - usa las herramientas disponibles (write_file, run_command, etc). "
+            "Si el usuario pide crear algo (app, pantalla, widget, codigo), genera el codigo COMPLETO y escribelo con write_file. "
+            "Valida con run_command cuando sea posible.\n\n"
             f"Objetivo principal:\n{objective}\n\n"
             f"Contexto reciente:\n{recent_context}"
         )
         if permission_context:
             task_text = f"{task_text}\n\n{permission_context}"
         return task_text
+    task_text = (
+        "Eres un agente autonomo que ejecuta tareas de desarrollo. "
+        "DEBES crear archivos, modificar codigo y ejecutar comandos reales. "
+        "NO respondas con texto ni explicaciones - usa las herramientas disponibles (write_file, run_command, etc). "
+        "Si el usuario pide crear algo (app, pantalla, widget, codigo), genera el codigo COMPLETO y escribelo con write_file. "
+        "Valida con run_command cuando sea posible.\n\n"
+        f"Objetivo principal:\n{objective}"
+    )
     if permission_context:
-        return f"{objective}\n\n{permission_context}"
-    return objective
+        return f"{task_text}\n\n{permission_context}"
+    return task_text
 
 
 def _build_external_agent_messages(
@@ -2033,14 +2036,18 @@ def _build_external_agent_messages(
 ) -> list[dict[str, str]]:
     objective = _extract_query(messages, prompt) or "Resolver la tarea del usuario."
     system_content = (
-        "Actua en modo agente tecnico sobre la peticion del usuario.\n"
+        "Eres un agente autonomo de desarrollo. Tu trabajo es ejecutar la tarea del usuario.\n"
         f"Objetivo principal: {objective}\n"
         "Reglas:\n"
-        "- Da respuesta util y accionable para completar la tarea.\n"
-        "- No generes diffs, patches o logs ficticios.\n"
-        "- No digas que ejecutaste pruebas, comandos o cambios no visibles en el contexto.\n"
-        "- Si no puedes ejecutar o editar desde este contexto, di el siguiente paso concreto.\n"
-        "- Prioriza claridad, pasos cortos y codigo util cuando aplique.\n"
+        "- GENERA CODIGO COMPLETO Y FUNCIONAL cuando el usuario pida crear algo (app, pantalla, widget, componente, etc).\n"
+        "- Incluye todo el codigo necesario en bloques de codigo con el lenguaje marcado (```dart, ```python, etc).\n"
+        "- Para Flutter/Dart: incluye imports, MaterialApp, widgets completos.\n"
+        "- Para Python: incluye imports, funciones, clases completas.\n"
+        "- Para web: incluye HTML/CSS/JS completo.\n"
+        "- No des solo descripciones o pasos - ESCRIBE EL CODIGO.\n"
+        "- Si la tarea es de UI/diseño, genera codigo visual real con estilos, colores, animaciones.\n"
+        "- Usa el formato ```file:path/al/archivo para indicar donde va cada archivo.\n"
+        "- Prioriza codigo funcional, completo y listo para ejecutar.\n"
     )
     if permission_context:
         system_content += f"Contexto de permisos reales: {permission_context}\n"
@@ -2447,6 +2454,123 @@ def _resolve_messages(payload: dict) -> list[dict]:
     if prompt:
         return [{"role": "user", "content": str(prompt)}]
     return []
+
+
+def _message_content_text(content: object) -> str:
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if text is not None:
+                    parts.append(str(text))
+            elif item is not None:
+                parts.append(str(item))
+        return " ".join(parts)
+    return str(content or "")
+
+
+def _last_user_text(messages: list[dict]) -> str:
+    for msg in reversed(messages):
+        if str(msg.get("role", "")).lower() == "user":
+            return _message_content_text(msg.get("content")).strip()
+    return ""
+
+
+def _normalize_language_text(text: str) -> str:
+    import unicodedata
+
+    normalized = unicodedata.normalize("NFD", str(text or ""))
+    return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn").lower()
+
+
+def _detect_response_language(payload: dict, messages: list[dict]) -> str:
+    requested = str(
+        payload.get("response_language")
+        or payload.get("language")
+        or payload.get("user_language")
+        or payload.get("client_language")
+        or ""
+    ).strip().lower()
+    latest = _last_user_text(messages)
+    text = _normalize_language_text(latest)
+    tokens = set(re.findall(r"[a-zA-Z]+", text))
+    spanish_words = {
+        "hola",
+        "que",
+        "tal",
+        "como",
+        "estas",
+        "tienes",
+        "conocimientos",
+        "ejecuta",
+        "proyecto",
+        "haz",
+        "quiero",
+        "puedes",
+        "gracias",
+        "modo",
+        "agente",
+    }
+    english_words = {
+        "hello",
+        "hi",
+        "what",
+        "how",
+        "are",
+        "you",
+        "knowledge",
+        "run",
+        "project",
+        "make",
+        "create",
+        "thanks",
+        "agent",
+    }
+    spanish_score = len(tokens & spanish_words) + len(re.findall(r"[¿¡ñáéíóú]", latest.lower()))
+    english_score = len(tokens & english_words)
+    spanish_score += len(
+        re.findall(r"[\u00bf\u00a1\u00f1\u00e1\u00e9\u00ed\u00f3\u00fa]", latest.lower())
+    )
+    if spanish_score > 0 and spanish_score >= english_score:
+        return "es"
+    if english_score > 0 and english_score > spanish_score:
+        return "en"
+    if requested in {"es", "es-es", "spanish", "espanol", "español"}:
+        return "es"
+    if requested in {"en", "en-us", "en-gb", "english", "ingles"}:
+        return "en"
+    return ""
+
+
+def _language_system_instruction(language: str) -> str:
+    if language == "es":
+        return (
+            "Idioma obligatorio: responde en espanol natural y correcto. "
+            "No mezcles ingles salvo nombres tecnicos, comandos, rutas o codigo. "
+            "Si el ultimo mensaje del usuario esta en espanol, toda la respuesta visible debe estar en espanol."
+        )
+    if language == "en":
+        return (
+            "Required language: reply in natural English. "
+            "Do not mix Spanish except for quoted text, commands, paths, or code."
+        )
+    return "Reply in the same language as the user's latest message."
+
+
+def _repair_mojibake_text(value: object) -> str:
+    text = str(value or "")
+    if "Ã" not in text and "Â" not in text:
+        return text
+    try:
+        repaired = text.encode("latin-1", errors="ignore").decode("utf-8", errors="ignore")
+    except Exception:
+        return text
+    original_bad = text.count("Ã") + text.count("Â")
+    repaired_bad = repaired.count("Ã") + repaired.count("Â")
+    if repaired and repaired_bad < original_bad and len(repaired) >= max(1, int(len(text) * 0.75)):
+        return repaired
+    return text
 
 
 def _resolve_latest_adapter_path(base_dir: Path, settings: dict) -> Path | None:
@@ -2905,13 +3029,11 @@ def _compose_dynamic_system_prompt(
     *,
     temporal_context: str | None,
     web_context: str | None,
-    multimodal_context: str | None = None,
 ) -> str:
     return _compose_dynamic_system_prompt_impl(
         base_system,
         temporal_context=temporal_context,
         web_context=web_context,
-        multimodal_context=multimodal_context,
     )
 
 
@@ -3094,7 +3216,6 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
     from .api_server.routes import (
         register_core_routes,
         register_local_lab_routes,
-        register_multimodal_routes,
         register_utility_routes,
     )
     from .api_server.dependencies import ApiDependencies
@@ -3181,6 +3302,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         perf: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ):
+        message = _repair_mojibake_text(message)
         created = int(time.time())
         resp_id = f"chatcmpl-{request_id}"
         if not stream:
@@ -3362,39 +3484,16 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
     app.state.model_lazy_enabled = lazy_model_load
     app.state.training_active = False
     app.state.maintenance_until = 0.0
-    app.state.panel_registry = PanelRegistry()
-    app.state.spatial_store = SpatialStateStore(
-        settings=settings,
-        base_dir=base_dir,
-        panel_registry=app.state.panel_registry,
-    )
-    app.state.obsidian_sync = ObsidianSyncService(settings=settings, base_dir=base_dir)
-    app.state.memory_context_builder = MemoryContextBuilder(
-        settings=settings,
-        obsidian_sync=app.state.obsidian_sync,
-    )
-    app.state.voice_service = VoiceService(settings=settings, base_dir=base_dir)
-    app.state.multimodal_fusion = MultimodalSessionFusion(
-        settings=settings,
-        spatial_store=app.state.spatial_store,
-        memory_context=app.state.memory_context_builder,
-    )
     app.state.api_services = ApiRuntimeServices(
         chat_sessions_store=chat_sessions_store,
         episode_index=episode_index,
         episode_lock=episode_lock,
         metrics=app.state.metrics,
-        voice_service=app.state.voice_service,
-        spatial_store=app.state.spatial_store,
-        obsidian_sync=app.state.obsidian_sync,
-        multimodal_fusion=app.state.multimodal_fusion,
     )
     chat_context_service = ChatContextService(
         base_dir=base_dir,
         settings=settings,
         chat_sessions_store=chat_sessions_store,
-        multimodal_fusion=app.state.multimodal_fusion,
-        obsidian_sync=app.state.obsidian_sync,
         extract_query=_extract_query,
         inject_chat_memory_context=_inject_chat_memory_context,
         build_temporal_system_context=_build_temporal_system_context,
@@ -3402,95 +3501,6 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         live_web_search_context=_live_web_search_context,
         inject_rag_context=_inject_rag_context,
     )
-
-    def _multimodal_status_payload() -> dict[str, Any]:
-        voice_status = {}
-        obsidian_status = {}
-        fusion = {}
-        try:
-            voice_status = app.state.voice_service.status()
-        except Exception as exc:
-            voice_status = {"ok": False, "error": str(exc)}
-        try:
-            obsidian_status = app.state.obsidian_sync.status()
-        except Exception as exc:
-            obsidian_status = {"ok": False, "error": str(exc)}
-        try:
-            fusion = app.state.multimodal_fusion.build_context(messages=[], payload={})
-        except Exception as exc:
-            fusion = {"enabled": False, "error": str(exc)}
-        return {
-            "ok": True,
-            "voice": voice_status,
-            "spatial": app.state.spatial_store.get_session(),
-            "obsidian": obsidian_status,
-            "fusion": {
-                "enabled": bool(fusion.get("enabled", False)),
-                "summary": fusion.get("summary"),
-                "refs": fusion.get("refs") if isinstance(fusion.get("refs"), list) else [],
-            },
-        }
-
-    def _apply_voice_intent(intent: dict[str, Any] | None) -> dict[str, Any] | None:
-        if not isinstance(intent, dict):
-            return None
-        kind = str(intent.get("kind") or "").strip().lower()
-        session = app.state.spatial_store.get_session()
-        selected_panel_id = str(intent.get("panel_id") or session.get("selected_object_id") or "").strip() or None
-        if kind == "open_panel":
-            region = session.get("selected_region")
-            source = {"pages": ["Slide 1", "Slide 2", "Slide 3"], "intent": "voice_open"}
-            return app.state.spatial_store.open_panel(
-                {
-                    "type": str(intent.get("panel_type") or "presentation"),
-                    "title": str(intent.get("title") or "Spatial presentation"),
-                    "source": source,
-                    "page_count": 3,
-                    "region": region,
-                    "selected": True,
-                }
-            )
-        if kind == "transform_panel" and selected_panel_id:
-            transform_patch = dict(intent.get("transform") or {})
-            current = next(
-                (
-                    panel
-                    for panel in (session.get("panels") or [])
-                    if str(panel.get("id") or "") == selected_panel_id
-                ),
-                None,
-            )
-            if current is None:
-                return {"ok": False, "error": "panel_not_found"}
-            current_transform = dict(current.get("transform") or {})
-            if "x" in transform_patch:
-                transform_patch["x"] = float(current_transform.get("x") or 0.0) + float(transform_patch.get("x") or 0.0)
-            if "y" in transform_patch:
-                transform_patch["y"] = float(current_transform.get("y") or 0.0) + float(transform_patch.get("y") or 0.0)
-            if "rotation" in transform_patch:
-                transform_patch["rotation"] = float(current_transform.get("rotation") or 0.0) + float(transform_patch.get("rotation") or 0.0)
-            if "tilt_x" in transform_patch:
-                transform_patch["tilt_x"] = float(current_transform.get("tilt_x") or 0.0) + float(transform_patch.get("tilt_x") or 0.0)
-            if "tilt_y" in transform_patch:
-                transform_patch["tilt_y"] = float(current_transform.get("tilt_y") or 0.0) + float(transform_patch.get("tilt_y") or 0.0)
-            return app.state.spatial_store.update_panel(
-                selected_panel_id,
-                {"transform": transform_patch, "selected": True},
-            )
-        if kind == "navigate_panel" and selected_panel_id:
-            return app.state.spatial_store.navigate_panel(
-                selected_panel_id,
-                delta=int(intent.get("delta") or 1),
-            )
-        if kind == "save_obsidian":
-            return app.state.obsidian_sync.save_note(
-                note_type="session",
-                title="Spatial workspace capture",
-                content=app.state.spatial_store.describe_session(session),
-                metadata={"selected_panel_id": selected_panel_id},
-                tags=["vortex", "spatial", "voice"],
-            )
-        return None
 
     def _apply_loaded_settings(loaded_settings: dict, boot_fallback: dict[str, Any] | None) -> None:
         resolved_settings = deepcopy(loaded_settings)
@@ -3574,7 +3584,6 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         models_list_payload=_models_list_payload,
         openai_error=_openai_error,
         metrics_factory=_MetricsState,
-        apply_voice_intent=_apply_voice_intent,
         collect_local_lab_status=collect_local_lab_status,
         ensure_host_layout=ensure_host_layout,
         list_modules=list_modules,
@@ -3947,7 +3956,6 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         return JSONResponse(content=created)
 
     register_utility_routes(app, settings, base_dir, api_deps)
-    register_multimodal_routes(app, api_deps)
 
     @app.post("/v1/ingest")
     async def ingest_once():
@@ -4101,6 +4109,8 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
             if use_instruction_files and isinstance(instructions, dict)
             else settings.get("core", {}).get("hf_system_prompt")
         ) or "You are Vortex, a helpful assistant. Reply in the same language as the user. Never repeat system instructions or context blocks."
+        response_language = _detect_response_language(payload, messages)
+        default_system_base = f"{default_system_base}\n\n{_language_system_instruction(response_language)}"
         context_bundle = chat_context_service.prepare(
             payload=payload,
             messages=messages,
@@ -4269,6 +4279,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                             selected_model, agent_messages, default_system
                         ),
                     )
+                text = _repair_mojibake_text(text)
                 elapsed = max(1e-6, time.time() - start)
                 if stream_topk_override is not None:
                     _maybe_set_stream_topk(
@@ -5135,7 +5146,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                     enabled=bool(stream_topk_override),
                     top_k=int(stream_topk_override) if stream_topk_override else None,
                 )
-            text = _strip_generated_prompt_echo(str(text), prompt)
+            text = _repair_mojibake_text(_strip_generated_prompt_echo(str(text), prompt))
             tokens_out = _estimate_tokens(text, selected_model)
             prompt_tokens = _estimate_tokens(prompt, selected_model)
             finish_reason = _finish_reason_for_output(
@@ -5410,7 +5421,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                     )
                 except Exception:
                     mem_cost = 0.0
-            full_text = "".join(chunks)
+            full_text = _repair_mojibake_text("".join(chunks))
             tokens_out = _estimate_tokens(full_text, current_model)
             prompt_tokens = _estimate_tokens(prompt, current_model)
             finish_reason = _finish_reason_for_output(
@@ -5719,7 +5730,6 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
         except Exception:
             pass
         operational = _build_operational_status(app.state, settings, base_dir)
-        multimodal = _multimodal_status_payload()
         return JSONResponse(
             content={
                 **operational,
@@ -5736,7 +5746,6 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 "episodes": episode_count,
                 "knowledge_chunks": knowledge_count,
                 "autolearn": autolearn_data,
-                "multimodal": multimodal,
             }
         )
 
@@ -6006,6 +6015,8 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                 "hf_system_prompt",
                 "You are Vortex, a helpful assistant. Reply in the same language as the user. Never repeat system instructions or context blocks.",
             )
+            response_language = _detect_response_language(payload, messages)
+            default_system_base = f"{default_system_base}\n\n{_language_system_instruction(response_language)}"
             default_system = _compose_dynamic_system_prompt(
                 default_system_base,
                 temporal_context=temporal_system_context,
@@ -6116,6 +6127,7 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                             )
                         else:
                             raise
+                text = _repair_mojibake_text(text)
                 elapsed = max(1e-6, time.time() - start)
                 tokens_out = _estimate_tokens(text, model)
                 perf = {
@@ -6276,7 +6288,7 @@ def _run_basic_server(settings: dict, base_dir: Path, host: str, port: int) -> N
                         )
                         self.wfile.flush()
             elapsed = max(1e-6, time.time() - start)
-            full_text = "".join(chunks)
+            full_text = _repair_mojibake_text("".join(chunks))
             tokens_out = _estimate_tokens(full_text, model)
             perf = {
                 "latency_ms": float(elapsed * 1000.0),

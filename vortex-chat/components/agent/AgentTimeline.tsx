@@ -68,10 +68,16 @@ const ChangedFilesPanel: React.FC<{
   changes: { path: string; diff: string }[];
   language: Language;
 }> = ({ changes, language }) => {
-  const [expanded, setExpanded] = useState(true);
+  const totalLines = useMemo(
+    () => changes.reduce((count, change) => count + change.diff.split('\n').length, 0),
+    [changes]
+  );
+  const startsCollapsed = changes.length > 1 || totalLines > 80;
+  const [expanded, setExpanded] = useState(!startsCollapsed);
   const label = language === 'es' ? 'Archivos cambiados' : 'Changed files';
   const fileLabel = language === 'es' ? 'archivo' : 'file';
   const filesLabel = language === 'es' ? 'archivos' : 'files';
+  const lineLabel = language === 'es' ? 'lineas' : 'lines';
 
   return (
     <div className="overflow-hidden rounded-xl border border-zinc-700/40 bg-zinc-900/70">
@@ -87,7 +93,7 @@ const ChangedFilesPanel: React.FC<{
           <div className="min-w-0">
             <p className="text-[12px] font-bold text-foreground/85">{label}</p>
             <p className="mt-0.5 truncate text-[10px] font-mono text-zinc-500">
-              {changes.length} {changes.length === 1 ? fileLabel : filesLabel}
+              {changes.length} {changes.length === 1 ? fileLabel : filesLabel} · {totalLines} {lineLabel}
             </p>
           </div>
         </div>
@@ -111,8 +117,7 @@ const ChangedFilesPanel: React.FC<{
                   path={change.path}
                   diff={change.diff}
                   language={language}
-                  defaultExpanded
-                  forceExpanded
+                  defaultExpanded={changes.length === 1 && change.diff.split('\n').length <= 80}
                 />
               ))}
             </div>

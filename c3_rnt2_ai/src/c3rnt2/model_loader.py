@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -45,26 +44,11 @@ def _llama_cpp_ready(core: dict, *, base_dir: Path | None = None) -> bool:
 def load_inference_model(settings: dict, backend_override: str | None = None) -> Any:
     core = settings.get("core", {}) or {}
     backend = str(backend_override or core.get("backend", "vortex")).lower()
-    if backend in {"vllm", "sglang"}:
+    if backend in {"vllm"}:
         backend = "external"
     if backend_override is None and backend == "hf" and str(core.get("prefer_llama_cpp_if_available", "")).strip().lower() in {"1", "true", "yes", "y", "on"}:
         if _llama_cpp_ready(core):
             backend = "llama_cpp"
-    profile = str(settings.get("_profile") or "")
-    if sys.platform.startswith("win") and profile == "rtx4080_16gb_120b_like" and backend == "hf":
-        try:
-            from .prepare import prepare_model_state
-
-            state = prepare_model_state(settings, base_dir=Path(".").resolve())
-        except Exception as exc:
-            raise RuntimeError(f"prepare_model_check_failed:{exc}") from exc
-        if str(state.get("backend_resolved") or "").lower() == "llama_cpp" and _llama_cpp_ready(core):
-            backend = "llama_cpp"
-        elif not bool(state.get("ok", False)):
-            raise RuntimeError(
-                "Unsafe HF config for rtx4080_16gb_120b_like on Windows. "
-                "Run: python -m vortex prepare-model --profile rtx4080_16gb_120b_like"
-            )
     if backend == "external":
         try:
             from .external_engine import load_external_engine_model

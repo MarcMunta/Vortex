@@ -3,7 +3,6 @@ import type {
   AutonomyEvent,
   AutonomyStatus,
   ControlStatus,
-  MultimodalStatus,
   TrainingRunSummary,
 } from "./types";
 
@@ -15,11 +14,6 @@ export interface BootstrapResponse extends OkResponse { started?: boolean; reaso
 export interface InitModelResponse extends OkResponse { started?: boolean }
 export interface AllowlistRequest { domains: string[] }
 export interface AllowlistResponse extends OkResponse { domains: string[] }
-export interface VoiceStatusResponse extends OkResponse { [key: string]: unknown }
-export interface ObsidianStatusResponse extends OkResponse { [key: string]: unknown }
-export interface ObsidianConfigRequest { enabled?: boolean; vault_path?: string }
-export interface ObsidianConfigResponse extends OkResponse { config?: JsonRecord; status?: ObsidianStatusResponse }
-export interface ControlMultimodalStatusResponse extends OkResponse { status: MultimodalStatus }
 export interface TrainingStartRequest { mode: "quick" | "full" | string; source?: string }
 export interface TrainingStartResponse extends OkResponse { run_id?: string; status?: string; queue_reason?: string | null; reused?: boolean; error?: string }
 export interface TrainingResetRequest { clear_runs?: boolean; clear_learning_queue?: boolean }
@@ -34,7 +28,6 @@ export interface AutonomyToggleResponse extends OkResponse { enabled?: boolean }
 export interface AutonomyConfigRequest { enabled?: boolean; reflection_enabled?: boolean; training_enabled?: boolean; autoedit_enabled?: boolean; multi_agent_dialogue_enabled?: boolean; descriptive_reports_enabled?: boolean; live_autoedit_enabled?: boolean }
 export interface AutonomyConfigResponse extends OkResponse { autonomy?: AutonomyStatus }
 export interface AutonomyStreamResponse { status: AutonomyStatus; events?: AutonomyEvent[] }
-export interface MultimodalStreamResponse { ts: number; status: MultimodalStatus }
 
 export interface ControlContracts {
   "POST /control/autonomy/config": { method: "POST"; path: "/control/autonomy/config"; request: AutonomyConfigRequest; response: AutonomyConfigResponse };
@@ -47,10 +40,6 @@ export interface ControlContracts {
   "GET /control/internet/allowlist": { method: "GET"; path: "/control/internet/allowlist"; request: never; response: AllowlistResponse };
   "POST /control/internet/allowlist": { method: "POST"; path: "/control/internet/allowlist"; request: AllowlistRequest; response: AllowlistResponse };
   "POST /control/model/init": { method: "POST"; path: "/control/model/init"; request: never; response: InitModelResponse };
-  "GET /control/multimodal/status": { method: "GET"; path: "/control/multimodal/status"; request: never; response: ControlMultimodalStatusResponse };
-  "GET /control/multimodal/stream": { method: "GET"; path: "/control/multimodal/stream"; request: never; response: MultimodalStreamResponse };
-  "POST /control/obsidian/config": { method: "POST"; path: "/control/obsidian/config"; request: ObsidianConfigRequest; response: ObsidianConfigResponse };
-  "GET /control/obsidian/status": { method: "GET"; path: "/control/obsidian/status"; request: never; response: ObsidianStatusResponse };
   "POST /control/runtime/restart": { method: "POST"; path: "/control/runtime/restart"; request: never; response: OkResponse };
   "GET /control/status": { method: "GET"; path: "/control/status"; request: never; response: ControlStatus };
   "POST /control/training/reset": { method: "POST"; path: "/control/training/reset"; request: TrainingResetRequest; response: TrainingResetResponse };
@@ -60,8 +49,6 @@ export interface ControlContracts {
   "GET /control/training/runs/{run_id}/logs": { method: "GET"; path: "/control/training/runs/{run_id}/logs"; request: never; response: TrainingRunLogsResponse };
   "POST /control/training/start": { method: "POST"; path: "/control/training/start"; request: TrainingStartRequest; response: TrainingStartResponse };
   "GET /control/training/stream": { method: "GET"; path: "/control/training/stream"; request: never; response: TrainingStreamResponse };
-  "POST /control/voice/restart": { method: "POST"; path: "/control/voice/restart"; request: never; response: VoiceStatusResponse };
-  "GET /control/voice/status": { method: "GET"; path: "/control/voice/status"; request: never; response: VoiceStatusResponse };
   "GET /healthz": { method: "GET"; path: "/healthz"; request: never; response: HealthResponse };
 }
 

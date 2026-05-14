@@ -5,13 +5,9 @@ import {
   ChatSession,
   GroundingSupport,
   Message,
-  ObsidianStatus,
   OperationalStatus,
   Role,
   Source,
-  SpatialSessionState,
-  VoiceStatus,
-  VoiceTranscriptionResult,
   SkillSummary,
   SkillsConfig,
   WorkspacePermissions,
@@ -752,6 +748,8 @@ export class VortexService {
         web_allowlist: webAllowlist,
         rag_mode: includeSources ? "auto" : "off",
         grounding: includeSources,
+        language,
+        response_language: language,
         max_tokens: maxTokens,
         response_mode: intent.wantsCode ? "code" : "chat",
         code_language: intent.isFlutter || intent.isDart ? "dart" : undefined,
@@ -1092,173 +1090,6 @@ export class VortexService {
     } catch {
       return { ok: false };
     }
-  }
-
-  async getSpatialSession(): Promise<{ ok: boolean; session?: SpatialSessionState; error?: string }> {
-    try {
-      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; error?: unknown }>("/v1/spatial/session");
-      if (parsed?.ok && parsed?.session) {
-        return { ok: true, session: parsed.session as SpatialSessionState };
-      }
-      return { ok: false, error: this.responseError(parsed, "spatial_session_failed") };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
-    }
-  }
-
-  async updateSpatialSession(payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; error?: string }> {
-    try {
-      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; error?: unknown }>("/v1/spatial/session", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      if (parsed?.ok && parsed?.session) {
-        return { ok: true, session: parsed.session as SpatialSessionState };
-      }
-      return { ok: false, error: this.responseError(parsed, "spatial_session_failed") };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
-    }
-  }
-
-  async publishSpatialEvent(payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; error?: string }> {
-    try {
-      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; error?: unknown }>("/v1/spatial/events", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      if (parsed?.ok && parsed?.session) {
-        return { ok: true, session: parsed.session as SpatialSessionState };
-      }
-      return { ok: false, error: this.responseError(parsed, "spatial_event_failed") };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
-    }
-  }
-
-  async openSpatialPanel(payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: string }> {
-    try {
-      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: unknown }>("/v1/spatial/panels/open", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      if (parsed?.ok) {
-        return { ok: true, session: parsed.session as SpatialSessionState, panel: parsed.panel as Record<string, unknown> };
-      }
-      return { ok: false, error: this.responseError(parsed, "spatial_panel_failed") };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
-    }
-  }
-
-  async updateSpatialPanel(panelId: string, payload: Record<string, unknown>): Promise<{ ok: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: string }> {
-    try {
-      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: unknown }>("/v1/spatial/panels/update", {
-        method: "POST",
-        body: JSON.stringify({ panel_id: panelId, ...payload }),
-      });
-      if (parsed?.ok) {
-        return { ok: true, session: parsed.session as SpatialSessionState, panel: parsed.panel as Record<string, unknown> };
-      }
-      return { ok: false, error: this.responseError(parsed, "spatial_panel_failed") };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
-    }
-  }
-
-  async navigateSpatialPanel(panelId: string, delta: number): Promise<{ ok: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: string }> {
-    try {
-      const parsed = await this.json<{ ok?: boolean; session?: SpatialSessionState; panel?: Record<string, unknown>; error?: unknown }>("/v1/spatial/panels/navigate", {
-        method: "POST",
-        body: JSON.stringify({ panel_id: panelId, delta }),
-      });
-      if (parsed?.ok) {
-        return { ok: true, session: parsed.session as SpatialSessionState, panel: parsed.panel as Record<string, unknown> };
-      }
-      return { ok: false, error: this.responseError(parsed, "spatial_panel_failed") };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
-    }
-  }
-
-  async fetchVoiceStatus(): Promise<VoiceStatus | null> {
-    try {
-      const parsed = await this.json<VoiceStatus>("/v1/voice/status");
-      if (parsed?.ok) {
-        return parsed as VoiceStatus;
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  async transcribeVoice(input: Blob | string, options?: { language?: "es" | "en" }): Promise<VoiceTranscriptionResult> {
-    try {
-      const init: RequestInit = {
-        method: "POST",
-      };
-      if (typeof input === "string") {
-        init.headers = { "Content-Type": "application/json" };
-        init.body = JSON.stringify({ text: input, language: options?.language });
-      } else {
-        init.headers = {
-          "Content-Type": input.type || "audio/webm",
-          "X-Vortex-Voice-Language": options?.language || "",
-        };
-        init.body = input;
-      }
-      const resp = await fetch(this.url("/v1/voice/transcribe"), init);
-      const text = await resp.text().catch(() => "");
-      const parsed = parseJsonSafely<VoiceTranscriptionResult & { error?: unknown }>(text);
-      if (resp.ok && parsed?.ok) {
-        return parsed as VoiceTranscriptionResult;
-      }
-      return { ok: false, error: this.responseError(parsed, text || `HTTP ${resp.status}`) };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
-    }
-  }
-
-  async speakText(text: string, language: "es" | "en" = "es"): Promise<{ ok: boolean; audio_url?: string; fallback_browser_tts?: boolean; text?: string; error?: string }> {
-    try {
-      const parsed = await this.json<{ ok?: boolean; audio_url?: string; fallback_browser_tts?: boolean; text?: string; error?: unknown }>("/v1/voice/speak", {
-        method: "POST",
-        body: JSON.stringify({ text, language }),
-      });
-      if (parsed?.ok) {
-        return parsed as { ok: boolean; audio_url?: string; fallback_browser_tts?: boolean; text?: string };
-      }
-      return { ok: false, error: this.responseError(parsed, "voice_speak_failed") };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : "network_error" };
-    }
-  }
-
-  async fetchObsidianStatus(): Promise<ObsidianStatus | null> {
-    try {
-      const parsed = await this.json<ObsidianStatus>("/v1/obsidian/status");
-      if (parsed?.ok) {
-        return parsed as ObsidianStatus;
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  async configureObsidian(payload: { enabled?: boolean; vault_path?: string }): Promise<ObsidianStatus> {
-    return this.json<ObsidianStatus>("/v1/obsidian/config", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-  }
-
-  async saveObsidianNote(payload: { folder?: string; note_type?: string; title: string; content: string; tags?: string[]; metadata?: Record<string, unknown> }): Promise<{ ok?: boolean; path?: string | null; error?: unknown }> {
-    return this.json<{ ok?: boolean; path?: string | null; error?: unknown }>("/v1/obsidian/save", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
   }
 
   async fetchChatSessions(accountId: string): Promise<{ ok: boolean; sessions?: ChatSession[]; error?: string }> {

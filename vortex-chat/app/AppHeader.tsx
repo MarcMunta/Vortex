@@ -1,5 +1,5 @@
 import React from "react";
-import { Layers3, MessageSquare, PanelLeft, Zap } from "lucide-react";
+import { MessageSquare, PanelLeft, Zap } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import VortexLogo from "../components/VortexLogo";
 import { Language, ViewType } from "../types";
@@ -10,7 +10,6 @@ type AppHeaderProps = {
   isSidebarOpen: boolean;
   language: Language;
   onOpenCommandPalette: () => void;
-  onSelectView: (view: ViewType) => void;
   onSetLanguage: (language: Language) => void;
   onShowSidebar: () => void;
   springConfig: {
@@ -27,7 +26,6 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   isSidebarOpen,
   language,
   onOpenCommandPalette,
-  onSelectView,
   onSetLanguage,
   onShowSidebar,
   springConfig,
@@ -66,20 +64,17 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
 
       <div className="flex items-center gap-3">
         <div className="relative flex items-center gap-1 rounded-xl border border-border/60 bg-muted/20 p-1">
-          {(["chat", "spatial"] as ViewType[]).map((view) => (
-            <button
-              key={view}
-              onClick={() => onSelectView(view)}
-              className={`relative z-10 rounded-lg p-2.5 transition-all ${activeView === view ? "text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
-              aria-label={view === "chat" ? "Chat" : "Spatial"}
-              title={view === "chat" ? "Chat" : "Spatial"}
-            >
-              {view === "chat" ? <MessageSquare size={16} /> : <Layers3 size={16} />}
-              {activeView === view && (
-                <motion.div layoutId="header-nav-indicator" className="absolute inset-0 -z-10 rounded-lg bg-primary" transition={springConfig} />
-              )}
-            </button>
-          ))}
+          <button
+            className={`relative z-10 rounded-lg p-2.5 transition-all ${activeView === "chat" ? "text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            aria-label="Chat"
+            title="Chat"
+            type="button"
+          >
+            <MessageSquare size={16} />
+            {activeView === "chat" && (
+              <motion.div layoutId="header-nav-indicator" className="absolute inset-0 -z-10 rounded-lg bg-primary" transition={springConfig} />
+            )}
+          </button>
         </div>
         <motion.button
           whileHover={{ scale: 1.06, backgroundColor: "hsla(var(--muted) / 0.8)" }}

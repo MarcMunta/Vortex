@@ -513,7 +513,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                         <div className="rounded-xl border border-border/50 bg-background px-4 py-3">
                           <p className="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Modelo</p>
-                          <p className="mt-1 truncate text-sm font-bold text-foreground">{operationalStatus?.active_model || 'Qwen'}</p>
+                          <p className="mt-1 truncate text-sm font-bold text-foreground">{operationalStatus?.active_model || 'Llama 2'}</p>
                         </div>
                       </div>
                     </div>

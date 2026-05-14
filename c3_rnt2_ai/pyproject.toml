@@ -1,55 +1,29 @@
 [project]
 name = "vortex"
 version = "0.1.0"
-description = "Vortex local inference + training stack"
+description = "Vortex local Llama 2 chat + agent + RAG stack"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "Local", email = "local@example.com"}]
 license = {text = "MIT"}
 dependencies = [
-  "torch>=2.1",
   "typer>=0.9",
   "rich>=13",
   "pyyaml>=6",
   "numpy>=1.24",
   "psutil>=5.9",
   "requests>=2.31",
-  "zstandard>=0.22",
-  "lz4>=4.3",
   "tqdm>=4.66"
 ]
 
 [project.optional-dependencies]
 api = ["fastapi>=0.110", "uvicorn>=0.23", "httpx>=0.27"]
-triton = ["triton>=2.1"]
-hf = [
-  # Gemma 4 processor support landed in the 5.x line; keep a narrow pin so the
-  # Docker image remains reproducible on the local RTX 4080 stack.
-  "transformers>=5.5,<5.6",
-  "accelerate>=0.27",
-  "safetensors>=0.4",
-  "pillow>=10",
-  "torchvision",
-  # Required by the newer Gemma 4 / bitsandbytes 4-bit execution path.
-  "kernels>=0.11.1",
-  # Required for PEFT adapters/expert bank inference.
-  "peft>=0.10",
-  # Required for local 4-bit HF runtime.
-  "bitsandbytes>=0.49.2",
-]
-experts = ["peft>=0.10"]
-train = ["peft>=0.10"]
 rag = [
   "sentence-transformers>=2.6",
   # Wheels are not consistently available on Windows; code falls back to non-faiss ranking.
   "faiss-cpu>=1.7; platform_system != 'Windows'",
 ]
 llama_cpp = ["llama-cpp-python>=0.2.0"]
-multimodal = [
-  "faster-whisper>=1.1",
-  "TTS>=0.22",
-  "soundfile>=0.12",
-]
 
 [project.scripts]
 vortex = "c3rnt2.__main__:main"

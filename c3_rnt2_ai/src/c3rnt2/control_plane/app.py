@@ -6,7 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from .dependencies import ControlDependencies
 from .routers.autonomy import build_autonomy_router
 from .routers.core import build_core_router
-from .routers.multimodal import build_multimodal_router
 from .routers.training import build_training_router
 
 _CONTROL_CORS_ORIGINS = [
@@ -26,7 +25,6 @@ def create_control_app(deps: ControlDependencies) -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(build_core_router(deps))
-    app.include_router(build_multimodal_router(deps))
     app.include_router(build_training_router(deps))
     app.include_router(build_autonomy_router(deps))
     return app

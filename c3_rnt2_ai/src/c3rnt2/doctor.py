@@ -415,7 +415,7 @@ def _external_engine_deep_check(settings: dict) -> dict[str, Any]:
     backend = str(core.get("backend", "vortex") or "vortex").strip().lower()
     engine = str(core.get("external_engine") or core.get("engine") or backend).strip().lower()
     configured_model = str(core.get("external_model") or "").strip()
-    if backend in {"vllm", "sglang"}:
+    if backend in {"vllm"}:
         engine = backend
         backend = "external"
     if backend != "external":
@@ -469,12 +469,12 @@ def _external_engine_deep_check(settings: dict) -> dict[str, Any]:
                 "base_url": str(base_url),
                 "detail": str(exc),
             }
-    if engine not in {"vllm", "sglang"}:
+    if engine not in {"vllm"}:
         return {
             "ok": False,
             "error": "external_engine_invalid",
             "engine": engine,
-            "required": ["vllm", "sglang", "ollama", "lmstudio"],
+            "required": ["vllm", "ollama", "lmstudio"],
         }
     try:
         import requests
@@ -671,10 +671,10 @@ def _bench_minimal_check(settings: dict, base_dir: Path) -> dict[str, Any]:
     return {"ok": bool(report.get("ok", False)), "backend": report.get("backend"), "tokens_per_sec": report.get("tokens_per_sec"), "json_out": str(out_path)}
 
 
-def _deep_check_120b_like_profile(settings: dict, base_dir: Path, *, mock: bool) -> dict[str, Any]:
+def _deep_check_local_profile(settings: dict, base_dir: Path, *, mock: bool) -> dict[str, Any]:
     profile = str(settings.get("_profile") or "")
-    if profile != "rtx4080_16gb_120b_like":
-        return {"ok": True, "skipped": "not_120b_like"}
+    if profile != "rtx4080_16gb_llama2_7b_q4_local":
+        return {"ok": True, "skipped": "not_llama2_local"}
 
     errors: list[str] = []
     info: dict[str, Any] = {}
@@ -888,15 +888,15 @@ def _deep_check_120b_like_profile(settings: dict, base_dir: Path, *, mock: bool)
                     )
                     if not quant_active:
                         quant_info["ok"] = False
-                        quant_info["error"] = "120b_like_requires_quant_backend"
+                        quant_info["error"] = "local_profile_requires_quant_backend"
                 else:
-                    quant_info.update({"ok": False, "error": "120b_like_requires_quant_backend", "backend": "unknown"})
+                    quant_info.update({"ok": False, "error": "local_profile_requires_quant_backend", "backend": "unknown"})
                 info["quant_active"] = quant_info
                 if not bool(quant_info.get("ok", False)):
-                    errors.append(str(quant_info.get("error") or "120b_like_requires_quant_backend"))
+                    errors.append(str(quant_info.get("error") or "local_profile_requires_quant_backend"))
             except Exception as exc:
-                info["quant_active"] = {"ok": False, "error": "120b_like_requires_quant_backend", "detail": str(exc)}
-                errors.append("120b_like_requires_quant_backend")
+                info["quant_active"] = {"ok": False, "error": "local_profile_requires_quant_backend", "detail": str(exc)}
+                errors.append("local_profile_requires_quant_backend")
             finally:
                 for k, prev in old_env.items():
                     if prev is None:
@@ -914,8 +914,8 @@ def _deep_check_120b_like_profile(settings: dict, base_dir: Path, *, mock: bool)
                     except Exception:
                         pass
         except Exception as exc:
-            info["quant_active"] = {"ok": False, "error": "120b_like_requires_quant_backend", "detail": str(exc)}
-            errors.append("120b_like_requires_quant_backend")
+            info["quant_active"] = {"ok": False, "error": "local_profile_requires_quant_backend", "detail": str(exc)}
+            errors.append("local_profile_requires_quant_backend")
 
     def _bench_required_fields(report: dict[str, Any]) -> list[str]:
         required_keys = [
@@ -950,7 +950,7 @@ def _deep_check_120b_like_profile(settings: dict, base_dir: Path, *, mock: bool)
                 ctx = int(required_ctx) if required_ctx is not None else None
             except Exception:
                 ctx = None
-            out_path = base_dir / "data" / "bench" / "doctor_120b_like_mock.json"
+            out_path = base_dir / "data" / "bench" / "doctor_llama2_local_mock.json"
             bench_report = run_bench(
                 settings,
                 base_dir=base_dir,
@@ -1029,7 +1029,7 @@ def _deep_check_120b_like_profile(settings: dict, base_dir: Path, *, mock: bool)
             if prompt_text is None:
                 prompt_text = DEFAULT_BENCH_PROMPT
 
-            out_path = base_dir / "data" / "bench" / "doctor_120b_like_real.json"
+            out_path = base_dir / "data" / "bench" / "doctor_llama2_local_real.json"
             backend = str((settings.get("core", {}) or {}).get("backend", "vortex")).lower()
             offline_env = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_DATASETS_OFFLINE": "1"}
             old_env = {k: os.environ.get(k) for k in offline_env}
@@ -1178,7 +1178,7 @@ def run_deep_checks(settings: dict, base_dir: Path, *, mock: bool = False) -> di
             checks["llama_cpp_backend"] = _llama_cpp_backend_check(settings, base_dir)
             if not bool(checks["llama_cpp_backend"].get("ok", False)):
                 report["deep_ok"] = False
-    if backend in {"external", "vllm", "sglang"}:
+    if backend in {"external", "vllm"}:
         if mock:
             checks["external_engine"] = {"ok": True, "skipped": "mock"}
         else:
@@ -1187,11 +1187,11 @@ def run_deep_checks(settings: dict, base_dir: Path, *, mock: bool = False) -> di
                 report["deep_ok"] = False
 
     try:
-        checks["profile_120b_like"] = _deep_check_120b_like_profile(settings, base_dir, mock=mock)
-        if not bool(checks["profile_120b_like"].get("ok", False)):
+        checks["profile_llama2_local"] = _deep_check_local_profile(settings, base_dir, mock=mock)
+        if not bool(checks["profile_llama2_local"].get("ok", False)):
             report["deep_ok"] = False
     except Exception as exc:
-        checks["profile_120b_like"] = {"ok": False, "error": str(exc)}
+        checks["profile_llama2_local"] = {"ok": False, "error": str(exc)}
         report["deep_ok"] = False
 
     try:

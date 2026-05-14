@@ -13,18 +13,16 @@ import { AppHeader } from "./app/AppHeader";
 import { ChatHomeState } from "./app/ChatHomeState";
 import { useSystemStatus } from "./app/useSystemStatus";
 import { useWorkspaceState } from "./app/useWorkspaceState";
-import { createEmptySession, permissionsFromProject, repairMojibakeText, VIEW_INDEX } from "./app/shellUtils";
+import { createEmptySession, permissionsFromProject, repairMojibakeText } from "./app/shellUtils";
 
 const CommandPalette = lazy(() => import("./components/CommandPalette"));
 const SettingsModal = lazy(() => import("./components/SettingsModal"));
 const HelpModal = lazy(() => import("./components/HelpModal"));
 const ReasoningDrawer = lazy(() => import("./components/ReasoningDrawer"));
-const SpatialWorkspaceView = lazy(() => import("./components/spatial/SpatialWorkspaceView"));
 const ModificationExplorerModal = lazy(() => import("./components/ModificationExplorerModal"));
 
 const App: React.FC = () => {
   const [activeView, setActiveView] = useState<ViewType>("chat");
-  const [prevView, setPrevView] = useState<ViewType>("chat");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
@@ -363,10 +361,7 @@ const App: React.FC = () => {
   }, [createAccount]);
 
   const handleSelectView = useCallback((newView: ViewType) => {
-    setActiveView((prev) => {
-      setPrevView(prev);
-      return newView;
-    });
+    setActiveView(newView);
     setHeaderVisible(true);
   }, []);
 
@@ -1124,7 +1119,7 @@ const VORTEX_CONFIG = {
   }, []);
 
   const springConfig = { type: "spring" as const, damping: 28, stiffness: 220, mass: 0.9 };
-  const direction = VIEW_INDEX[activeView] > VIEW_INDEX[prevView] ? 1 : -1;
+  const direction = 1;
 
   return (
     <div className={`relative flex h-screen w-full overflow-hidden bg-background text-foreground accelerated ask-shell`}>
@@ -1197,7 +1192,6 @@ const VORTEX_CONFIG = {
               isSidebarOpen={isSidebarOpen}
               language={settings.language}
               onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
-              onSelectView={handleSelectView}
               onSetLanguage={(language) => setSettings({ ...settings, language })}
               onShowSidebar={() => {
                 setIsSidebarOpen(true);
@@ -1265,14 +1259,6 @@ const VORTEX_CONFIG = {
                       )}
                     </div>
                   )}
-                </motion.div>
-              )}
-
-              {activeView === "spatial" && (
-                <motion.div key="spatial" custom={direction} variants={{ initial: (value: number) => ({ opacity: 0, x: value * 40, filter: "blur(10px)" }), animate: { opacity: 1, x: 0, filter: "blur(0px)", transition: springConfig }, exit: (value: number) => ({ opacity: 0, x: -value * 40, filter: "blur(10px)", transition: { duration: 0.3 } }) }} initial="initial" animate="animate" exit="exit" className="flex-1">
-                  <Suspense fallback={lazyPanelFallback}>
-                    <SpatialWorkspaceView language={settings.language} controlStatus={controlStatus} onAddLog={addLog} onSendPrompt={handleSendMessageLocalFirst} />
-                  </Suspense>
                 </motion.div>
               )}
 

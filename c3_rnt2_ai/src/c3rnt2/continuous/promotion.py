@@ -293,8 +293,7 @@ def promote_hf_expert(
 ) -> dict[str, Any]:
     """Promote a HF expert adapter directory from quarantine into a registry folder.
 
-    This is intentionally fail-closed for the 120B-like profile: it requires a manual
-    approval file (data/APPROVE_PROMOTION) and enforces bench_thresholds gates.
+    This enforces eval and bench_thresholds gates before promotion.
     """
     base_dir = Path(".").resolve()
     qdir = Path(str(quarantine_dir))
@@ -322,7 +321,7 @@ def promote_hf_expert(
         log_promotion_decision(base_dir, {"kind": "promotion_gate", "backend": "hf_experts", "profile": profile, "domain": domain, "run_id": run_id, "promote_ok": False, "reason": "passed_eval_false"})
         return {"ok": True, "promoted": False, "reason": "passed_eval_false", "domain": domain, "run_id": run_id}
 
-    if require_manual_approval and profile == "rtx4080_16gb_120b_like":
+    if require_manual_approval:
         approval = base_dir / "data" / HF_EXPERT_APPROVAL_FILE
         if not approval.exists():
             log_promotion_decision(base_dir, {"kind": "promotion_gate", "backend": "hf_experts", "profile": profile, "domain": domain, "run_id": run_id, "promote_ok": False, "reason": "approval_missing", "approval_file": str(approval)})
@@ -347,7 +346,7 @@ def promote_hf_expert(
         except (TypeError, ValueError):
             baseline_tps = None
     allow_no_baseline = bool((settings.get("security", {}) or {}).get("allow_promotion_without_baseline", False))
-    if profile == "rtx4080_16gb_120b_like" and baseline_tps is None and not allow_no_baseline:
+    if baseline_tps is None and not allow_no_baseline:
         log_promotion_decision(
             base_dir,
             {

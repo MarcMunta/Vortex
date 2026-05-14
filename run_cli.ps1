@@ -370,7 +370,7 @@ if ($needPython) {
     Fail "Vortex profile not found: $modelProfile"
   }
   if (-not (Test-TransformersProfileSupport -PythonExe $py -Profile $modelProfile)) {
-    Write-Step "Installing mainline Transformers for Gemma 4 support..."
+    Write-Step "Installing mainline Transformers support..."
     & $py -m pip install --upgrade "git+https://github.com/huggingface/transformers.git"
   }
 }

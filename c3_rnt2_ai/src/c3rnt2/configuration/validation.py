@@ -24,13 +24,6 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
     hf_train_cfg = settings.get("hf_train", {}) or {}
     adapters_cfg = settings.get("adapters", {}) or {}
     server_cfg = settings.get("server", {}) or {}
-    voice_cfg = settings.get("voice", {}) or {}
-    camera_cfg = settings.get("camera", {}) or {}
-    gesture_cfg = settings.get("gesture", {}) or {}
-    spatial_ui_cfg = settings.get("spatial_ui", {}) or {}
-    obsidian_cfg = settings.get("obsidian", {}) or {}
-    multimodal_memory_cfg = settings.get("multimodal_memory", {}) or {}
-    multimodal_context_cfg = settings.get("multimodal_context", {}) or {}
     presentation_cfg = settings.get("presentation", {}) or {}
     workspace_panels_cfg = settings.get("workspace_panels", {}) or {}
 
@@ -47,15 +40,15 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
             missing.append("core.tensorrt_engine_dir")
         if not (core.get("tensorrt_tokenizer") or core.get("hf_model")):
             missing.append("core.tensorrt_tokenizer or core.hf_model")
-    elif backend in {"external", "vllm", "sglang"}:
+    elif backend in {"external", "vllm"}:
         engine = (
             str(core.get("external_engine") or core.get("engine") or backend)
             .strip()
             .lower()
         )
-        if backend == "external" and engine not in {"vllm", "sglang", "ollama", "lmstudio"}:
+        if backend == "external" and engine not in {"vllm", "ollama", "lmstudio"}:
             errors.append(
-                "core.external_engine must be vllm, sglang, ollama, or lmstudio when core.backend=external"
+                "core.external_engine must be vllm, ollama, or lmstudio when core.backend=external"
             )
         base_url = core.get("external_base_url") or core.get("external_url")
         if not base_url:
@@ -238,35 +231,6 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
     ):
         errors.append("server.train_host_ram_threshold_mb must be >= 0")
 
-    if voice_cfg:
-        if not str(voice_cfg.get("whisper_model") or "").strip():
-            errors.append("voice.whisper_model must not be empty")
-        if not str(voice_cfg.get("tts_model") or "").strip():
-            errors.append("voice.tts_model must not be empty")
-    for key in ("frame_width", "frame_height", "fps"):
-        raw_value = camera_cfg.get(key)
-        if raw_value is not None and int(raw_value) <= 0:
-            errors.append(f"camera.{key} must be > 0")
-    for key in ("pinch_threshold", "open_palm_threshold", "fist_threshold", "swipe_velocity_threshold", "smoothing"):
-        raw_value = gesture_cfg.get(key)
-        if raw_value is not None and float(raw_value) < 0:
-            errors.append(f"gesture.{key} must be >= 0")
-    for key in ("dwell_ms", "debounce_ms"):
-        raw_value = gesture_cfg.get(key)
-        if raw_value is not None and int(raw_value) < 0:
-            errors.append(f"gesture.{key} must be >= 0")
-    for key in ("default_perspective", "stage_width", "stage_height"):
-        raw_value = spatial_ui_cfg.get(key)
-        if raw_value is not None and float(raw_value) <= 0:
-            errors.append(f"spatial_ui.{key} must be > 0")
-    if obsidian_cfg and not isinstance(obsidian_cfg.get("folder_map", {}), dict):
-        errors.append("obsidian.folder_map must be a mapping")
-    if multimodal_memory_cfg.get("max_notes") is not None and int(multimodal_memory_cfg.get("max_notes", 1)) <= 0:
-        errors.append("multimodal_memory.max_notes must be > 0")
-    if multimodal_memory_cfg.get("max_chars") is not None and int(multimodal_memory_cfg.get("max_chars", 1)) <= 0:
-        errors.append("multimodal_memory.max_chars must be > 0")
-    if multimodal_context_cfg.get("max_chars") is not None and int(multimodal_context_cfg.get("max_chars", 1)) <= 0:
-        errors.append("multimodal_context.max_chars must be > 0")
     if presentation_cfg.get("page_step") is not None and int(presentation_cfg.get("page_step", 1)) <= 0:
         errors.append("presentation.page_step must be > 0")
     if workspace_panels_cfg.get("max_active_panels") is not None and int(workspace_panels_cfg.get("max_active_panels", 1)) <= 0:
@@ -369,12 +333,6 @@ def validate_profile(settings: dict, base_dir: Path | None = None) -> None:
         _check_writable_path(local_lab.get("workspaces_path"), "local_lab.workspaces_path")
     if local_lab.get("sandbox_root"):
         _check_data_path(local_lab.get("sandbox_root"), "local_lab.sandbox_root")
-    if voice_cfg.get("output_dir"):
-        _check_writable_path(voice_cfg.get("output_dir"), "voice.output_dir")
-    if multimodal_memory_cfg.get("state_path"):
-        _check_data_path(multimodal_memory_cfg.get("state_path"), "multimodal_memory.state_path")
-    if obsidian_cfg.get("vault_path"):
-        _check_writable_path(obsidian_cfg.get("vault_path"), "obsidian.vault_path")
     instructions_cfg = settings.get("instructions", {}) or {}
     def _check_existing_text_path(path_value: str | Path | None, label: str) -> None:
         if not path_value:

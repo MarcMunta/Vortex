@@ -148,7 +148,7 @@ def normalize_settings(settings: dict) -> dict:
     docker_cfg = normalized.get("docker", {}) or {}
     docker_cfg.setdefault("enabled", False)
     docker_cfg.setdefault("compose_path", "docker-compose.yml")
-    docker_cfg.setdefault("runtime_service", "sglang-runtime")
+    docker_cfg.setdefault("runtime_service", None)
     docker_cfg.setdefault("api_service", "vortex-api")
     docker_cfg.setdefault("trainer_service", "trainer")
     docker_cfg.setdefault("eval_service", "eval")
@@ -180,79 +180,6 @@ def normalize_settings(settings: dict) -> dict:
     local_lab.setdefault("lab_confirmation_token", "LAB_CONFIRMED")
     normalized["local_lab"] = local_lab
 
-    voice = normalized.get("voice", {}) or {}
-    voice.setdefault("enabled", True)
-    voice.setdefault("push_to_talk", True)
-    voice.setdefault("vad_enabled", True)
-    voice.setdefault("whisper_model", "small")
-    voice.setdefault("tts_model", "tts_models/en/ljspeech/tacotron2-DDC")
-    voice.setdefault("output_dir", "data/multimodal/voice")
-    voice.setdefault("device", "auto")
-    voice.setdefault("compute_type", "int8")
-    normalized["voice"] = voice
-
-    camera = normalized.get("camera", {}) or {}
-    camera.setdefault("enabled", True)
-    camera.setdefault("device_id", "default")
-    camera.setdefault("frame_width", 960)
-    camera.setdefault("frame_height", 540)
-    camera.setdefault("fps", 24)
-    normalized["camera"] = camera
-
-    gesture = normalized.get("gesture", {}) or {}
-    gesture.setdefault("enabled", True)
-    gesture.setdefault("mediapipe_enabled", True)
-    gesture.setdefault("pinch_threshold", 0.065)
-    gesture.setdefault("open_palm_threshold", 0.58)
-    gesture.setdefault("fist_threshold", 0.22)
-    gesture.setdefault("swipe_velocity_threshold", 0.12)
-    gesture.setdefault("dwell_ms", 500)
-    gesture.setdefault("debounce_ms", 140)
-    gesture.setdefault("smoothing", 0.4)
-    gesture.setdefault("model_asset_path", "vortex-chat/public/models/hand_landmarker.task")
-    normalized["gesture"] = gesture
-
-    spatial_ui = normalized.get("spatial_ui", {}) or {}
-    spatial_ui.setdefault("enabled", True)
-    spatial_ui.setdefault("workspace_name", "Spatial Workspace")
-    spatial_ui.setdefault("perspective_enabled", True)
-    spatial_ui.setdefault("default_perspective", 1100)
-    spatial_ui.setdefault("stage_width", 1440)
-    spatial_ui.setdefault("stage_height", 900)
-    normalized["spatial_ui"] = spatial_ui
-
-    obsidian = normalized.get("obsidian", {}) or {}
-    obsidian.setdefault("enabled", True)
-    obsidian.setdefault("vault_path", "data/obsidian_vault")
-    obsidian.setdefault(
-        "folder_map",
-        {
-            "architecture": "Projects/Vortex/Architecture",
-            "session": "Projects/Vortex/Sessions",
-            "decision": "Projects/Vortex/Decisions",
-            "prompt": "Projects/Vortex/Prompts",
-            "bug": "Projects/Vortex/Bugs",
-            "experiment": "Projects/Vortex/Experiments",
-        },
-    )
-    normalized["obsidian"] = obsidian
-
-    multimodal_memory = normalized.get("multimodal_memory", {}) or {}
-    multimodal_memory.setdefault("enabled", True)
-    multimodal_memory.setdefault("state_path", "data/multimodal/spatial_session.json")
-    multimodal_memory.setdefault("max_notes", 4)
-    multimodal_memory.setdefault("max_chars", 1200)
-    normalized["multimodal_memory"] = multimodal_memory
-
-    multimodal_context = normalized.get("multimodal_context", {}) or {}
-    multimodal_context.setdefault("enabled", True)
-    multimodal_context.setdefault("max_chars", 1800)
-    multimodal_context.setdefault("include_memory", True)
-    multimodal_context.setdefault("include_spatial_selection", True)
-    multimodal_context.setdefault("include_voice", True)
-    multimodal_context.setdefault("include_gesture", True)
-    normalized["multimodal_context"] = multimodal_context
-
     context = normalized.get("context", {}) or {}
     context = dict(context) if isinstance(context, dict) else {}
     for key, value in DEFAULT_CONTEXT_BUDGET.items():
@@ -266,8 +193,8 @@ def normalize_settings(settings: dict) -> dict:
     cloud_training.setdefault("project_id", None)
     cloud_training.setdefault("region", "us-central1")
     cloud_training.setdefault("bucket", None)
-    cloud_training.setdefault("dataset_path", "data/registry/hf_train/qwen_coder_flutter_sft_samples.jsonl")
-    cloud_training.setdefault("job_name_prefix", "vortex-qwen-coder")
+    cloud_training.setdefault("dataset_path", None)
+    cloud_training.setdefault("job_name_prefix", "vortex-local-agent")
     cloud_training.setdefault("service_account_env", "GOOGLE_APPLICATION_CREDENTIALS")
     normalized["cloud_training"] = cloud_training
 
@@ -283,7 +210,7 @@ def normalize_settings(settings: dict) -> dict:
     workspace_panels.setdefault("default_height", 220)
     workspace_panels.setdefault(
         "default_kinds",
-        ["note", "presentation", "browser", "image", "obsidian", "sketch"],
+        ["note", "presentation", "browser", "image", "sketch"],
     )
     normalized["workspace_panels"] = workspace_panels
 

@@ -30,6 +30,38 @@ def test_agent_runner_dry(tmp_path: Path, monkeypatch):
     assert episodes.exists()
 
 
+def test_agent_runner_executes_known_node_project_directly(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"build": "node -e \"console.log('build ok')\""}}),
+        encoding="utf-8",
+    )
+    settings = {"tools": {"web": {"enabled": False, "allow_domains": []}}, "agent": {"web_allowlist": []}}
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+
+    class FinishingModel:
+        tokenizer = None
+
+        def generate(self, _prompt: str, **_kwargs):
+            return json.dumps({"type": "finish", "args": {"summary": "finished"}})
+
+    report = run_agent(
+        "Ejecuta el proyecto.",
+        settings,
+        tmp_path,
+        max_iters=1,
+        model=FinishingModel(),
+        permissions=permissions,
+    )
+
+    assert any(call["action"] == "run_command" for call in report["tool_calls"])
+    assert report["blocked"] is False
+
+
 def test_agent_runner_blocks_public_security_target(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("C3RNT2_NO_NET", "1")
     settings = {
@@ -931,6 +963,278 @@ void main() {
     }
 
 
+def test_agent_runner_adds_dark_mode_without_magic_words_when_model_loaded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    (tmp_path / "lib").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "test").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "pubspec.yaml").write_text(
+        "name: existing_flutter\n\ndependencies:\n  flutter:\n    sdk: flutter\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "lib" / "main.dart").write_text(
+        """import 'package:flutter/material.dart';
+
+void main() {
+  runApp(const VortexLoginApp());
+}
+
+class VortexLoginApp extends StatelessWidget {
+  const VortexLoginApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Vortex Login',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        useMaterial3: true,
+      ),
+      home: const LoginPage(),
+    );
+  }
+}
+
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  Widget _buildLoginCard(BuildContext context) {
+    return Column(
+      children: [
+              Text('Login', style: Theme.of(context).textTheme.headlineMedium),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => _buildLoginCard(context);
+}
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "test" / "widget_test.dart").write_text(
+        """import 'package:flutter_test/flutter_test.dart';
+import 'package:existing_flutter/main.dart' as app;
+
+void main() {
+  testWidgets('app starts', (WidgetTester tester) async {
+    app.main();
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
+}
+""",
+        encoding="utf-8",
+    )
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {"web_allowlist": [], "tools_enabled": ["write_file", "run_command"]},
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+    commands: list[str] = []
+
+    def _fake_run_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout_s: int = 120,
+        background: bool = False,
+    ) -> ToolResult:
+        commands.append(command)
+        return ToolResult(ok=True, output=f"ran:{command}")
+
+    class BadPlanningModel:
+        tokenizer = None
+
+        def generate(self, _prompt: str, **_kwargs):
+            return json.dumps({"type": "finish", "args": {"summary": "finished"}})
+
+    monkeypatch.setattr(AgentTools, "run_command", _fake_run_command)
+
+    report = run_agent(
+        "Anade un modo oscuro a la aplicacion modificando las carpetas y archivos necesarios",
+        settings,
+        tmp_path,
+        max_iters=3,
+        model=BadPlanningModel(),
+        permissions=permissions,
+    )
+
+    main_text = (tmp_path / "lib" / "main.dart").read_text(encoding="utf-8")
+    assert report["ok"] is True
+    assert report["tools_ok"] is True
+    assert "themeMode:" in main_text
+    assert "AnimatedSwitcher" in main_text
+    assert commands == ["flutter test"]
+
+
+def test_agent_runner_adds_dark_mode_to_generic_flutter_material_app(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    (tmp_path / "lib").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "pubspec.yaml").write_text(
+        "name: generic_flutter\n\ndependencies:\n  flutter:\n    sdk: flutter\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "lib" / "main.dart").write_text(
+        """import 'package:flutter/material.dart';
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Generic App',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+      ),
+      home: const Placeholder(),
+    );
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {"web_allowlist": [], "tools_enabled": ["write_file", "run_command"]},
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+
+    def _fake_run_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout_s: int = 120,
+        background: bool = False,
+    ) -> ToolResult:
+        return ToolResult(ok=True, output=f"ran:{command}")
+
+    monkeypatch.setattr(AgentTools, "run_command", _fake_run_command)
+
+    report = run_agent(
+        "Anade un modo oscuro a la aplicacion modificando lo necesario",
+        settings,
+        tmp_path,
+        max_iters=2,
+        permissions=permissions,
+        allow_model_load=False,
+    )
+
+    main_text = (tmp_path / "lib" / "main.dart").read_text(encoding="utf-8")
+    assert report["tools_ok"] is True
+    assert "themeMode: ThemeMode.system" in main_text
+    assert "darkTheme: ThemeData" in main_text
+    assert "brightness: Brightness.dark" in main_text
+
+
+def test_agent_runner_understands_ejecutame_flutter_project(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    (tmp_path / "pubspec.yaml").write_text(
+        "name: existing_flutter\n\ndependencies:\n  flutter:\n    sdk: flutter\n",
+        encoding="utf-8",
+    )
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {"web_allowlist": [], "tools_enabled": ["run_command"]},
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "full"},
+        tmp_path,
+    )
+    commands: list[str] = []
+
+    def _fake_run_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout_s: int = 120,
+        background: bool = False,
+    ) -> ToolResult:
+        commands.append(command)
+        return ToolResult(ok=True, output=f"ran:{command}")
+
+    monkeypatch.setattr(AgentTools, "run_command", _fake_run_command)
+
+    report = run_agent(
+        "Ejecutame el proyecto flutter",
+        settings,
+        tmp_path,
+        max_iters=1,
+        permissions=permissions,
+    )
+
+    assert report["tools_ok"] is True
+    assert commands[:6] == [
+        "flutter --version",
+        "flutter create --platforms=web --no-overwrite .",
+        "flutter devices",
+        "flutter pub get",
+        "flutter test",
+        "flutter build web",
+    ]
+    assert commands[-1] == "flutter run -d web-server --web-hostname 0.0.0.0 --web-port 19090"
+
+
+def test_agent_runner_read_file_answers_pubspec_project_name(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("C3RNT2_NO_NET", "1")
+    (tmp_path / "pubspec.yaml").write_text(
+        "name: existing_flutter\n\ndependencies:\n  flutter:\n    sdk: flutter\n",
+        encoding="utf-8",
+    )
+    settings = {
+        "tools": {"web": {"enabled": False, "allow_domains": []}},
+        "agent": {"web_allowlist": [], "tools_enabled": ["read_file"]},
+    }
+    permissions = AgentPermissions.from_payload(
+        {"level": "full", "action_mode": "safe"},
+        tmp_path,
+    )
+
+    report = run_agent(
+        "Lee el archivo pubspec.yaml y dime que proyecto es",
+        settings,
+        tmp_path,
+        max_iters=1,
+        permissions=permissions,
+        allow_model_load=False,
+    )
+
+    assert report["tools_ok"] is True
+    assert "El proyecto es `existing_flutter`" in report["summary"]
+
+
 def test_agent_runner_scaffolds_flutter_login_project_without_model(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("C3RNT2_NO_NET", "1")
     settings = {
@@ -1236,18 +1540,19 @@ def test_agent_runner_runs_existing_flutter_project_without_repeating_previous_l
     assert report["ok"] is True
     assert report["tools_ok"] is True
     assert report["tests_ok"] is True
-    assert [call["action"] for call in report["tool_calls"]] == ["run_command"] * 6
+    assert [call["action"] for call in report["tool_calls"]] == ["run_command"] * 7
     assert commands == [
         "flutter --version",
-        "flutter create --platforms=android --no-overwrite .",
+        "flutter create --platforms=web --no-overwrite .",
         "flutter devices",
         "flutter pub get",
         "flutter test",
-        "flutter run -d emulator-5554 --debug",
+        "flutter build web",
+        "flutter run -d web-server --web-hostname 0.0.0.0 --web-port 19090",
     ]
     assert report["file_changes"] == []
     assert "pubspec.yaml" not in report["summary"]
-    assert "He iniciado la app en el emulador" in report["summary"]
+    assert "He iniciado la app web local" in report["summary"]
 
 
 def test_agent_runner_reports_emulator_unavailable_without_repeating_stale_summary(
@@ -1313,16 +1618,17 @@ def test_agent_runner_reports_emulator_unavailable_without_repeating_stale_summa
     assert report["tests_ok"] is True
     assert commands == [
         "flutter --version",
-        "flutter create --platforms=android --no-overwrite .",
+        "flutter create --platforms=web --no-overwrite .",
         "flutter devices",
         "flutter pub get",
         "flutter test",
-        "flutter run -d emulator-5554 --debug",
+        "flutter build web",
+        "flutter run -d web-server --web-hostname 0.0.0.0 --web-port 19090",
     ]
     assert report["file_changes"] == []
     assert "pubspec.yaml" not in report["summary"]
     assert "He validado el proyecto con sus tests" in report["summary"]
-    assert "No he podido iniciar el emulador/app" in report["summary"]
+    assert "No he podido completar `flutter run -d web-server --web-hostname 0.0.0.0 --web-port 19090`" in report["summary"]
 
 
 def test_agent_runner_does_not_scaffold_flutter_project_when_model_is_available(

@@ -142,7 +142,7 @@ def _external_engine_status(core: dict, *, base_dir: Path | None = None) -> tupl
             meta["model_cache"] = cache_meta
         except Exception:
             meta["model_cache"] = None
-    if backend not in {"external", "vllm", "sglang"}:
+    if backend not in {"external", "vllm"}:
         return True, "not_external", meta, next_steps
     if not base_url:
         return False, "external_base_url_missing", meta, next_steps
@@ -160,26 +160,17 @@ def _external_engine_status(core: dict, *, base_dir: Path | None = None) -> tupl
             next_steps.append(f"Pull the model with `ollama pull {model_name}`.")
             return False, "ollama_model_missing", meta, next_steps
         return True, "ollama_ready", meta, next_steps
-    if engine in {"lmstudio", "sglang", "vllm"}:
+    if engine in {"lmstudio", "vllm"}:
         try:
             payload = _http_json(base_url.rstrip("/") + "/v1/models", timeout_s=2.0)
         except Exception as exc:
             meta["detail"] = str(exc)
-            if engine == "sglang":
-                next_steps.extend(
-                    [
-                        "Ensure the local model cache exists via `docker compose run --rm model-init`.",
-                        "Start the runtime with `docker compose up -d sglang-runtime vortex-api`.",
-                    ]
-                )
             return False, f"{engine}_unreachable", meta, next_steps
         data = payload.get("data", []) if isinstance(payload.get("data"), list) else []
         ids = [str(item.get("id", "")).strip() for item in data if isinstance(item, dict)]
         meta["available_models"] = ids
         if model_name and model_name not in ids:
             cache_meta = meta.get("model_cache") if isinstance(meta.get("model_cache"), dict) else {}
-            if engine == "sglang" and not bool(cache_meta.get("cached", False)):
-                next_steps.append("Populate the local Hugging Face cache via `docker compose run --rm model-init`.")
             return False, f"{engine}_model_missing", meta, next_steps
         return True, f"{engine}_ready", meta, next_steps
     return True, "external_engine_not_checked", meta, next_steps
@@ -288,10 +279,7 @@ def _hf_offload_status(core: dict, *, base_dir: Path) -> dict[str, Any]:
 
 
 def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict[str, Any]:
-    """Offline (no downloads) validation of an inference configuration.
-
-    Intended for Windows safety checks for the 120B-like profile (fail-closed).
-    """
+    """Offline (no downloads) validation of an inference configuration."""
     base_dir = Path(base_dir or ".").resolve()
     profile = str(settings.get("_profile") or "").strip() or "unknown"
     core = settings.get("core", {}) or {}
@@ -326,17 +314,10 @@ def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict
     hf_safe = bool(hf_quant.get("quant_mode")) or bool(hf_offload.get("ok")) or hf_device == "cpu"
 
     backend_resolved = backend_requested
-    is_windows = sys.platform.startswith("win")
-    is_120b_like = profile == "rtx4080_16gb_120b_like"
-
     if backend_requested in {"hf", "transformers"}:
         backend_resolved = "hf"
         if prefer_llama and bool(llama.get("ok", False)):
             backend_resolved = "llama_cpp"
-        elif is_windows and is_120b_like and not hf_safe and bool(llama.get("ok", False)):
-            backend_resolved = "llama_cpp"
-        elif is_windows and is_120b_like and not hf_safe:
-            errors.append("unsafe_hf_config_windows_120b_like")
     elif backend_requested == "llama_cpp":
         backend_resolved = "llama_cpp"
         if not bool(llama.get("ok", False)):
@@ -430,9 +411,6 @@ def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict
     elif backend_resolved == "llama_cpp" and not bool(llama.get("ok", False)):
         offline_ready = False
         offline_reason = str(llama.get("error") or "llama_cpp_not_ready")
-    elif backend_resolved == "hf" and is_windows and is_120b_like and not hf_safe:
-        offline_ready = False
-        offline_reason = "unsafe_hf_config_windows_120b_like"
     elif backend_resolved == "hf" and not bool(hf_cache.get("cached", False)):
         offline_ready = False
         offline_reason = "hf_model_cache_missing"
@@ -455,9 +433,6 @@ def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict
     if required_engine and str(required_engine).strip().lower() != engine_kind:
         errors.append(f"engine_not_ready:expected_{str(required_engine).strip().lower()}_got_{engine_kind}")
 
-    if "unsafe_hf_config_windows_120b_like" in errors:
-        next_steps.append("Configure HF quant (hf_load_in_4bit/8bit + bitsandbytes) or safe CPU offload (hf_device_map + hf_max_memory + hf_offload_folder).")
-        next_steps.append("OR set core.llama_cpp_model_path to an existing .gguf and install the llama.cpp backend (.[llama_cpp]).")
     if not web_disabled:
         next_steps.append("Disable tools.web, continuous.ingest_web, autolearn.web_ingest and autolearn.url_discovery; keep the web allowlist empty.")
     if bool(contract.get("require_wsl_training", False)) and not wsl_ready:

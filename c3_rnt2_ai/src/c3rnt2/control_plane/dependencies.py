@@ -30,11 +30,6 @@ class ControlStateLike(Protocol):
     def stop_autonomy(self) -> JsonDict: ...
     def configure_autonomy(self, payload: AutonomyConfigRequest) -> JsonDict: ...
     def _latest_autonomy_events(self, *args: Any, **kwargs: Any) -> list[JsonDict]: ...
-    def voice_status(self) -> JsonDict: ...
-    def restart_voice(self) -> JsonDict: ...
-    def obsidian_status(self) -> JsonDict: ...
-    def configure_obsidian(self, payload: JsonDict) -> JsonDict: ...
-    def multimodal_status(self) -> JsonDict: ...
 
 
 @dataclass(frozen=True)
@@ -58,11 +53,6 @@ class ControlDependencies:
     stop_autonomy: Callable[[], JsonDict]
     configure_autonomy: Callable[[AutonomyConfigRequest], JsonDict]
     latest_autonomy_events: Callable[..., list[JsonDict]]
-    voice_status: Callable[[], JsonDict]
-    restart_voice: Callable[[], JsonDict]
-    obsidian_status: Callable[[], JsonDict]
-    configure_obsidian: Callable[[JsonDict], JsonDict]
-    multimodal_status: Callable[[], JsonDict]
     api_url: str
 
     @classmethod
@@ -87,10 +77,5 @@ class ControlDependencies:
             stop_autonomy=state.stop_autonomy,
             configure_autonomy=state.configure_autonomy,
             latest_autonomy_events=state._latest_autonomy_events,
-            voice_status=state.voice_status,
-            restart_voice=state.restart_voice,
-            obsidian_status=state.obsidian_status,
-            configure_obsidian=state.configure_obsidian,
-            multimodal_status=state.multimodal_status,
             api_url=str(state.api_url),
         )

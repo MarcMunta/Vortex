@@ -1832,13 +1832,13 @@ def cmd_bench(args: argparse.Namespace) -> None:
         if not raw:
             return cfg
         core = dict(cfg.get("core", {}) or {})
-        if raw in {"sglang", "vllm"}:
+        if raw in {"vllm"}:
             core["backend"] = "external"
             core["external_engine"] = raw
             core.setdefault("external_base_url", core.get("external_url") or "http://127.0.0.1:30000")
         elif raw in {"external"}:
             core["backend"] = "external"
-            core.setdefault("external_engine", "sglang")
+            core.setdefault("external_engine", "vllm")
             core.setdefault("external_base_url", core.get("external_url") or "http://127.0.0.1:30000")
         elif raw in {"hf", "transformers"}:
             core["backend"] = "hf"
@@ -2166,7 +2166,7 @@ def main() -> None:
 
     bench = sub.add_parser("bench")
     bench.add_argument("--profile", default=None)
-    bench.add_argument("--engine", default=None, help="Override backend/engine (e.g. external: sglang|vllm).")
+    bench.add_argument("--engine", default=None, help="Override backend/engine (e.g. external: vllm).")
     bench.add_argument("--scenario", default=None, help="Scenario name (from bench.scenarios). Use with --suite for subsets.")
     bench.add_argument("--suite", action="store_true", help="Run all configured bench.scenarios (or a subset via --scenario).")
     bench.add_argument("--prompt-file", default=None)

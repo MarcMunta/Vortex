@@ -55,6 +55,29 @@ def test_messages_ignore_prompt_and_keep_rag(monkeypatch, tmp_path: Path) -> Non
     assert "RAGCTX" in model.last_prompt
 
 
+def test_spanish_language_instruction_added(monkeypatch, tmp_path: Path) -> None:
+    client, model = _setup_app(tmp_path, monkeypatch)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "Que conocimientos tienes?"}],
+            "response_language": "es",
+            "max_tokens": 4,
+        },
+    )
+    assert resp.status_code == 200
+    assert model.last_prompt is not None
+    assert "Idioma obligatorio" in model.last_prompt
+    assert "espanol natural" in model.last_prompt
+    assert "Respuesta en espanol:" in model.last_prompt
+
+
+def test_mojibake_repair_helper() -> None:
+    from c3rnt2 import server as server_mod
+
+    assert server_mod._repair_mojibake_text("Programaci\u00c3\u00b3n") == "Programaci\u00f3n"
+
+
 def test_prompt_only_converted_and_rag_injected(monkeypatch, tmp_path: Path) -> None:
     client, model = _setup_app(tmp_path, monkeypatch)
     resp = client.post("/v1/chat/completions", json={"prompt": "PROMPT_ONLY", "max_tokens": 4})

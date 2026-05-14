@@ -28,7 +28,6 @@ export const DEFAULT_SETTINGS: UserSettings = {
 
 export const VIEW_INDEX = {
   chat: 0,
-  spatial: 1,
 } as const;
 
 export const MAX_LOCAL_SESSION_CACHE_SESSIONS = 12;
