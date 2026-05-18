@@ -40,7 +40,14 @@ interface SettingsModalProps {
 
 export type SettingsTab = 'general' | 'appearance' | 'permissions' | 'skills' | 'profiles';
 type FolderTarget = 'draftRoot' | 'activeRoot';
-type DirectoryPickerHandle = { name?: string };
+type FolderBrowserEntry = { name: string; path: string; isDir: boolean };
+type FolderBrowserState = {
+  target: FolderTarget;
+  path: string;
+  parentPath: string;
+  entries: FolderBrowserEntry[];
+  loading: boolean;
+};
 
 const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
@@ -61,6 +68,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [draftHandle, setDraftHandle] = useState('');
   const [projectDraft, setProjectDraft] = useState({ name: '', rootPath: '' });
   const [folderPickerError, setFolderPickerError] = useState('');
+  const [folderBrowser, setFolderBrowser] = useState<FolderBrowserState | null>(null);
   const [skillsLoading, setSkillsLoading] = useState(false);
   const [skillsSaving, setSkillsSaving] = useState(false);
   const [skillsError, setSkillsError] = useState('');
@@ -207,6 +215,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleManualFolderPath = (target: FolderTarget, folderPath: string) => {
     const value = folderPath;
     setFolderPickerError('');
+    setFolderBrowser(null);
     if (target === 'draftRoot') {
       setProjectDraft((prev) => ({
         ...prev,
@@ -216,6 +225,35 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       return;
     }
     patchActiveProject({ rootPath: value, projectPath: value });
+  };
+
+  const loadFolderBrowser = async (target: FolderTarget, path?: string) => {
+    setFolderPickerError('');
+    setFolderBrowser((prev) => ({
+      target,
+      path: prev?.target === target ? prev.path : '',
+      parentPath: prev?.target === target ? prev.parentPath : '',
+      entries: prev?.target === target ? prev.entries : [],
+      loading: true,
+    }));
+    let result = await vortexService.listWorkspaceFolders(path);
+    if (!result.ok && path) {
+      result = await vortexService.listWorkspaceFolders('');
+    }
+    if (!result.ok) {
+      setFolderBrowser(null);
+      setFolderPickerError(result.error || (settings.language === 'es'
+        ? 'No pude listar carpetas accesibles desde el backend.'
+        : 'Unable to list backend-accessible folders.'));
+      return;
+    }
+    setFolderBrowser({
+      target,
+      path: result.path,
+      parentPath: result.parentPath,
+      entries: result.entries,
+      loading: false,
+    });
   };
 
   const handleSelectFolder = async (target: FolderTarget) => {
@@ -232,31 +270,78 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       return;
     }
     if (result.ok && result.cancelled) return;
-    const picker = (window as Window & { showDirectoryPicker?: () => Promise<DirectoryPickerHandle> }).showDirectoryPicker;
-    if (picker) {
-      if (!window.isSecureContext) {
-        setFolderPickerError(settings.language === 'es'
-          ? 'El selector del navegador requiere https o localhost. Pega la ruta completa abajo.'
-          : 'The browser picker requires https or localhost. Paste the full path below.');
-        return;
-      }
-      try {
-        await picker();
-        setFolderPickerError(settings.language === 'es'
-          ? 'El selector del navegador no expone la ruta absoluta. Pega la ruta completa abajo.'
-          : 'The browser picker cannot expose the absolute path. Paste the full path below.');
-        return;
-      } catch (error) {
-        if ((error as DOMException)?.name === 'AbortError') return;
-        setFolderPickerError(settings.language === 'es'
-          ? 'No se pudo abrir el selector del navegador. Pega la ruta completa abajo.'
-          : 'Unable to open the browser picker. Paste the full path below.');
-        return;
-      }
-    }
-    setFolderPickerError(settings.language === 'es'
-      ? 'Selector de carpeta no disponible en este runtime. Pega la ruta absoluta de la carpeta.'
-      : 'Folder picker unavailable in this runtime. Paste the absolute folder path.');
+    await loadFolderBrowser(target, initialDir);
+  };
+
+  const renderFolderBrowser = (target: FolderTarget) => {
+    if (!folderBrowser || folderBrowser.target !== target) return null;
+    const currentLabel = folderBrowser.path || (settings.language === 'es' ? 'Raices disponibles' : 'Available roots');
+    return (
+      <div className="mt-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-black uppercase tracking-[0.12em] text-primary">
+              {settings.language === 'es' ? 'Selector backend' : 'Backend picker'}
+            </p>
+            <p className="mt-1 truncate text-xs font-semibold text-foreground">{currentLabel}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFolderBrowser(null)}
+            className="rounded-lg border border-border/60 px-2 py-1 text-xs font-bold text-muted-foreground"
+          >
+            <X size={13} />
+          </button>
+        </div>
+        <div className="max-h-52 overflow-y-auto rounded-lg border border-border/50 bg-background">
+          {folderBrowser.loading ? (
+            <div className="px-3 py-3 text-xs font-semibold text-muted-foreground">
+              {settings.language === 'es' ? 'Cargando carpetas...' : 'Loading folders...'}
+            </div>
+          ) : (
+            <>
+              {folderBrowser.parentPath && (
+                <button
+                  type="button"
+                  onClick={() => { void loadFolderBrowser(target, folderBrowser.parentPath); }}
+                  className="flex w-full items-center gap-2 border-b border-border/50 px-3 py-2 text-left text-xs font-bold text-muted-foreground hover:bg-muted/40"
+                >
+                  <FolderOpen size={14} /> ..
+                </button>
+              )}
+              {folderBrowser.entries.map((entry) => (
+                <button
+                  key={entry.path}
+                  type="button"
+                  onClick={() => { void loadFolderBrowser(target, entry.path); }}
+                  className="flex w-full items-center gap-2 border-b border-border/40 px-3 py-2 text-left text-xs font-semibold text-foreground last:border-b-0 hover:bg-muted/40"
+                >
+                  <FolderOpen size={14} className="text-primary" />
+                  <span className="min-w-0 truncate">{entry.name}</span>
+                </button>
+              ))}
+              {folderBrowser.entries.length === 0 && (
+                <div className="px-3 py-3 text-xs font-semibold text-muted-foreground">
+                  {settings.language === 'es' ? 'Sin subcarpetas.' : 'No subfolders.'}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        {folderBrowser.path && !folderBrowser.loading && (
+          <button
+            type="button"
+            onClick={() => {
+              applyFolderSelection(target, folderBrowser.path);
+              setFolderBrowser(null);
+            }}
+            className="mt-3 rounded-xl bg-primary px-3 py-2 text-xs font-black uppercase tracking-[0.1em] text-primary-foreground"
+          >
+            {settings.language === 'es' ? 'Usar esta carpeta' : 'Use this folder'}
+          </button>
+        )}
+      </div>
+    );
   };
 
   const handleCreateProject = () => {
@@ -779,6 +864,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                           placeholder="C:\Users\...\Downloads\flutter_test"
                           className="mt-3 w-full rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs font-semibold text-foreground outline-none transition-all placeholder:text-muted-foreground/70 focus:border-primary/40 focus:ring-4 focus:ring-primary/10"
                         />
+                        {renderFolderBrowser('draftRoot')}
                       </div>
                       <button
                         type="button"
@@ -872,6 +958,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                           placeholder={settings.language === 'es' ? 'Ruta absoluta autorizada' : 'Authorized absolute path'}
                           className="mt-3 w-full rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs font-semibold text-foreground outline-none transition-all placeholder:text-muted-foreground/70 focus:border-primary/40 focus:ring-4 focus:ring-primary/10"
                         />
+                        {renderFolderBrowser('activeRoot')}
                       </div>
                     </div>
                   </div>

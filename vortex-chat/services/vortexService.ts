@@ -1224,6 +1224,41 @@ export class VortexService {
       return { ok: false, error: error instanceof Error ? error.message : "network_error" };
     }
   }
+
+  async listWorkspaceFolders(path?: string): Promise<{ ok: boolean; path: string; parentPath: string; entries: Array<{ name: string; path: string; isDir: boolean }>; error?: string }> {
+    try {
+      const parsed = await this.json<{
+        ok?: boolean;
+        path?: string;
+        parent_path?: string;
+        entries?: Array<{ name?: unknown; path?: unknown; is_dir?: unknown }>;
+        error?: unknown;
+        detail?: unknown;
+      }>("/v1/workspace/folders/list", {
+        method: "POST",
+        body: JSON.stringify({ path: path || "" }),
+      });
+      if (parsed?.ok) {
+        return {
+          ok: true,
+          path: typeof parsed.path === "string" ? parsed.path : "",
+          parentPath: typeof parsed.parent_path === "string" ? parsed.parent_path : "",
+          entries: Array.isArray(parsed.entries)
+            ? parsed.entries
+                .map((entry) => ({
+                  name: String(entry.name || ""),
+                  path: String(entry.path || ""),
+                  isDir: Boolean(entry.is_dir ?? true),
+                }))
+                .filter((entry) => entry.name && entry.path)
+            : [],
+        };
+      }
+      return { ok: false, path: "", parentPath: "", entries: [], error: this.responseError(parsed, "folder_list_failed") };
+    } catch (error) {
+      return { ok: false, path: "", parentPath: "", entries: [], error: error instanceof Error ? error.message : "network_error" };
+    }
+  }
 }
 
 export const vortexService = new VortexService();

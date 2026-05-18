@@ -119,6 +119,95 @@ def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDepend
                 return shared_candidate
         return _with_shared_mount_fallback((Path(base_dir) / target_path).resolve(), target)
 
+    def _configured_mounts() -> list[tuple[str, Path]]:
+        pairs = [
+            (
+                os.getenv("C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT"),
+                os.getenv("C3RNT2_HOST_WORKSPACE_MOUNT"),
+            ),
+            (
+                os.getenv("C3RNT2_HOST_D_WINDOWS_ROOT"),
+                os.getenv("C3RNT2_HOST_D_MOUNT"),
+            ),
+            (
+                os.getenv("C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT"),
+                os.getenv("C3RNT2_HOST_DOWNLOADS_MOUNT"),
+            ),
+        ]
+        mounts: list[tuple[str, Path]] = []
+        seen: set[str] = set()
+        for host_root, mount_root in pairs:
+            host = str(host_root or "").strip()
+            mount_raw = str(mount_root or "").strip()
+            if not mount_raw:
+                continue
+            mount = Path(mount_raw)
+            if not mount.exists() or not mount.is_dir():
+                continue
+            try:
+                resolved = mount.resolve()
+            except Exception:
+                resolved = mount
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            mounts.append((host, resolved))
+        base_path = Path(base_dir).resolve()
+        if base_path.exists() and str(base_path) not in seen:
+            mounts.append((str(base_path), base_path))
+        return mounts
+
+    def _path_is_inside(path: Path, root: Path) -> bool:
+        try:
+            path.resolve().relative_to(root.resolve())
+            return True
+        except Exception:
+            return path.resolve() == root.resolve()
+
+    def _display_folder_path(path: Path) -> str:
+        resolved = path.resolve()
+        mappings = sorted(_configured_mounts(), key=lambda item: len(str(item[1])), reverse=True)
+        for host_root, mount_root in mappings:
+            if not host_root:
+                continue
+            try:
+                rel = resolved.relative_to(mount_root)
+            except Exception:
+                continue
+            if re.match(r"^[A-Za-z]:[\\/]", host_root):
+                return str(PureWindowsPath(host_root).joinpath(*rel.parts))
+            return str((Path(host_root) / rel).resolve())
+        return str(resolved)
+
+    def _resolve_folder_browser_path(raw_path: str) -> Path | None:
+        raw = str(raw_path or "").strip()
+        if not raw:
+            return None
+        mapped_candidates = _host_mount_candidates(raw)
+        candidate = next((item for item in mapped_candidates if item.exists()), None)
+        if candidate is None:
+            candidate = _with_shared_mount_fallback(Path(raw), raw)
+        if not candidate.exists():
+            return None
+        try:
+            candidate = candidate.resolve()
+        except Exception:
+            pass
+        if not candidate.is_dir():
+            return None
+        allowed_roots = [mount for _host, mount in _configured_mounts()]
+        if not any(_path_is_inside(candidate, root) for root in allowed_roots):
+            return None
+        return candidate
+
+    def _folder_entry(path: Path) -> dict[str, object]:
+        return {
+            "name": path.name or _display_folder_path(path),
+            "path": _display_folder_path(path),
+            "is_dir": True,
+        }
+
     @app.get("/healthz")
     async def healthz():
         return PlainTextResponse("ok")
@@ -251,6 +340,58 @@ def register_core_routes(app: FastAPI, settings: dict, base_dir, deps: ApiDepend
                 }
             )
         return JSONResponse(content={"ok": True, "projects": results})
+
+    @app.post("/v1/workspace/folders/list")
+    async def list_workspace_folders(request: Request):
+        payload = await request.json()
+        raw_path = (
+            str(payload.get("path") or "").strip()
+            if isinstance(payload, dict)
+            else ""
+        )
+        if not raw_path:
+            roots = [_folder_entry(mount) for _host, mount in _configured_mounts()]
+            return JSONResponse(
+                content={
+                    "ok": True,
+                    "path": "",
+                    "parent_path": "",
+                    "entries": roots,
+                }
+            )
+        folder = _resolve_folder_browser_path(raw_path)
+        if folder is None:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "folder_not_accessible", "entries": []},
+            )
+        entries: list[dict[str, object]] = []
+        try:
+            for child in sorted(folder.iterdir(), key=lambda item: item.name.lower()):
+                if not child.is_dir():
+                    continue
+                if child.name.startswith("."):
+                    continue
+                entries.append(_folder_entry(child))
+                if len(entries) >= 300:
+                    break
+        except Exception as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": f"folder_list_failed:{exc}", "entries": []},
+            )
+        parent_path = ""
+        parent = folder.parent
+        if parent != folder and any(_path_is_inside(parent, root) for _host, root in _configured_mounts()):
+            parent_path = _display_folder_path(parent)
+        return JSONResponse(
+            content={
+                "ok": True,
+                "path": _display_folder_path(folder),
+                "parent_path": parent_path,
+                "entries": entries,
+            }
+        )
 
     @app.post("/v1/workspace/folder-picker")
     async def pick_workspace_folder(request: Request):

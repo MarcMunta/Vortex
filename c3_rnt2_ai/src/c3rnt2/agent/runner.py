@@ -29,18 +29,43 @@ def _parse_action(text: str) -> tuple[Action, bool]:
     text = text.strip()
     if not text:
         return Action(type="finish", args={"summary": "empty"}), False
+
+    # Strip common markdown wrappers that weak models add
+    cleaned = text
+    cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+    cleaned = cleaned.strip()
+
     decoder = json.JSONDecoder()
     payload: Any | None = None
-    for start in [index for index, char in enumerate(text) if char == "{"]:
-        candidate = text[start:].lstrip()
+    for start in [index for index, char in enumerate(cleaned) if char == "{"]:
+        candidate = cleaned[start:].lstrip()
         try:
             parsed, _end = decoder.raw_decode(candidate)
         except Exception:
-            continue
+            # Try to fix common issues: unclosed braces, trailing comma
+            try:
+                fixed = candidate.rstrip().rstrip(",")
+                open_braces = fixed.count("{") - fixed.count("}")
+                if open_braces > 0:
+                    fixed = fixed + "}" * open_braces
+                parsed = json.loads(fixed)
+            except Exception:
+                continue
         if isinstance(parsed, dict):
             payload = parsed
             break
     if payload is None:
+        # Last resort: try to detect action intent from prose
+        lower = cleaned.lower()
+        if "write_file" in lower or "write file" in lower:
+            return Action(type="finish", args={"summary": "invalid_json_but_wants_write"}), False
+        if "list_tree" in lower or "list tree" in lower or "inspect" in lower:
+            return Action(type="list_tree", args={"root": ".", "max_entries": 100}), True
+        if "read_file" in lower or "read file" in lower:
+            path_match = re.search(r"(?:read_file|read file)[^\"]*\"([^\"]+)\"", lower)
+            if path_match:
+                return Action(type="read_file", args={"path": path_match.group(1)}), True
         return Action(type="finish", args={"summary": "invalid_json"}), False
     action_type = str(payload.get("type", "finish"))
     args = payload.get("args", {}) or {}
@@ -163,6 +188,28 @@ def _summary_needs_fallback(summary: str) -> bool:
     }
 
 
+def _summary_is_model_refusal(summary: str) -> bool:
+    normalized = str(summary or "").strip().lower()
+    if not normalized:
+        return False
+    refusal_markers = (
+        "i apologize",
+        "i cannot",
+        "can't fulfill",
+        "cannot fulfill",
+        "ethical and moral",
+        "harmful or unethical",
+        "goes against",
+        "no puedo cumplir",
+        "no puedo ayudar",
+        "principios eticos",
+        "principios éticos",
+        "contenido danino",
+        "contenido dañino",
+    )
+    return any(marker in normalized for marker in refusal_markers)
+
+
 def _task_mentions_any(task: str, words: set[str]) -> bool:
     normalized = str(task or "").lower()
     return any(word in normalized for word in words)
@@ -269,6 +316,9 @@ def _task_requests_code_file(task: str) -> bool:
 
 def _task_requires_workspace_change(task: str) -> bool:
     normalized = _normalish(_extract_objective_text(task))
+    # NOTE: Do NOT include generic nouns like 'proyecto', 'project', 'app'
+    # here because they also appear in run/execute contexts ("Ejecuta el
+    # proyecto") where no file mutation is expected.
     return any(
         word in normalized
         for word in (
@@ -278,7 +328,6 @@ def _task_requires_workspace_change(task: str) -> bool:
             "add",
             "boton",
             "button",
-            "build",
             "cambia",
             "cambiar",
             "codigo",
@@ -326,10 +375,6 @@ def _task_requires_workspace_change(task: str) -> bool:
             "signup",
             "register",
             "dashboard",
-            "app",
-            "aplicacion",
-            "proyecto",
-            "project",
             "scaffold",
         )
     )
@@ -408,62 +453,195 @@ def _infer_code_path(task: str, lang: str, code: str, workspace_dir: Path) -> st
     return "main.py" if existing_main.exists() else "generated_code.txt"
 
 
-def _extract_code_write_action(task: str, output: str, workspace_dir: Path) -> Action | None:
+MODEL_FILE_EXTENSIONS = (
+    "c",
+    "conf",
+    "cpp",
+    "css",
+    "dart",
+    "go",
+    "gradle",
+    "html",
+    "java",
+    "js",
+    "json",
+    "jsx",
+    "kt",
+    "lock",
+    "md",
+    "py",
+    "rs",
+    "scss",
+    "swift",
+    "toml",
+    "ts",
+    "tsx",
+    "txt",
+    "vue",
+    "xml",
+    "yaml",
+    "yml",
+)
+MODEL_FILE_PATH_PATTERN = re.compile(
+    r"(?P<path>(?:[A-Za-z0-9_. -]+[\\/])*[A-Za-z0-9_. -]+\.("
+    + "|".join(re.escape(ext) for ext in MODEL_FILE_EXTENSIONS)
+    + r"))",
+    flags=re.IGNORECASE,
+)
+
+
+def _strip_model_path(raw: str) -> str:
+    value = str(raw or "").strip()
+    value = re.sub(r"^[#>*\-\s\d.)]+", "", value).strip()
+    value = re.sub(r"^(?:archivo|file|path|ruta)\s*[:=\-]\s*", "", value, flags=re.IGNORECASE).strip()
+    value = value.strip("`\"' \t\r\n:")
+    match = MODEL_FILE_PATH_PATTERN.search(value)
+    if match:
+        value = match.group("path")
+    value = value.replace("\\", "/").strip("/")
+    parts = [part for part in value.split("/") if part not in {"", "."}]
+    if not parts or any(part == ".." for part in parts):
+        return ""
+    return "/".join(parts)
+
+
+def _infer_path_from_block_prefix(prefix: str) -> str:
+    lines = [line.strip() for line in str(prefix or "").splitlines()[-5:] if line.strip()]
+    for line in reversed(lines):
+        candidate = _strip_model_path(line)
+        if candidate:
+            return candidate
+    return ""
+
+
+def _normalize_model_code_path(task: str, raw_path: str, lang: str, code: str, workspace_dir: Path) -> str:
+    path = _strip_model_path(raw_path)
+    if not path:
+        path = _infer_code_path(task, lang, code, workspace_dir).replace("\\", "/")
+    lowered_task = _normalish(_extract_objective_text(task))
+    looks_flutter = "flutter" in lowered_task or "dart" in lowered_task or "runapp(" in str(code or "").lower()
+    basename = Path(path).name.lower()
+    if looks_flutter and "/" not in path:
+        if basename == "main.dart" or (basename.endswith(".dart") and not basename.endswith("_test.dart")):
+            path = f"lib/{basename}"
+        elif basename.endswith("_test.dart"):
+            path = f"test/{basename}"
+    return path
+
+
+def _is_code_like(lang: str, code: str) -> bool:
+    lowered = str(code or "").lower()
+    return bool(
+        lang
+        or "void main(" in code
+        or "class " in code
+        or "import " in code
+        or "function " in code
+        or "def " in code
+        or "const " in code
+        or "var " in code
+        or "let " in code
+        or "export " in code
+        or "<template" in lowered
+        or "<html" in lowered
+        or "@override" in code
+        or "Widget build" in code
+        or "runApp(" in code
+        or "StatelessWidget" in code
+        or "StatefulWidget" in code
+    )
+
+
+def _looks_like_action_payload_text(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    if not stripped.startswith(("{", "[")):
+        return False
+    lowered = stripped[:1000].lower()
+    return '"type"' in lowered and '"args"' in lowered and (
+        "write_file" in lowered or "read_file" in lowered or "run_command" in lowered
+    )
+
+
+def _write_text_looks_incomplete(path: str, text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return True
+    if _looks_like_action_payload_text(stripped):
+        return True
+    if re.search(r"\.\.\.\s*(?:$|[}\]\)])", stripped):
+        return True
+    lowered_path = str(path or "").lower()
+    if lowered_path.endswith((".dart", ".ts", ".tsx", ".js", ".jsx", ".py")):
+        if re.search(r"(todo|placeholder)\s*[:)]", stripped, flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def _dedupe_write_actions(actions: list[Action]) -> list[Action]:
+    deduped: list[Action] = []
+    seen: set[str] = set()
+    for action in actions:
+        path = str(action.args.get("path") or "").strip().replace("\\", "/")
+        text = str(action.args.get("text") or "")
+        if not path or not text.strip() or path in seen:
+            continue
+        seen.add(path)
+        action.args["path"] = path
+        deduped.append(action)
+    return deduped
+
+
+def _extract_code_write_actions(task: str, output: str, workspace_dir: Path) -> list[Action]:
     text = str(output or "")
     if not text.strip():
-        return None
+        return []
+    actions: list[Action] = []
 
     # Priority 1: explicit file: blocks (```file:path/to/file)
     file_blocks = re.findall(r"```file:([^\n`]+)\n([\s\S]*?)```", text, flags=re.IGNORECASE)
-    if file_blocks:
-        # If multiple file blocks, write them all as a batch
-        if len(file_blocks) > 1:
-            first_path = file_blocks[0][0].strip()
-            first_code = file_blocks[0][1].strip()
-            if first_path and first_code:
-                return Action(type="write_file", args={"path": first_path, "text": first_code.rstrip() + "\n", "_finish_after_write": False})
-        elif file_blocks:
-            path = file_blocks[0][0].strip()
-            code = file_blocks[0][1].strip()
-            if path and code:
-                return Action(type="write_file", args={"path": path, "text": code.rstrip() + "\n", "_finish_after_write": True})
+    for raw_path, raw_code in file_blocks:
+        code = str(raw_code or "").strip()
+        path = _normalize_model_code_path(task, raw_path, "", code, workspace_dir)
+        if path and code:
+            actions.append(Action(type="write_file", args={"path": path, "text": code.rstrip() + "\n"}))
+    if actions:
+        return _dedupe_write_actions(actions)
 
     # Priority 2: code blocks with language markers
-    blocks = re.findall(r"```([A-Za-z0-9_+.-]*)\n([\s\S]*?)```", text)
-    for raw_lang, raw_code in blocks:
+    for match in re.finditer(r"```([A-Za-z0-9_+.-]*)\n([\s\S]*?)```", text):
+        raw_lang, raw_code = match.group(1), match.group(2)
         lang = str(raw_lang or "").strip().lower()
         code = str(raw_code or "").strip()
-        if not code or len(code) < 20:
+        if not code:
             continue
-        code_signal = bool(
-            lang
-            or "void main(" in code
-            or "class " in code
-            or "import " in code
-            or "function " in code
-            or "def " in code
-            or "const " in code
-            or "var " in code
-            or "let " in code
-            or "export " in code
-            or "<template" in code
-            or "<html" in code
-            or "@override" in code
-            or "Widget build" in code
-            or "runApp(" in code
-            or "StatelessWidget" in code
-            or "StatefulWidget" in code
-        )
-        if not code_signal:
+        if _looks_like_action_payload_text(code):
             continue
-        path = _infer_code_path(task, lang, code, workspace_dir)
-        return Action(type="write_file", args={"path": path, "text": code.rstrip() + "\n", "_finish_after_write": True})
+        prefix = text[max(0, match.start() - 320) : match.start()]
+        path_hint = _infer_path_from_block_prefix(prefix)
+        if not path_hint and not _is_code_like(lang, code) and len(code) < 20:
+            continue
+        path = _normalize_model_code_path(task, path_hint, lang, code, workspace_dir)
+        if path and code:
+            actions.append(Action(type="write_file", args={"path": path, "text": code.rstrip() + "\n"}))
+    if actions:
+        return _dedupe_write_actions(actions)
 
     # Priority 3: detect Flutter/Dart code inline
     if "import 'package:flutter/material.dart'" in text or "MaterialApp(" in text:
         path = _infer_code_path(task, "dart", text, workspace_dir)
-        return Action(type="write_file", args={"path": path, "text": text.rstrip() + "\n", "_finish_after_write": True})
-    return None
+        return [Action(type="write_file", args={"path": path, "text": text.rstrip() + "\n"})]
+    return []
+
+
+def _extract_code_write_action(task: str, output: str, workspace_dir: Path) -> Action | None:
+    actions = _extract_code_write_actions(task, output, workspace_dir)
+    if not actions:
+        return None
+    first = actions[0]
+    first.args["_finish_after_write"] = len(actions) == 1
+    return first
 
 
 def _dedupe_browser_actions(actions: List[dict[str, object]]) -> List[dict[str, object]]:
@@ -532,6 +710,7 @@ def _generate_final_summary(
         with (model_lock() if model_lock is not None else nullcontext()):
             text = current_model.generate(
                 prompt,
+                messages=messages,
                 max_new_tokens=max_new_tokens,
                 temperature=0.0,
             )
@@ -622,15 +801,7 @@ def _extract_direct_file_action(task: str) -> Action | None:
     )
     if create_match:
         path = create_match.group(1).strip().rstrip(".,;:")
-        content = create_match.group(2).strip()
-        content = re.split(
-            r"\b(?:no\s+ejecutes|no\s+valides|do\s+not\s+run|don't\s+run|sin\s+tests)\b",
-            content,
-            maxsplit=1,
-            flags=re.IGNORECASE,
-        )[0].strip()
-        content = content.strip("`\"' \t\r\n")
-        content = content.rstrip(".")
+        content = _clean_direct_file_content(str(create_match.group(2) or ""))
         if path and content:
             return Action(type="write_file", args={"path": path, "text": content})
 
@@ -701,8 +872,20 @@ def _append_direct_action(
 
 def _clean_direct_file_content(content: str) -> str:
     cleaned = str(content or "").strip().strip("`\"' \t\r\n")
+    cleaned = re.sub(
+        r"^(?:exacto|exacta|exactamente|literal|literalmente|exact|exactly)\s+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
     cleaned = re.split(
-        r"\b(?:no\s+ejecutes|no\s+valides|do\s+not\s+run|don't\s+run|sin\s+tests)\b",
+        r"\b(?:no\s+ejecutes|no\s+valides|do\s+not\s+run|don't\s+run|sin\s+tests|usa\s+write_file|use\s+write_file|no\s+expliques|do\s+not\s+explain|don't\s+explain)\b",
+        cleaned,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip()
+    cleaned = re.split(
+        r"\s+\b(?:en|dentro\s+de|inside|in)\s+(?:el\s+|la\s+|the\s+)?(?:workspace|proyecto|project|repo|repositorio)\b",
         cleaned,
         maxsplit=1,
         flags=re.IGNORECASE,
@@ -2061,7 +2244,10 @@ def _read_output_brief(path: str, output: str) -> str:
 
 def _attempted_workspace_mutation(tool_calls: List[dict]) -> bool:
     return any(
-        str(call.get("action") or "") in {"write_file", "delete_file", "apply_patch", "propose_patch", "sandbox_patch"}
+        str(call.get("action") or "") in {
+            "write_file", "delete_file", "apply_patch", "propose_patch",
+            "sandbox_patch", "run_command",
+        }
         for call in tool_calls
     )
 
@@ -2298,7 +2484,7 @@ def run_agent(
         "EXAMPLES:\n"
         '{"type":"list_tree","args":{"root":".","max_entries":100}}\n'
         '{"type":"read_file","args":{"path":"lib/main.dart"}}\n'
-        '{"type":"write_file","args":{"path":"lib/main.dart","text":"import \'package:flutter/material.dart\';\\nvoid main() => runApp(MyApp());..."}}\n'
+        '{"type":"write_file","args":{"path":"lib/main.dart","text":"import \'package:flutter/material.dart\';\\n\\nvoid main() {\\n  runApp(const MyApp());\\n}\\n\\nclass MyApp extends StatelessWidget {\\n  const MyApp({super.key});\\n  @override\\n  Widget build(BuildContext context) => const MaterialApp(home: Scaffold(body: Center(child: Text(\'Login\'))));\\n}\\n"}}\n'
         '{"type":"run_command","args":{"command":"flutter analyze","cwd":"."}}\n'
         '{"type":"finish","args":{"summary":"Created lib/main.dart with a login screen using Material Design 3"}}\n'
         "\n"
@@ -2366,61 +2552,7 @@ def run_agent(
         else []
     )
     assume_flutter_workspace = _workspace_looks_flutter(workspace_dir)
-    if (
-        not direct_actions
-        and action_provider is None
-        and effective_permissions.can_run_commands
-        and "run_command" in allowed_tools
-    ):
-        direct_actions = _project_run_actions(objective_text, workspace_dir)
-    if (
-        not direct_actions
-        and action_provider is None
-        and assume_flutter_workspace
-        and effective_permissions.can_write
-        and "write_file" in allowed_tools
-    ):
-        direct_actions = _flutter_dark_mode_button_actions(
-            objective_text,
-            workspace_dir,
-            include_commands=effective_permissions.can_run_commands and "run_command" in allowed_tools,
-        )
-    if (
-        not direct_actions
-        and action_provider is None
-        and assume_flutter_workspace
-        and effective_permissions.can_write
-        and "write_file" in allowed_tools
-    ):
-        direct_actions = _flutter_forgot_password_button_actions(
-            objective_text,
-            workspace_dir,
-            include_commands=effective_permissions.can_run_commands and "run_command" in allowed_tools,
-        )
-    if (
-        not direct_actions
-        and action_provider is None
-        and effective_permissions.can_run_commands
-        and "run_command" in allowed_tools
-    ):
-        direct_actions = _flutter_existing_project_run_actions(
-            task,
-            assume_flutter=assume_flutter_workspace,
-            workspace_dir=workspace_dir,
-        )
-    if (
-        not direct_actions
-        and action_provider is None
-        and effective_permissions.can_write
-        and "write_file" in allowed_tools
-        and _requests_flutter_terminal_actions(task)
-    ):
-        direct_actions = _flutter_project_fallback_actions(
-            task,
-            include_commands=effective_permissions.can_run_commands and "run_command" in allowed_tools,
-            assume_flutter=assume_flutter_workspace,
-            workspace_dir=workspace_dir,
-        )
+    # Removed hardcoded project and flutter direct actions
 
     def _missing_required_file_result(args: dict) -> ToolResult | None:
         if not bool(args.get("require_exists", False)):
@@ -2438,6 +2570,19 @@ def run_agent(
             return ToolResult(ok=False, output=f"`{raw_path}` existe, pero no es un archivo editable.")
         return None
 
+    def _invalid_write_text_result(args: dict) -> ToolResult | None:
+        raw_path = str(args.get("path") or "").strip()
+        text = str(args.get("text") or "")
+        if _write_text_looks_incomplete(raw_path, text):
+            return ToolResult(
+                ok=False,
+                output=(
+                    "incomplete_file_content: el contenido parece un JSON de accion, "
+                    "placeholder o codigo incompleto; vuelve a generar el archivo completo."
+                ),
+            )
+        return None
+
     def _run_direct_actions(actions: list[Action]) -> bool:
         nonlocal summary, tests_ok, tools_ok
         direct_ok = True
@@ -2447,7 +2592,7 @@ def run_agent(
             if direct_action.type not in allowed_tools:
                 direct_result = ToolResult(ok=False, output=f"tool_disabled:{direct_action.type}")
             elif direct_action.type == "write_file":
-                direct_result = _missing_required_file_result(direct_action.args) or tools.write_file(
+                direct_result = _missing_required_file_result(direct_action.args) or _invalid_write_text_result(direct_action.args) or tools.write_file(
                     str(direct_action.args.get("path", "")),
                     str(direct_action.args.get("text", "")),
                     append=bool(direct_action.args.get("append", False)),
@@ -2505,7 +2650,7 @@ def run_agent(
 
     def _command_activity_required() -> bool:
         return (
-            _task_requires_command_activity(task)
+            _task_requires_command_activity(objective_text)
             and effective_permissions.can_run_commands
             and bool({"run_command", "run_tests", "open_browser"} & allowed_tools)
         )
@@ -2524,21 +2669,7 @@ def run_agent(
         except Exception as exc:
             model_unavailable_reason = str(exc)
 
-    if (
-        not direct_actions
-        and action_provider is None
-        and current_model is None
-        and effective_permissions.can_write
-        and "write_file" in allowed_tools
-    ):
-        direct_actions = _flutter_project_fallback_actions(
-            task,
-            include_commands=effective_permissions.can_run_commands and "run_command" in allowed_tools,
-            assume_flutter=assume_flutter_workspace,
-            workspace_dir=workspace_dir,
-        )
-    if direct_actions and not tools_ok and not tool_calls:
-        _run_direct_actions(direct_actions)
+    # Removed fallback hardcoded actions
 
     if not direct_actions and action_provider is None and current_model is None:
         summary = (
@@ -2618,17 +2749,18 @@ def run_agent(
             messages = apply_message_budget(messages, settings, mode="agent")
             prompt = build_chat_prompt(messages, backend=str(settings.get("core", {}).get("backend", "vortex")), tokenizer=getattr(current_model, "tokenizer", None), default_system=None)
             with (model_lock() if model_lock is not None else nullcontext()):
-                output = current_model.generate(prompt, max_new_tokens=action_max_new_tokens, temperature=0.0)
+                output = current_model.generate(prompt, messages=messages, max_new_tokens=action_max_new_tokens, temperature=0.0)
             action, ok = _parse_action(output)
             if not ok:
-                fallback_action = (
-                    _extract_code_write_action(task, str(output or ""), workspace_dir)
+                ran_markdown_file_actions = False
+                fallback_actions = (
+                    _extract_code_write_actions(task, str(output or ""), workspace_dir)
                     if effective_permissions.can_write and "write_file" in allowed_tools
-                    else None
+                    else []
                 )
-                if fallback_action is not None:
-                    action = fallback_action
-                    ok = True
+                if fallback_actions:
+                    _run_direct_actions(fallback_actions)
+                    ran_markdown_file_actions = True
                 else:
                     for _retry in range(max(1, json_repair_retries)):
                         messages.append({
@@ -2641,19 +2773,21 @@ def run_agent(
                         messages = apply_message_budget(messages, settings, mode="agent")
                         prompt = build_chat_prompt(messages, backend=str(settings.get("core", {}).get("backend", "vortex")), tokenizer=getattr(current_model, "tokenizer", None), default_system=None)
                         with (model_lock() if model_lock is not None else nullcontext()):
-                            output = current_model.generate(prompt, max_new_tokens=action_max_new_tokens, temperature=0.0)
+                            output = current_model.generate(prompt, messages=messages, max_new_tokens=action_max_new_tokens, temperature=0.0)
                         action, ok = _parse_action(output)
                         if ok:
                             break
-                        fallback_action = (
-                            _extract_code_write_action(task, str(output or ""), workspace_dir)
+                        fallback_actions = (
+                            _extract_code_write_actions(task, str(output or ""), workspace_dir)
                             if effective_permissions.can_write and "write_file" in allowed_tools
-                            else None
+                            else []
                         )
-                        if fallback_action is not None:
-                            action = fallback_action
-                            ok = True
+                        if fallback_actions:
+                            _run_direct_actions(fallback_actions)
+                            ran_markdown_file_actions = True
                             break
+                    if ran_markdown_file_actions:
+                        break
                     if not ok:
                         invalid_json_count += 1
                         tool_calls.append(
@@ -2675,12 +2809,26 @@ def run_agent(
                             )
                             continue
                         action = Action(type="finish", args={"summary": "invalid_json"})
+                if ran_markdown_file_actions:
+                    break
         else:
             action = action_provider(messages)
         messages.append({"role": "assistant", "content": json.dumps({"type": action.type, "args": action.args})})
 
         if action.type == "finish":
             summary = str(action.args.get("summary", "finished"))
+            if _summary_is_model_refusal(summary) and _task_requires_workspace_change(task):
+                if _attempted_workspace_mutation(tool_calls):
+                    summary = "file_action_done"
+                else:
+                    blocked = True
+                    tools_ok = False
+                    summary = (
+                        "No he aplicado cambios: el modelo rechazo una tarea de codigo valida. "
+                        "No marco la tarea como hecha."
+                    )
+            if blocked:
+                break
             if _task_requires_tool_activity(task) and not tool_calls:
                 blocked = True
                 tools_ok = False
@@ -2725,7 +2873,7 @@ def run_agent(
             max_entries = int(action.args.get("max_entries", 200))
             result = tools.list_tree(root, max_entries=max_entries)
         elif action.type == "write_file":
-            result = _missing_required_file_result(action.args) or tools.write_file(
+            result = _missing_required_file_result(action.args) or _invalid_write_text_result(action.args) or tools.write_file(
                 str(action.args.get("path", "")),
                 str(action.args.get("text", "")),
                 append=bool(action.args.get("append", False)),
@@ -2743,29 +2891,6 @@ def run_agent(
                     )
                 )
                 messages.append({"role": "tool", "content": result.output[:tool_chars]})
-                if (
-                    result.ok
-                    and _requests_flutter_login_project(task)
-                    and str(action.args.get("path") or "").replace("\\", "/") == "lib/main.dart"
-                ):
-                    for support_action in _flutter_login_project_support_actions(workspace_dir):
-                        support_result = tools.write_file(
-                            str(support_action.args.get("path", "")),
-                            str(support_action.args.get("text", "")),
-                            append=bool(support_action.args.get("append", False)),
-                        )
-                        tool_calls.append(
-                            _tool_call_record(
-                                support_action.type,
-                                support_action.args,
-                                support_result,
-                                max_output_chars=min(4000, tool_chars),
-                            )
-                        )
-                        tools_ok = tools_ok and bool(support_result.ok)
-                        if not support_result.ok:
-                            summary = support_result.output
-                            break
                 break
         elif action.type == "delete_file":
             result = tools.delete_file(str(action.args.get("path", "")))

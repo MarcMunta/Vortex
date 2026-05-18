@@ -149,3 +149,21 @@ def test_chat_completions_injects_persistent_memory(tmp_path: Path, monkeypatch)
     assert "CONVERSATION MEMORY" in content
     assert "8765" in content
     assert "30GB" in content
+
+
+def test_workspace_folder_browser_lists_mapped_downloads(tmp_path: Path, monkeypatch) -> None:
+    downloads_mount = tmp_path / "host" / "downloads"
+    (downloads_mount / "test_flutter").mkdir(parents=True)
+    monkeypatch.setenv("C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT", r"C:\Users\marcm\Downloads")
+    monkeypatch.setenv("C3RNT2_HOST_DOWNLOADS_MOUNT", str(downloads_mount))
+    client = _make_client(tmp_path, monkeypatch)
+
+    roots = client.post("/v1/workspace/folders/list", json={})
+    assert roots.status_code == 200
+    root_entries = roots.json()["entries"]
+    downloads_root = next(entry for entry in root_entries if entry["path"] == r"C:\Users\marcm\Downloads")
+
+    children = client.post("/v1/workspace/folders/list", json={"path": downloads_root["path"]})
+
+    assert children.status_code == 200
+    assert any(entry["path"] == r"C:\Users\marcm\Downloads\test_flutter" for entry in children.json()["entries"])

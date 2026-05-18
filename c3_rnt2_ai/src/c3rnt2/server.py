@@ -4261,6 +4261,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                     payload.get("prompt"),
                     permission_context=permission_context,
                 )
+                agent_messages = apply_message_budget(agent_messages, settings, mode="agent")
                 agent_prompt = build_chat_prompt(
                     agent_messages,
                     backend_cfg,

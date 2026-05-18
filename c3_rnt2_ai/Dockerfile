@@ -44,7 +44,8 @@ COPY config ./config
 COPY documentos ./documentos
 
 RUN python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install -e ".[api,llama_cpp]"
+    && python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 \
+    && python -m pip install -e ".[api]"
 
 EXPOSE 8000 8765
 

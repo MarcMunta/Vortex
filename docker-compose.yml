@@ -12,6 +12,10 @@ x-backend-env: &backend-env
   C3RNT2_HOST_WORKSPACE_REPO_NAME: Vortex
   C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub\Vortex}
   C3RNT2_HOST_WORKSPACE_MOUNT: /workspace/Vortex
+  C3RNT2_HOST_D_WINDOWS_ROOT: ${C3RNT2_HOST_D_WINDOWS_ROOT:-D:\GitHub}
+  C3RNT2_HOST_D_MOUNT: /workspace/GitHub
+  C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT: ${C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT:-C:\Users\marcm_kntz5zt\Downloads}
+  C3RNT2_HOST_DOWNLOADS_MOUNT: /host/downloads
   VORTEX_API_HOST: 0.0.0.0
   VORTEX_API_PORT: 8000
   PYTHONUNBUFFERED: "1"
@@ -37,6 +41,9 @@ services:
       - "${VORTEX_FLUTTER_WEB_PORT:-19090}:19090"
     volumes:
       - .:/workspace/Vortex
+      - ./c3_rnt2_ai/src:/app/src
+      - ${C3RNT2_HOST_D_WINDOWS_ROOT:-D:\GitHub}:/workspace/GitHub
+      - ${C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT:-C:\Users\marcm_kntz5zt\Downloads}:/host/downloads
       - vortex-frontend-node-modules:/workspace/Vortex/vortex-chat/node_modules
       - ./c3_rnt2_ai/data/models/gguf:/app/data/models/gguf:ro
       - vortex-chat-data:/app/data/chat
@@ -85,6 +92,9 @@ services:
       - "${VORTEX_CONTROL_PORT:-8765}:8765"
     volumes:
       - .:/workspace/Vortex
+      - ./c3_rnt2_ai/src:/app/src
+      - ${C3RNT2_HOST_D_WINDOWS_ROOT:-D:\GitHub}:/workspace/GitHub
+      - ${C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT:-C:\Users\marcm_kntz5zt\Downloads}:/host/downloads
       - vortex-frontend-node-modules:/workspace/Vortex/vortex-chat/node_modules
       - ./c3_rnt2_ai/data/models/gguf:/app/data/models/gguf:ro
       - vortex-chat-data:/app/data/chat
