@@ -237,17 +237,22 @@ const toFileChanges = (raw: unknown): FileChange[] => {
 };
 
 const mergeFileChanges = (...groups: FileChange[][]): FileChange[] => {
-  const merged: FileChange[] = [];
-  const seen = new Set<string>();
+  const merged = new Map<string, FileChange>();
+  const seenByPath = new Map<string, Set<string>>();
   for (const group of groups) {
     for (const change of group) {
-      const key = `${change.path}\n${change.diff}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push(change);
+      const path = String(change?.path || "").trim();
+      const diff = String(change?.diff || "").trim();
+      if (!path || !diff) continue;
+      const seen = seenByPath.get(path) || new Set<string>();
+      if (seen.has(diff)) continue;
+      seen.add(diff);
+      seenByPath.set(path, seen);
+      const existing = merged.get(path);
+      merged.set(path, existing ? { path, diff: `${existing.diff}\n\n${diff}` } : { path, diff });
     }
   }
-  return merged;
+  return Array.from(merged.values());
 };
 
 const toBrowserActions = (raw: unknown): BrowserAction[] => {

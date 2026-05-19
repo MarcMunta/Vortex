@@ -51,6 +51,22 @@ def _coerce_bool(value: object | None, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _coerce_grammar(value: object | None) -> object | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return value
+    grammar_text = value.strip()
+    if not grammar_text:
+        return None
+    try:
+        from llama_cpp import LlamaGrammar  # type: ignore
+
+        return LlamaGrammar.from_string(grammar_text)
+    except Exception:
+        return None
+
+
 @dataclass(frozen=True)
 class LlamaCppConfig:
     model_path: Path
@@ -143,9 +159,10 @@ class LlamaCppModel:
         top_p: float = 1.0,
         repetition_penalty: float = 1.0,
         no_repeat_ngram: int = 0,
-        **_kwargs,
+        **kwargs,
     ) -> str:
         _ = no_repeat_ngram
+        grammar = _coerce_grammar(kwargs.get("grammar"))
         chat_messages = self._prepare_messages(messages, system)
         prompt_text = self._prepare_prompt(prompt, messages, system)
         start = time.time()
@@ -161,6 +178,7 @@ class LlamaCppModel:
                         "top_p": float(top_p),
                         "repeat_penalty": float(repetition_penalty),
                         "stream": False,
+                        "grammar": grammar,
                     }
                     kwargs = _filter_kwargs(getattr(self.model, "create_chat_completion"), kwargs)
                     out = self.model.create_chat_completion(**kwargs)
@@ -172,6 +190,7 @@ class LlamaCppModel:
                         "top_p": float(top_p),
                         "repeat_penalty": float(repetition_penalty),
                         "stream": False,
+                        "grammar": grammar,
                     }
                     kwargs = _filter_kwargs(getattr(self.model, "create_completion"), kwargs)
                     out = self.model.create_completion(**kwargs)
@@ -234,9 +253,10 @@ class LlamaCppModel:
         top_p: float = 1.0,
         repetition_penalty: float = 1.0,
         no_repeat_ngram: int = 0,
-        **_kwargs,
+        **kwargs,
     ) -> Iterable[str]:
         _ = no_repeat_ngram
+        grammar = _coerce_grammar(kwargs.get("grammar"))
         chat_messages = self._prepare_messages(messages, system)
         prompt_text = self._prepare_prompt(prompt, messages, system)
         start = time.time()
@@ -252,6 +272,7 @@ class LlamaCppModel:
                     "top_p": float(top_p),
                     "repeat_penalty": float(repetition_penalty),
                     "stream": True,
+                    "grammar": grammar,
                 }
                 stream_fn = getattr(self.model, "create_chat_completion")
             else:
@@ -262,6 +283,7 @@ class LlamaCppModel:
                     "top_p": float(top_p),
                     "repeat_penalty": float(repetition_penalty),
                     "stream": True,
+                    "grammar": grammar,
                 }
                 stream_fn = getattr(self.model, "create_completion")
             kwargs = _filter_kwargs(stream_fn, kwargs)

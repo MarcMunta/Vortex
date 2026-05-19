@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -9,23 +12,69 @@ from fastapi.responses import JSONResponse
 from ..dependencies import ApiDependencies
 
 
+def _probe_nvidia_smi() -> dict[str, Any]:
+    try:
+        proc = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,memory.total,driver_version",
+                "--format=csv,noheader",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    output = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        return {"ok": False, "error": (proc.stderr or output or f"exit_{proc.returncode}").strip()}
+    devices = [line.strip() for line in output.splitlines() if line.strip()]
+    return {"ok": bool(devices), "devices": devices}
+
+
+def _probe_llama_cpp_gpu() -> dict[str, Any]:
+    try:
+        llama_cpp = importlib.import_module("llama_cpp")
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    fn = getattr(llama_cpp, "llama_supports_gpu_offload", None)
+    if not callable(fn):
+        return {"ok": False, "error": "llama_supports_gpu_offload_unavailable"}
+    try:
+        return {"ok": bool(fn())}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def register_utility_routes(app: FastAPI, settings: dict, _base_dir: Path, deps: ApiDependencies) -> None:
     @app.get("/doctor")
     @app.post("/doctor")
     async def doctor():
+        torch_cuda = bool(deps.torch is not None and deps.torch.cuda.is_available())
+        nvidia_smi = _probe_nvidia_smi()
+        llama_cpp_gpu = _probe_llama_cpp_gpu()
         payload = {
             "ok": True,
             "profile": str(settings.get("_profile") or ""),
             "backends": list((getattr(app.state, "models", {}) or {}).keys()),
             "training_active": bool(getattr(app.state, "training_active", False)),
             "torch": bool(deps.torch is not None),
-            "cuda": bool(deps.torch is not None and deps.torch.cuda.is_available()),
+            "torch_cuda": torch_cuda,
+            "llama_cpp_gpu_offload": bool(llama_cpp_gpu.get("ok")),
+            "nvidia_smi": nvidia_smi,
+            "cuda": bool(torch_cuda or llama_cpp_gpu.get("ok") or nvidia_smi.get("ok")),
         }
-        if deps.torch is not None and deps.torch.cuda.is_available():
+        if not llama_cpp_gpu.get("ok"):
+            payload["llama_cpp_gpu_error"] = str(llama_cpp_gpu.get("error") or "")
+        if torch_cuda:
             try:
                 payload["cuda_device"] = deps.torch.cuda.get_device_name(0)
             except Exception:
                 pass
+        elif nvidia_smi.get("devices"):
+            payload["cuda_device"] = str(nvidia_smi["devices"][0])
         return JSONResponse(content=payload)
 
     @app.get("/doctor/deep")

@@ -701,7 +701,8 @@ def train_once(settings: dict, base_dir: Path, reuse_dataset: bool = False) -> H
     has_chat_data = _has_nonempty_jsonl(chat_path)
     has_feedback_data = _has_nonempty_jsonl(feedback_path)
     has_training_data = _has_nonempty_jsonl(training_path)
-    if not chunks and not reuse_dataset and not (has_episode_data or has_chat_data or has_feedback_data or has_training_data):
+    has_extra_training_data = any(_has_nonempty_jsonl(path) for path in extra_training_paths)
+    if not chunks and not reuse_dataset and not (has_episode_data or has_chat_data or has_feedback_data or has_training_data or has_extra_training_data):
         return HfTrainResult(ok=False, ok_train=False, ok_eval=False, run_id="", adapter_dir=None, loss=None, steps=0, samples=0, tokens_per_sec=None, vram_peak_mb=None, error="no_samples")
 
     if reuse_dataset and dataset_path.exists():

@@ -46,6 +46,15 @@ def resolve_context_budget(settings: dict[str, Any] | None) -> dict[str, Any]:
         elif isinstance(default, int):
             cfg[key] = _as_int(cfg.get(key), default)
     cfg["model_max_context_tokens"] = _as_int(cfg["model_max_context_tokens"], 32768, low=2048, high=65536)
+    core_cfg = (settings or {}).get("core", {}) or {}
+    llama_ctx = 0
+    if isinstance(core_cfg, dict):
+        try:
+            llama_ctx = int(core_cfg.get("llama_cpp_ctx") or 0)
+        except Exception:
+            llama_ctx = 0
+    if llama_ctx > 0:
+        cfg["model_max_context_tokens"] = min(int(cfg["model_max_context_tokens"]), int(llama_ctx))
     cfg["default_chat_context_tokens"] = min(cfg["default_chat_context_tokens"], cfg["model_max_context_tokens"])
     cfg["default_agent_context_tokens"] = min(cfg["default_agent_context_tokens"], cfg["model_max_context_tokens"])
     cfg["max_input_tokens"] = min(cfg["max_input_tokens"], cfg["model_max_context_tokens"])
@@ -91,23 +100,22 @@ def output_limit_for_mode(settings: dict[str, Any] | None, mode: str = "chat", *
 
 def resolve_model_context_limit(settings: dict[str, Any] | None, model: object | None = None) -> int:
     cfg = resolve_context_budget(settings)
-    for attr in ("max_position_embeddings", "n_ctx", "context_length", "model_max_length"):
-        raw = getattr(model, attr, None) if model is not None else None
-        try:
-            value = int(raw) if raw is not None else 0
-        except Exception:
-            value = 0
-        if value > 0 and value < 10_000_000:
-            return min(value, int(cfg["model_max_context_tokens"]))
-    model_cfg = getattr(model, "config", None) if model is not None else None
-    for attr in ("max_position_embeddings", "n_ctx", "context_length", "model_max_length"):
-        raw = getattr(model_cfg, attr, None) if model_cfg is not None else None
-        try:
-            value = int(raw) if raw is not None else 0
-        except Exception:
-            value = 0
-        if value > 0 and value < 10_000_000:
-            return min(value, int(cfg["model_max_context_tokens"]))
+    owners = [
+        model,
+        getattr(model, "cfg", None) if model is not None else None,
+        getattr(model, "config", None) if model is not None else None,
+    ]
+    for owner in owners:
+        if owner is None:
+            continue
+        for attr in ("max_position_embeddings", "n_ctx", "context_length", "model_max_length"):
+            raw = getattr(owner, attr, None)
+            try:
+                value = int(raw) if raw is not None else 0
+            except Exception:
+                value = 0
+            if value > 0 and value < 10_000_000:
+                return min(value, int(cfg["model_max_context_tokens"]))
     return int(cfg["model_max_context_tokens"])
 
 
@@ -164,4 +172,3 @@ def apply_message_budget(
         out.append(message)
         used += cost
     return out
-

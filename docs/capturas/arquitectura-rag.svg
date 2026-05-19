@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="520" viewBox="0 0 1180 520" role="img" aria-labelledby="title desc">
+  <title id="title">Arquitectura RAG del chatbot</title>
+  <desc id="desc">Flujo desde usuario hasta respuesta automatica o escalado humano.</desc>
+  <rect width="1180" height="520" fill="#111827"/>
+  <text x="48" y="58" fill="#f9fafb" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="700">Chatbot de soporte: IA + RAG + escalado humano</text>
+  <text x="48" y="88" fill="#9ca3af" font-family="Segoe UI, Arial, sans-serif" font-size="15">Pipeline real documentado en c3_rnt2_ai/src/c3rnt2/support_chatbot.py</text>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#38bdf8"/>
+    </marker>
+    <style>
+      .box { fill: #1f2937; stroke: #374151; stroke-width: 1.4; rx: 14; }
+      .accent { fill: #0f766e; stroke: #2dd4bf; stroke-width: 1.5; rx: 14; }
+      .warn { fill: #7f1d1d; stroke: #f87171; stroke-width: 1.5; rx: 14; }
+      .label { fill: #f9fafb; font-family: Segoe UI, Arial, sans-serif; font-size: 15px; font-weight: 700; }
+      .small { fill: #d1d5db; font-family: Segoe UI, Arial, sans-serif; font-size: 12px; }
+      .line { stroke: #38bdf8; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect class="box" x="48" y="150" width="140" height="84"/>
+  <text class="label" x="82" y="184">Usuario</text>
+  <text class="small" x="71" y="208">Pregunta libre</text>
+  <path class="line" d="M188 192 H238"/>
+  <rect class="box" x="238" y="150" width="150" height="84"/>
+  <text class="label" x="267" y="184">Preprocesado</text>
+  <text class="small" x="262" y="208">normaliza + corrige</text>
+  <path class="line" d="M388 192 H438"/>
+  <rect class="box" x="438" y="150" width="150" height="84"/>
+  <text class="label" x="477" y="184">Embedding</text>
+  <text class="small" x="468" y="208">significado</text>
+  <path class="line" d="M588 192 H638"/>
+  <rect class="accent" x="638" y="150" width="160" height="84"/>
+  <text class="label" x="691" y="184">FAISS</text>
+  <text class="small" x="670" y="208">chunks relevantes</text>
+  <path class="line" d="M798 192 H848"/>
+  <rect class="box" x="848" y="150" width="150" height="84"/>
+  <text class="label" x="899" y="184">Prompt</text>
+  <text class="small" x="876" y="208">solo contexto</text>
+  <path class="line" d="M998 192 H1048"/>
+  <rect class="box" x="1048" y="150" width="84" height="84"/>
+  <text class="label" x="1073" y="184">LLM</text>
+  <text class="small" x="1060" y="208">genera</text>
+  <path class="line" d="M1090 234 V292 H708"/>
+  <rect class="box" x="540" y="292" width="168" height="92"/>
+  <text class="label" x="577" y="326">Validacion</text>
+  <text class="small" x="566" y="350">contexto + score + reglas</text>
+  <path class="line" d="M540 338 H420"/>
+  <rect class="accent" x="250" y="292" width="170" height="92"/>
+  <text class="label" x="289" y="326">Respuesta</text>
+  <text class="small" x="283" y="350">si es segura</text>
+  <path class="line" d="M708 338 H828"/>
+  <rect class="warn" x="828" y="292" width="198" height="92"/>
+  <text class="label" x="867" y="326">Escalado humano</text>
+  <text class="small" x="861" y="350">si no hay seguridad</text>
+  <rect x="48" y="430" width="1084" height="48" rx="12" fill="#172554" stroke="#2563eb"/>
+  <text x="70" y="461" fill="#dbeafe" font-family="Segoe UI, Arial, sans-serif" font-size="15">Idea clave: el modelo no decide solo. La arquitectura decide cuando responder y cuando escalar.</text>
+</svg>

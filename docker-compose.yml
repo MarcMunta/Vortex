@@ -4,11 +4,15 @@ x-backend-build: &backend-build
   context: ./c3_rnt2_ai
   dockerfile: Dockerfile
   args:
-    VORTEX_BACKEND_IMAGE: ${VORTEX_BACKEND_IMAGE:-python:3.11-slim-bookworm}
-    LLAMA_CPP_CMAKE_ARGS: ${LLAMA_CPP_CMAKE_ARGS:-}
+    VORTEX_BACKEND_IMAGE: ${VORTEX_BACKEND_IMAGE:-nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04}
+    LLAMA_CPP_CMAKE_ARGS: ${LLAMA_CPP_CMAKE_ARGS:--DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=89}
+    LLAMA_CPP_PIP_EXTRA_INDEX_URL: ${LLAMA_CPP_PIP_EXTRA_INDEX_URL:-}
+    VORTEX_INSTALL_TRAINING: ${VORTEX_INSTALL_TRAINING:-1}
 
 x-backend-env: &backend-env
   C3RNT2_PROFILE: ${C3RNT2_PROFILE:-rtx4080_16gb_llama2_7b_q4_local}
+  NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+  NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
   C3RNT2_HOST_WORKSPACE_REPO_NAME: Vortex
   C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT: ${C3RNT2_HOST_WORKSPACE_WINDOWS_ROOT:-D:\GitHub\Vortex}
   C3RNT2_HOST_WORKSPACE_MOUNT: /workspace/Vortex
@@ -18,10 +22,23 @@ x-backend-env: &backend-env
   C3RNT2_HOST_DOWNLOADS_MOUNT: /host/downloads
   VORTEX_API_HOST: 0.0.0.0
   VORTEX_API_PORT: 8000
+  HF_HOME: /root/.cache/huggingface
+  TRANSFORMERS_CACHE: /root/.cache/huggingface
   PYTHONUNBUFFERED: "1"
+
+x-gpu: &gpu
+  gpus: all
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
 
 services:
   vortex-api:
+    <<: *gpu
     image: vortex-backend:local
     build: *backend-build
     environment: *backend-env
@@ -42,8 +59,10 @@ services:
     volumes:
       - .:/workspace/Vortex
       - ./c3_rnt2_ai/src:/app/src
+      - ./c3_rnt2_ai/config:/app/config
       - ${C3RNT2_HOST_D_WINDOWS_ROOT:-D:\GitHub}:/workspace/GitHub
       - ${C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT:-C:\Users\marcm_kntz5zt\Downloads}:/host/downloads
+      - ${VORTEX_HF_CACHE_WINDOWS_ROOT:-C:\Users\marcm_kntz5zt\.cache\huggingface}:/root/.cache/huggingface
       - vortex-frontend-node-modules:/workspace/Vortex/vortex-chat/node_modules
       - ./c3_rnt2_ai/data/models/gguf:/app/data/models/gguf:ro
       - vortex-chat-data:/app/data/chat
@@ -64,6 +83,7 @@ services:
       - vortex-net
 
   vortex-control:
+    <<: *gpu
     image: vortex-backend:local
     build: *backend-build
     environment:
@@ -93,8 +113,10 @@ services:
     volumes:
       - .:/workspace/Vortex
       - ./c3_rnt2_ai/src:/app/src
+      - ./c3_rnt2_ai/config:/app/config
       - ${C3RNT2_HOST_D_WINDOWS_ROOT:-D:\GitHub}:/workspace/GitHub
       - ${C3RNT2_HOST_DOWNLOADS_WINDOWS_ROOT:-C:\Users\marcm_kntz5zt\Downloads}:/host/downloads
+      - ${VORTEX_HF_CACHE_WINDOWS_ROOT:-C:\Users\marcm_kntz5zt\.cache\huggingface}:/root/.cache/huggingface
       - vortex-frontend-node-modules:/workspace/Vortex/vortex-chat/node_modules
       - ./c3_rnt2_ai/data/models/gguf:/app/data/models/gguf:ro
       - vortex-chat-data:/app/data/chat

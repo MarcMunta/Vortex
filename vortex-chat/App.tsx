@@ -552,18 +552,20 @@ const VORTEX_CONFIG = {
     left: { path: string; diff: string }[] = [],
     right: { path: string; diff: string }[] = [],
   ) => {
-    const merged: { path: string; diff: string }[] = [];
-    const seen = new Set<string>();
+    const merged = new Map<string, { path: string; diff: string }>();
+    const seenByPath = new Map<string, Set<string>>();
     for (const change of [...left, ...right]) {
       const path = String(change?.path || "").trim();
       const diff = String(change?.diff || "").trim();
       if (!path || !diff) continue;
-      const key = `${path}\n${diff}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push({ path, diff });
+      const seen = seenByPath.get(path) || new Set<string>();
+      if (seen.has(diff)) continue;
+      seen.add(diff);
+      seenByPath.set(path, seen);
+      const existing = merged.get(path);
+      merged.set(path, existing ? { path, diff: `${existing.diff}\n\n${diff}` } : { path, diff });
     }
-    return merged;
+    return Array.from(merged.values());
   };
 
   const mergeAgentEventsLocal = (

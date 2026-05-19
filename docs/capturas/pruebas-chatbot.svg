@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="560" viewBox="0 0 1180 560" role="img" aria-labelledby="title desc">
+  <title id="title">Pruebas automatizadas del chatbot</title>
+  <desc id="desc">Captura estatica de comandos y salidas esperadas para tests del chatbot.</desc>
+  <rect width="1180" height="560" fill="#0b1020"/>
+  <rect x="42" y="38" width="1096" height="484" rx="16" fill="#111827" stroke="#334155"/>
+  <circle cx="76" cy="70" r="8" fill="#ef4444"/>
+  <circle cx="102" cy="70" r="8" fill="#f59e0b"/>
+  <circle cx="128" cy="70" r="8" fill="#22c55e"/>
+  <text x="158" y="76" fill="#e5e7eb" font-family="Consolas, monospace" font-size="15">PowerShell - c3_rnt2_ai</text>
+  <text x="72" y="125" fill="#22c55e" font-family="Consolas, monospace" font-size="18">PS&gt; python -m pytest tests/test_support_chatbot.py -q</text>
+  <text x="72" y="160" fill="#d1d5db" font-family="Consolas, monospace" font-size="17">........                                                                 [100%]</text>
+  <text x="72" y="190" fill="#93c5fd" font-family="Consolas, monospace" font-size="17">8 passed</text>
+  <text x="72" y="248" fill="#22c55e" font-family="Consolas, monospace" font-size="18">PS&gt; python -m c3rnt2 support-chatbot --question "no teng internat" --json</text>
+  <text x="72" y="283" fill="#d1d5db" font-family="Consolas, monospace" font-size="16">Segun la documentacion interna: Comprueba que el router esta encendido...</text>
+  <text x="72" y="314" fill="#d1d5db" font-family="Consolas, monospace" font-size="16">clean_input: no tengo internet | escalated: false | intent: soporte_red</text>
+  <text x="72" y="345" fill="#d1d5db" font-family="Consolas, monospace" font-size="16">chunks: faq.txt, soporte_red.txt</text>
+  <text x="72" y="403" fill="#22c55e" font-family="Consolas, monospace" font-size="18">PS&gt; python -m c3rnt2 support-chatbot --question "llevo 3 dias sin internet y nadie responde" --json</text>
+  <text x="72" y="438" fill="#fecaca" font-family="Consolas, monospace" font-size="16">No he podido resolver tu problema con la documentacion disponible. Te paso con un agente.</text>
+  <text x="72" y="469" fill="#fecaca" font-family="Consolas, monospace" font-size="16">escalated: true | reason: human_escalation_intent | log: escalations.jsonl</text>
+</svg>

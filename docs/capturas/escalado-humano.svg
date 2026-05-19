@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="520" viewBox="0 0 1180 520" role="img" aria-labelledby="title desc">
+  <title id="title">Escalado a humano</title>
+  <desc id="desc">Ejemplo visual de decision de escalado cuando el caso es complejo.</desc>
+  <rect width="1180" height="520" fill="#10141f"/>
+  <text x="54" y="58" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="700">Caso complejo: no automatizar</text>
+  <text x="54" y="88" fill="#94a3b8" font-family="Segoe UI, Arial, sans-serif" font-size="15">Entrada: "llevo 3 dias sin internet y nadie responde"</text>
+  <rect x="54" y="130" width="315" height="260" rx="14" fill="#1e293b" stroke="#334155"/>
+  <text x="82" y="170" fill="#e2e8f0" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">1. Preprocesado</text>
+  <text x="82" y="210" fill="#cbd5e1" font-family="Consolas, monospace" font-size="15">clean_input:</text>
+  <text x="82" y="238" fill="#93c5fd" font-family="Consolas, monospace" font-size="15">llevo 3 dias sin internet</text>
+  <text x="82" y="264" fill="#93c5fd" font-family="Consolas, monospace" font-size="15">y nadie responde</text>
+  <text x="82" y="322" fill="#cbd5e1" font-family="Consolas, monospace" font-size="15">intent: soporte_red</text>
+  <rect x="432" y="130" width="315" height="260" rx="14" fill="#1e293b" stroke="#334155"/>
+  <text x="460" y="170" fill="#e2e8f0" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">2. Decision</text>
+  <text x="460" y="210" fill="#cbd5e1" font-family="Consolas, monospace" font-size="15">pattern: "3 dias"</text>
+  <text x="460" y="238" fill="#cbd5e1" font-family="Consolas, monospace" font-size="15">pattern: "nadie responde"</text>
+  <text x="460" y="292" fill="#fecaca" font-family="Consolas, monospace" font-size="15">reason:</text>
+  <text x="460" y="320" fill="#fecaca" font-family="Consolas, monospace" font-size="15">human_escalation_intent</text>
+  <rect x="810" y="130" width="315" height="260" rx="14" fill="#3f1d1d" stroke="#ef4444"/>
+  <text x="838" y="170" fill="#fee2e2" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">3. Escalado</text>
+  <text x="838" y="212" fill="#fecaca" font-family="Segoe UI, Arial, sans-serif" font-size="16">No he podido resolver tu</text>
+  <text x="838" y="238" fill="#fecaca" font-family="Segoe UI, Arial, sans-serif" font-size="16">problema con la documentacion</text>
+  <text x="838" y="264" fill="#fecaca" font-family="Segoe UI, Arial, sans-serif" font-size="16">disponible. Te paso con</text>
+  <text x="838" y="290" fill="#fecaca" font-family="Segoe UI, Arial, sans-serif" font-size="16">un agente.</text>
+  <text x="838" y="350" fill="#fca5a5" font-family="Consolas, monospace" font-size="15">log: escalations.jsonl</text>
+  <path d="M369 260 H432" stroke="#38bdf8" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M747 260 H810" stroke="#38bdf8" stroke-width="3" marker-end="url(#arrow)"/>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#38bdf8"/>
+    </marker>
+  </defs>
+  <rect x="54" y="432" width="1071" height="44" rx="12" fill="#172554" stroke="#2563eb"/>
+  <text x="78" y="460" fill="#dbeafe" font-family="Segoe UI, Arial, sans-serif" font-size="15">Regla: si hay senales de caso prolongado, reclamacion o falta de respuesta, la IA no debe cerrar el caso automaticamente.</text>
+</svg>

@@ -2004,11 +2004,6 @@ def _build_agent_task(
         recent_context = recent_context[-6000:]
     if recent_context:
         task_text = (
-            "Eres un agente autonomo que ejecuta tareas de desarrollo. "
-            "DEBES crear archivos, modificar codigo y ejecutar comandos reales. "
-            "NO respondas con texto ni explicaciones - usa las herramientas disponibles (write_file, run_command, etc). "
-            "Si el usuario pide crear algo (app, pantalla, widget, codigo), genera el codigo COMPLETO y escribelo con write_file. "
-            "Valida con run_command cuando sea posible.\n\n"
             f"Objetivo principal:\n{objective}\n\n"
             f"Contexto reciente:\n{recent_context}"
         )
@@ -2016,11 +2011,6 @@ def _build_agent_task(
             task_text = f"{task_text}\n\n{permission_context}"
         return task_text
     task_text = (
-        "Eres un agente autonomo que ejecuta tareas de desarrollo. "
-        "DEBES crear archivos, modificar codigo y ejecutar comandos reales. "
-        "NO respondas con texto ni explicaciones - usa las herramientas disponibles (write_file, run_command, etc). "
-        "Si el usuario pide crear algo (app, pantalla, widget, codigo), genera el codigo COMPLETO y escribelo con write_file. "
-        "Valida con run_command cuando sea posible.\n\n"
         f"Objetivo principal:\n{objective}"
     )
     if permission_context:
@@ -2075,10 +2065,80 @@ def _build_external_agent_messages(
     return normalized
 
 
-def _format_agent_report_text(report: dict[str, Any]) -> str:
+def _coerce_agent_summary_language(summary: str, language: str) -> str:
+    normalized = str(language or "").strip().lower()
+    if not summary or not normalized:
+        return summary
+    if normalized == "en":
+        replacements = [
+            ("He creado ", "I created "),
+            ("He actualizado ", "I updated "),
+            ("He borrado ", "I deleted "),
+            ("He listado ", "I listed "),
+            ("He buscado ", "I searched "),
+            ("He ejecutado ", "I ran "),
+            ("He validado el proyecto con sus tests.", "I validated the project with its tests."),
+            ("He iniciado la app en el emulador.", "I started the app on the emulator."),
+            (
+                "He iniciado la app web local en `http://localhost:19090`.",
+                "I started the local web app at `http://localhost:19090`.",
+            ),
+            ("He iniciado el emulador.", "I started the emulator."),
+            ("He leido ", "I read "),
+            ("Primer contenido: ", "First content: "),
+            ("He terminado la tarea.", "I finished the task."),
+            ("No he podido completar ", "I couldn't complete "),
+            ("No he podido iniciar el emulador/app: ", "I couldn't start the emulator/app: "),
+            ("No encuentro el archivo ", "I can't find the file "),
+            ("No puedo acceder a ", "I can't access "),
+            ("No he aplicado cambios: ", "I didn't apply changes: "),
+            ("No he ejecutado comandos: ", "I didn't run commands: "),
+            (
+                "incomplete_file_content: el contenido parece un JSON de accion, placeholder o codigo incompleto; vuelve a generar el archivo completo.",
+                "incomplete_file_content: content looks like an action JSON, placeholder, or incomplete code; regenerate the full file.",
+            ),
+        ]
+    elif normalized == "es":
+        replacements = [
+            ("I created ", "He creado "),
+            ("I updated ", "He actualizado "),
+            ("I deleted ", "He borrado "),
+            ("I listed ", "He listado "),
+            ("I searched ", "He buscado "),
+            ("I ran ", "He ejecutado "),
+            ("I validated the project with its tests.", "He validado el proyecto con sus tests."),
+            ("I started the app on the emulator.", "He iniciado la app en el emulador."),
+            (
+                "I started the local web app at `http://localhost:19090`.",
+                "He iniciado la app web local en `http://localhost:19090`.",
+            ),
+            ("I started the emulator.", "He iniciado el emulador."),
+            ("I read ", "He leido "),
+            ("First content: ", "Primer contenido: "),
+            ("I finished the task.", "He terminado la tarea."),
+            ("I couldn't complete ", "No he podido completar "),
+            ("I couldn't start the emulator/app: ", "No he podido iniciar el emulador/app: "),
+            ("I can't find the file ", "No encuentro el archivo "),
+            ("I can't access ", "No puedo acceder a "),
+            ("I didn't apply changes: ", "No he aplicado cambios: "),
+            ("I didn't run commands: ", "No he ejecutado comandos: "),
+            (
+                "incomplete_file_content: content looks like an action JSON, placeholder, or incomplete code; regenerate the full file.",
+                "incomplete_file_content: el contenido parece un JSON de accion, placeholder o codigo incompleto; vuelve a generar el archivo completo.",
+            ),
+        ]
+    else:
+        return summary
+    for src, dst in replacements:
+        if src in summary:
+            summary = summary.replace(src, dst)
+    return summary
+
+
+def _format_agent_report_text(report: dict[str, Any], *, language: str = "") -> str:
     summary = str(report.get("summary") or "agent_finished").strip() or "agent_finished"
     if bool(report.get("blocked")):
-        return summary
+        return _coerce_agent_summary_language(summary, language)
     workspace_root = str(report.get("workspace_root") or "").strip()
     patch_text = str(report.get("patch") or "").strip()
     file_changes = report.get("file_changes")
@@ -2092,7 +2152,11 @@ def _format_agent_report_text(report: dict[str, Any]) -> str:
             if path and path not in paths:
                 paths.append(path)
         if paths:
-            summary = f"He actualizado `{', '.join(paths)}`."
+            if str(language or "").lower() == "en":
+                summary = f"I updated `{', '.join(paths)}`."
+            else:
+                summary = f"He actualizado `{', '.join(paths)}`."
+    summary = _coerce_agent_summary_language(summary, language)
     if patch_text and not has_file_changes:
         if len(patch_text) > 12000:
             patch_text = patch_text[:12000].rstrip() + "\n...diff truncated..."
@@ -2166,6 +2230,17 @@ def _agent_events_from_report(report: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     step_index = 1
     seen_file_changes: set[tuple[str, str]] = set()
+    file_changes = report.get("file_changes")
+    grouped_file_changes: list[dict[str, Any]] = []
+    if isinstance(file_changes, list):
+        for raw_change in file_changes:
+            if not isinstance(raw_change, dict):
+                continue
+            path = str(raw_change.get("path") or "").strip()
+            diff = str(raw_change.get("diff") or "").strip()
+            if path and diff:
+                grouped_file_changes.append({"path": path, "diff": diff})
+    emit_tool_call_file_changes = not grouped_file_changes
     tool_calls = report.get("tool_calls")
     if isinstance(tool_calls, list):
         for raw_call in tool_calls:
@@ -2212,7 +2287,7 @@ def _agent_events_from_report(report: dict[str, Any]) -> list[dict[str, Any]]:
                 if bytes_value is not None:
                     file_event["bytes"] = bytes_value
                 events.append(file_event)
-            if path and diff:
+            if emit_tool_call_file_changes and path and diff:
                 seen_file_changes.add((path, diff))
                 events.append({"type": "file_change", "path": path, "diff": diff, "ts": ts})
             if output:
@@ -2229,11 +2304,8 @@ def _agent_events_from_report(report: dict[str, Any]) -> list[dict[str, Any]]:
             )
             if not ok:
                 events.append({"type": "error", "message": output[:1200] or f"{action} failed", "ts": ts})
-    file_changes = report.get("file_changes")
-    if isinstance(file_changes, list):
-        for raw_change in file_changes:
-            if not isinstance(raw_change, dict):
-                continue
+    if grouped_file_changes:
+        for raw_change in grouped_file_changes:
             path = str(raw_change.get("path") or "").strip()
             diff = str(raw_change.get("diff") or "").strip()
             if not path or not diff or (path, diff) in seen_file_changes:
@@ -4123,6 +4195,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                 stream=stream,
             )
         messages = context_bundle.messages
+        response_language = _detect_response_language(payload, messages)
         chat_memory_info = context_bundle.chat_memory
         rag_info = context_bundle.rag
         default_system = context_bundle.default_system
@@ -4499,7 +4572,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                                 allow_model_load=selected_model is not None,
                             )
                         elapsed = max(1e-6, time.time() - start)
-                        text = _format_agent_report_text(report)
+                        text = _format_agent_report_text(report, language=response_language)
                         agent_events = _agent_events_from_report(report)
                         prompt_tokens = _estimate_tokens(agent_task, selected_model)
                         tokens_out = _estimate_tokens(text, selected_model)
@@ -4657,7 +4730,7 @@ def create_app(settings: dict, base_dir: Path) -> FastAPI:
                     enabled=bool(stream_topk_override),
                     top_k=int(stream_topk_override) if stream_topk_override else None,
                 )
-            text = _format_agent_report_text(report)
+            text = _format_agent_report_text(report, language=response_language)
             agent_events = _agent_events_from_report(report)
             prompt_tokens = _estimate_tokens(agent_task, selected_model)
             tokens_out = _estimate_tokens(text, selected_model)

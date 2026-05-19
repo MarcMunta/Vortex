@@ -24,6 +24,13 @@ rag = [
   "faiss-cpu>=1.7; platform_system != 'Windows'",
 ]
 llama_cpp = ["llama-cpp-python>=0.2.0"]
+train = [
+  "torch>=2.3",
+  "transformers>=4.42",
+  "accelerate>=0.30",
+  "peft>=0.11",
+  "bitsandbytes>=0.43; platform_system != 'Windows'",
+]
 
 [project.scripts]
 vortex = "c3rnt2.__main__:main"

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import threading
+from copy import deepcopy
 from types import SimpleNamespace
 from contextlib import nullcontext
 from pathlib import Path
@@ -62,6 +63,12 @@ def run_demo_agent(*args: Any, **kwargs: Any) -> Any:
 
 def train_once_backend(*args: Any, **kwargs: Any) -> Any:
     return _lazy_symbol(".training.train_backend", "train_once_backend")(
+        *args, **kwargs
+    )
+
+
+def write_agent_tool_dataset(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_symbol(".training.agent_tool_dataset", "write_agent_tool_dataset")(
         *args, **kwargs
     )
 
@@ -1059,6 +1066,103 @@ def cmd_train_once(args: argparse.Namespace) -> None:
     finally:
         if lock is not None:
             lock.release()
+
+
+def _append_unique_path(paths: list[object], path: Path, base_dir: Path) -> list[str]:
+    resolved = path if path.is_absolute() else (base_dir / path)
+    resolved_s = str(resolved.resolve())
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in [*paths, str(path)]:
+        p = Path(str(raw))
+        candidate = p if p.is_absolute() else (base_dir / p)
+        key = str(candidate.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(str(raw))
+    if resolved_s not in seen:
+        out.append(str(path))
+    return out
+
+
+def cmd_build_agent_tool_dataset(args: argparse.Namespace) -> None:
+    base_dir = Path(".")
+    out_path = Path(str(args.dataset_out))
+    if not out_path.is_absolute():
+        out_path = base_dir / out_path
+    result = write_agent_tool_dataset(out_path, target_count=int(args.target_count))
+    print(json.dumps(result, ensure_ascii=True))
+    if not bool(result.get("ok", False)):
+        sys.exit(1)
+
+
+def cmd_train_agent_tools(args: argparse.Namespace) -> None:
+    settings = _load_and_validate(args.profile)
+    base_dir = Path(".")
+    dataset_path = Path(str(args.dataset_out))
+    if not dataset_path.is_absolute():
+        dataset_path = base_dir / dataset_path
+    dataset_result = write_agent_tool_dataset(dataset_path, target_count=int(args.target_count))
+    if bool(args.build_only):
+        print(json.dumps({"ok": True, "dataset": dataset_result, "trained": False}, ensure_ascii=True))
+        return
+
+    local = deepcopy(settings)
+    hf_cfg = dict(local.get("hf_train", {}) or {})
+    if args.model_name:
+        hf_cfg["model_name"] = str(args.model_name)
+    if not (hf_cfg.get("model_name") or local.get("core", {}).get("hf_model")):
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "ok_train": False,
+                    "error": "model_name missing: set hf_train.model_name or pass --model-name",
+                    "dataset": dataset_result,
+                },
+                ensure_ascii=True,
+            )
+        )
+        sys.exit(1)
+    if args.steps is not None:
+        hf_cfg["max_steps"] = int(args.steps)
+    if bool(args.local_files_only):
+        hf_cfg["local_files_only"] = True
+    hf_cfg["enabled"] = True
+    hf_cfg.setdefault("manual_promotion_only", False)
+    if bool(getattr(args, "manual_promotion", False)):
+        hf_cfg["manual_promotion_only"] = True
+    hf_cfg["extra_training_paths"] = _append_unique_path(
+        list(hf_cfg.get("extra_training_paths", []) or []),
+        Path(str(args.dataset_out)),
+        base_dir,
+    )
+    local["hf_train"] = hf_cfg
+    core = dict(local.get("core", {}) or {})
+    core["backend"] = "hf"
+    core["prefer_llama_cpp_if_available"] = False
+    if hf_cfg.get("model_name"):
+        core.setdefault("hf_model", str(hf_cfg.get("model_name")))
+    local["core"] = core
+
+    try:
+        lock = acquire_exclusive_lock(base_dir, "train")
+    except LockUnavailable:
+        print(json.dumps({"ok": False, "ok_train": False, "error": "train lock unavailable (serve/self_patch running?)", "dataset": dataset_result}, ensure_ascii=True))
+        sys.exit(1)
+    try:
+        result = train_once_backend(local, base_dir, reuse_dataset=False, max_steps=int(args.steps) if args.steps is not None else None)
+        payload = dict(result) if isinstance(result, dict) else dict(getattr(result, "__dict__", {}) or {})
+        adapter_dir = payload.get("adapter_dir")
+        if adapter_dir is not None:
+            payload["adapter_dir"] = str(adapter_dir)
+        payload["dataset"] = dataset_result
+        print(json.dumps(payload, ensure_ascii=True))
+        if not bool(payload.get("ok", False)):
+            sys.exit(1)
+    finally:
+        lock.release()
 
 
 def cmd_self_train(args: argparse.Namespace) -> None:
@@ -2212,6 +2316,22 @@ def main() -> None:
     train.add_argument("--reuse-dataset", action="store_true")
     train.add_argument("--allow-parallel-runtime", action="store_true")
     train.set_defaults(func=cmd_train_once)
+
+    agent_ds = sub.add_parser("build-agent-tool-dataset")
+    agent_ds.add_argument("--dataset-out", default="config/datasets/agent_tool_use_sft.jsonl")
+    agent_ds.add_argument("--target-count", type=int, default=96)
+    agent_ds.set_defaults(func=cmd_build_agent_tool_dataset)
+
+    agent_train = sub.add_parser("train-agent-tools")
+    agent_train.add_argument("--profile", default=None)
+    agent_train.add_argument("--dataset-out", default="config/datasets/agent_tool_use_sft.jsonl")
+    agent_train.add_argument("--target-count", type=int, default=96)
+    agent_train.add_argument("--steps", type=int, default=None)
+    agent_train.add_argument("--model-name", default=None)
+    agent_train.add_argument("--local-files-only", action="store_true")
+    agent_train.add_argument("--build-only", action="store_true")
+    agent_train.add_argument("--manual-promotion", action="store_true")
+    agent_train.set_defaults(func=cmd_train_agent_tools)
 
     self_train = sub.add_parser("self-train")
     self_train.add_argument("--profile", default=None)

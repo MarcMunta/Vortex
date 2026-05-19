@@ -446,6 +446,7 @@ def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict
         )
     next_steps.append(f"Re-run: python -m vortex prepare-model --profile {profile}")
 
+    optional_training_disabled = training_reason == "hf_train_disabled"
     degraded_reason = None
     for candidate in (
         None if docker_ready else docker_reason,
@@ -453,7 +454,7 @@ def prepare_model_state(settings: dict, *, base_dir: Path | None = None) -> dict
         None if engine_ready else engine_reason,
         None if model_ready else model_reason,
         None if web_disabled else web_reason,
-        None if training_ready else training_reason,
+        None if training_ready or optional_training_disabled else training_reason,
     ):
         if candidate:
             degraded_reason = candidate

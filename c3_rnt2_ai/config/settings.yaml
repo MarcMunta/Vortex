@@ -50,6 +50,7 @@ profiles:
       max_wall_time_s: 300
       stream_heartbeat_s: 8
       background_probe_s: 12
+      action_grammar_enabled: true
       allow_git: true
       tools_enabled:
         - open_docs
@@ -116,6 +117,38 @@ profiles:
       max_k: 4
       token_budget_total: 3000
       strict: true
+    hf_train:
+      enabled: false
+      model_name: Qwen/Qwen2.5-Coder-7B-Instruct
+      dataset_path: data/registry/hf_train/sft_samples.jsonl
+      registry_dir: data/registry/hf_train
+      state_path: data/registry/hf_train/state.json
+      extra_training_paths:
+        - config/datasets/agent_tool_use_sft.jsonl
+      max_steps: 80
+      max_samples: 256
+      max_seq_len: 1536
+      micro_batch_size: 1
+      grad_accum_steps: 8
+      lr: 0.0002
+      load_in_4bit: true
+      double_quant: true
+      quant_type: nf4
+      lora_rank: 16
+      lora_alpha: 32
+      lora_dropout: 0.05
+      manual_promotion_only: false
+      use_weighted_sampling: true
+      source_kind_weights:
+        agent_tool_use_sft: 2.5
+        episode: 1.5
+        chat_feedback: 1.0
+        chat_feedback_soft: 0.5
+      eval:
+        enabled: true
+        max_samples: 8
+        min_improvement: -0.05
+        max_regression: 0.1
     profile_contract:
       disable_fallbacks: true
       approved_training_sources_only: false

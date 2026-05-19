@@ -22,16 +22,21 @@ const formatDuration = (ms: number): string => {
 };
 
 const collectFileChanges = (events: AgentEvent[]): { path: string; diff: string }[] => {
-  const changes: { path: string; diff: string }[] = [];
-  const seen = new Set<string>();
+  const changes = new Map<string, { path: string; diff: string }>();
+  const seenByPath = new Map<string, Set<string>>();
   for (const event of events) {
     if (event.type !== 'file_change' || !event.diff.trim()) continue;
-    const key = `${event.path}\n${event.diff}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    changes.push({ path: event.path, diff: event.diff });
+    const seen = seenByPath.get(event.path) || new Set<string>();
+    if (seen.has(event.diff)) continue;
+    seen.add(event.diff);
+    seenByPath.set(event.path, seen);
+    const existing = changes.get(event.path);
+    changes.set(
+      event.path,
+      existing ? { path: event.path, diff: `${existing.diff}\n\n${event.diff}` } : { path: event.path, diff: event.diff },
+    );
   }
-  return changes;
+  return Array.from(changes.values());
 };
 
 const collectErrors = (events: AgentEvent[]): string[] => {

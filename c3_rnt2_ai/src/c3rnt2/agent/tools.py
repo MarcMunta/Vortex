@@ -801,6 +801,8 @@ class AgentTools:
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="ignore",
             )
             return ToolResult(ok=True, output=result.stdout.strip())
         except Exception as exc:
@@ -917,6 +919,8 @@ class AgentTools:
                 cwd=str(workdir),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="ignore",
                 timeout=max(1, int(timeout_s)),
                 env=self._command_env(),
                 shell=False,

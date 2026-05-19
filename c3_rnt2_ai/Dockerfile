@@ -36,16 +36,33 @@ RUN git clone --depth 1 --branch stable https://github.com/flutter/flutter.git /
 WORKDIR /app
 
 ARG LLAMA_CPP_CMAKE_ARGS=
-ENV CMAKE_ARGS=${LLAMA_CPP_CMAKE_ARGS}
+ARG LLAMA_CPP_PIP_EXTRA_INDEX_URL=
+ARG VORTEX_INSTALL_TRAINING=1
+ENV CMAKE_ARGS=${LLAMA_CPP_CMAKE_ARGS} \
+    CUDA_HOME=/usr/local/cuda
 
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY config ./config
 COPY documentos ./documentos
 
+RUN if [ -d /usr/local/cuda/lib64/stubs ] \
+        && [ -e /usr/local/cuda/lib64/stubs/libcuda.so ] \
+        && [ ! -e /usr/local/cuda/lib64/stubs/libcuda.so.1 ]; then \
+        ln -s libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1; \
+    fi
+
 RUN python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 \
-    && python -m pip install -e ".[api]"
+        && if [ -n "$LLAMA_CPP_PIP_EXTRA_INDEX_URL" ]; then \
+                 LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LIBRARY_PATH python -m pip install llama-cpp-python --extra-index-url "$LLAMA_CPP_PIP_EXTRA_INDEX_URL"; \
+             else \
+                 LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LIBRARY_PATH python -m pip install llama-cpp-python; \
+             fi \
+        && if [ "$VORTEX_INSTALL_TRAINING" = "1" ]; then \
+                 python -m pip install -e ".[api,train]"; \
+             else \
+                 python -m pip install -e ".[api]"; \
+             fi
 
 EXPOSE 8000 8765
 
